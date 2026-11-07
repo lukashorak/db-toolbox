@@ -1,0 +1,41 @@
+{
+  "name": "database-workbench",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Self-hosted database workbench for MySQL and PostgreSQL with MCP access.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/mcp",
+    "packages/api",
+    "packages/web"
+  ],
+  "scripts": {
+    "dev": "node --conditions=development --disable-warning=ExperimentalWarning --env-file-if-exists=.env --import tsx --watch packages/api/src/main.ts",
+    "dev:web": "npm run dev -w @workbench/web",
+    "build": "tsc -b && npm run build -w @workbench/web",
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env packages/api/dist/main.js",
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json && npm run check -w @workbench/web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test \"packages/*/test/**/*.test.ts\" \"test/**/*.test.ts\"",
+    "test:integration": "node -e \"console.log('No integration tests yet. They start with step 2 (Keycloak) and step 3 (databases).')\"",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.14.0",
+    "eslint-plugin-svelte": "3.24.1",
+    "globals": "17.14.0",
+    "prettier": "3.9.10",
+    "prettier-plugin-svelte": "4.1.1",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  }
+}

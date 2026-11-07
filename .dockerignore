@@ -1,0 +1,11 @@
+reference/
+node_modules/
+**/node_modules/
+**/dist/
+.git/
+.github/
+docs/
+data/
+exports/
+.env
+*.tsbuildinfo

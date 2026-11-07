@@ -1,0 +1,36 @@
+/* Design tokens from the "Visual system" artboard. The full set lands in step 9. */
+:root {
+  --color-nav: #141925;
+  --color-workspace: #f4f5f7;
+  --color-panel: #ffffff;
+  --color-border: #e3e6ec;
+  --color-text: #1b2230;
+  --color-text-muted: #5f6b7e;
+  --color-accent: #3d4fd1;
+  --color-success: #17663f;
+  --color-success-bg: #e6f4ec;
+  --color-danger: #b3261e;
+  --color-danger-bg: #fdecea;
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-workspace);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}

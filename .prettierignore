@@ -1,0 +1,8 @@
+reference/
+node_modules/
+dist/
+coverage/
+package-lock.json
+data/
+exports/
+docs/requirements.md
