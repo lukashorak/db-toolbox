@@ -1,8 +1,7 @@
 import { access, constants } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-
-export const DATABASE_FILE = 'workbench.sqlite';
+import { DATABASE_FILE } from './store/database.js';
 
 export interface CheckResult {
   ok: boolean;

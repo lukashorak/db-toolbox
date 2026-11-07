@@ -2,10 +2,55 @@
 
 Tracks progress against the [implementation plan](implementation-plan.md). Each step updates this file.
 
-| Step | Title                           | Status           |
-| ---- | ------------------------------- | ---------------- |
-| 0    | Foundation and decision records | Done (in review) |
-| 1–14 | See the plan                    | Not started      |
+| Step | Title                                       | Status           |
+| ---- | ------------------------------------------- | ---------------- |
+| 0    | Foundation and decision records             | Done (in review) |
+| 1    | Domain model, persistence, policy and audit | Done (in review) |
+| 2–14 | See the plan                                | Not started      |
+
+## Step 1 — Domain model, persistence, policy and audit
+
+### What works
+
+- SQLite schema, migration 1, covering the whole v1 data model: configuration, executions, statements, result sets and chunks, exports, disclosure approvals, MCP usage, audit and settings. Documented in [data-model.md](data-model.md).
+- `Database` wrapper over `node:sqlite` with WAL, foreign keys, busy timeout, IMMEDIATE transactions and versioned migrations.
+- Prefixed, time-sortable identifiers.
+- `SecretBox`: AES-256-GCM sealing of credentials, bound to the record. An encryption key check at startup fails fast with `encryption_key_mismatch`.
+- Permissions per role. `admin` manages configuration but gets no database writes; `query:read` users can save queries; MCP clients can never decide on disclosure.
+- `evaluateWritePolicy`: user, connection and profile layers; the strongest wins and the result names its sources.
+- Services:
+  - users (touch on each request);
+  - connections:
+    - validation, unique names, a write-only password where blank means keep;
+    - references disclosed before deleting; deletion refused while executions are active;
+    - enable and disable;
+  - MCP profiles:
+    - one OAuth client per profile, limits within the deployment maximums;
+    - effective access per connection;
+    - pending requests are denied when the profile loses access;
+  - library:
+    - nested folders with cycle checks, saved queries with name-conflict detection per folder;
+    - move and duplicate;
+    - folder deletion either moving contents to the parent or deleting them;
+    - private per owner;
+  - settings: execution defaults for administrators, bounded by the deployment limits.
+- Audit log with redaction of sensitive keys at any depth, filters and cursor pagination.
+- Stable error codes (`AppError`) for the API and MCP to share.
+
+### How it was verified
+
+- `npm run check` passes. 64 tests, 63 passing and 1 skipped when running as root. They include:
+  - all eight combinations of the three read-only layers;
+  - administrator non-bypass;
+  - encryption round-trip, wrong key, wrong record and tampering;
+  - migrations from empty, plus reopen;
+  - CHECK constraints;
+  - each service's rules and audit trail.
+
+### Deferred
+
+- Execution, result and export behavior on top of these tables arrives in steps 4 and 5.
+- No API endpoints yet (step 6).
 
 ## Step 0 — Foundation and decision records
 

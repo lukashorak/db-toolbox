@@ -1,0 +1,83 @@
+import { AuditLog } from './audit.js';
+import type { Limits } from './config.js';
+import { AppError } from './domain/errors.js';
+import { systemClock, type Clock } from './domain/types.js';
+import { SecretBox } from './security/secrets.js';
+import { ConnectionService } from './services/connections.js';
+import type { ServiceContext } from './services/context.js';
+import { LibraryService } from './services/library.js';
+import { ProfileService } from './services/profiles.js';
+import { SettingsService } from './services/settings.js';
+import { UserService } from './services/users.js';
+import { Database } from './store/database.js';
+
+const KEY_CHECK = 'security.key_check';
+const KEY_CHECK_VALUE = 'database-workbench';
+
+export interface CoreOptions {
+  /** Path of the SQLite file, or `:memory:` in tests. */
+  databaseFile: string;
+  encryptionKey: Buffer;
+  limits: Limits;
+  clock?: Clock;
+}
+
+export interface Core {
+  db: Database;
+  audit: AuditLog;
+  users: UserService;
+  connections: ConnectionService;
+  profiles: ProfileService;
+  library: LibraryService;
+  settings: SettingsService;
+  close(): void;
+}
+
+/**
+ * Confirms that the configured key is the one used for stored credentials. On first start it
+ * stores a sealed check value; later starts fail fast instead of failing on the first connection.
+ */
+export function verifyEncryptionKey(db: Database, secrets: SecretBox, clock: Clock): void {
+  const row = db.get('SELECT value FROM settings WHERE key = :key', { key: KEY_CHECK });
+  if (!row) {
+    db.run('INSERT INTO settings (key, value, updated_by, updated_at) VALUES (:key, :value, NULL, :now)', {
+      key: KEY_CHECK,
+      value: secrets.seal(KEY_CHECK_VALUE, KEY_CHECK),
+      now: clock.now().toISOString(),
+    });
+    return;
+  }
+  try {
+    if (secrets.open<string>(String(row.value), KEY_CHECK) === KEY_CHECK_VALUE) return;
+  } catch {
+    // fall through
+  }
+  throw new AppError(
+    'encryption_key_mismatch',
+    'ENCRYPTION_KEY does not match the key used to store credentials. Restore the original key; stored credentials cannot be read without it.',
+  );
+}
+
+export function createCore(options: CoreOptions): Core {
+  const clock = options.clock ?? systemClock;
+  const db = Database.open(options.databaseFile);
+  const secrets = new SecretBox(options.encryptionKey);
+  try {
+    verifyEncryptionKey(db, secrets, clock);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  const audit = new AuditLog(db, clock);
+  const ctx: ServiceContext = { db, secrets, audit, clock, limits: options.limits };
+  return {
+    db,
+    audit,
+    users: new UserService(ctx),
+    connections: new ConnectionService(ctx),
+    profiles: new ProfileService(ctx),
+    library: new LibraryService(ctx),
+    settings: new SettingsService(ctx),
+    close: () => db.close(),
+  };
+}
