@@ -17,8 +17,60 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 10   | GUI: Connections, Explorer, Saved queries            | Done (in review)                                          |
 | 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
 | 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
-| 13   | Packaging and operations                             | Waiting for inputs (Dockge host, reverse proxy, URLs)     |
+| 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
 | 14   | Acceptance and hardening (M3)                        | Not started                                               |
+
+## Step 13 — Packaging and operations
+
+Reference: [operations.md](operations.md).
+
+### What works
+
+- Image (`Dockerfile`):
+  - multi-stage build on `node:24.22.2-bookworm-slim`, 409 MB;
+  - runtime dependencies only: the bundled web app's packages and the unused SQL grammars are left out;
+  - runs as uid 1000, with application files owned by root;
+  - health check on `/healthz`;
+  - an optional build secret for a TLS-inspecting proxy's CA.
+- Compose file for Dockge (`deploy/compose.yaml`) and an environment template (`deploy/.env.example`):
+  - read-only root file system, all capabilities dropped, `no-new-privileges`;
+  - `/data` and `/exports` bind mounts, port published on loopback for the reverse proxy;
+  - log rotation, and `stop_grace_period` longer than the server's grace.
+- Graceful shutdown:
+  - on SIGTERM the server stops starting new work (it stays queued) and lets running executions finish for `SHUTDOWN_GRACE_MS` (20 s) while the API keeps answering;
+  - what still runs is cancelled and recorded as `interrupted`, never as `cancelled`;
+  - live event streams are ended, so the stop does not wait for them.
+- Operations CLI (`node packages/api/dist/cli.js`):
+  - `backup`: SQLite online backup with an integrity check, mode 600;
+  - `verify`: integrity, schema version and whether `ENCRYPTION_KEY` opens the stored credentials;
+  - `restore`: refused while a server's heartbeat is fresh or when `verify` fails; keeps the replaced file and applies migrations;
+  - `migrate`, and `realm` (the Keycloak import, now also available from the image).
+- A release refuses to open a database written by a newer release (`SchemaTooNewError`), instead of running against it.
+- A clear startup error when `DATA_DIR` or `EXPORT_DIR` is not writable (the usual bind-mount mistake).
+- CI:
+  - a `deploy` job builds the image and runs the deployment test;
+  - the `check` job now also runs the component tests.
+
+### How it was verified
+
+- `npm run check` passes: 166 server and contract tests (1 more skipped as root) and 10 component tests. New unit tests cover backup, verify and restore, and the newer-schema refusal.
+- `npm run test:integration` passes: 110 tests. The new test, on both engines, checks the grace period: a short run finishes, queued work stays queued and runs after the restart, and a long run is interrupted and cancelled in the database.
+- `npm run test:e2e` passes: 11 flows.
+- `npm run test:deploy` passes against the built image with `deploy/compose.yaml` (AC14):
+  - non-root, read-only root and dropped capabilities;
+  - migrations on the first start;
+  - an online backup;
+  - restore refused while running, and a backup refused under another key;
+  - a graceful stop with an open event stream, exit code 0;
+  - restore, after which the change made after the backup is gone and the stored credentials still connect;
+  - logs without the key, passwords or tokens.
+- Negative check: with the stream-ending hook disabled, the deployment test fails, because Docker had to kill the server after 30 s.
+
+### Pending (needs input)
+
+- The concrete reverse proxy configuration. [operations.md](operations.md#reverse-proxy) lists the requirements, with Caddy and nginx examples.
+- The deployment on the real Dockge host behind its proxy, with the real URLs, and where backups are copied to.
+- Where the image is published: a registry, or built on the host.
 
 ## Step 12 — GUI: Monitoring, MCP access, Settings and audit
 

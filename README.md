@@ -2,13 +2,14 @@
 
 A small, self-hosted workbench for MySQL and PostgreSQL: SQL tabs, a read-only explorer, saved queries, background executions with complete CSV/JSON exports, database-wide monitoring, and authenticated MCP access for Claude Code. Identity comes from an existing Keycloak instance; deployment uses Docker Compose in Dockge.
 
-This repository is at **step 0 (foundation)** of the [implementation plan](docs/implementation-plan.md). Progress is tracked in [docs/implementation-status.md](docs/implementation-status.md).
+Steps 0–12 of the [implementation plan](docs/implementation-plan.md) are done, and step 13 (packaging) is done apart from the parts that need the target host. Progress is tracked in [docs/implementation-status.md](docs/implementation-status.md).
 
 | Document                                                              | Purpose                                     |
 | --------------------------------------------------------------------- | ------------------------------------------- |
 | [Requirements](docs/requirements.md)                                  | Functional baseline and acceptance criteria |
 | [Implementation plan](docs/implementation-plan.md)                    | Steps, milestones and traceability          |
 | [Decision records](docs/decisions/README.md)                          | Decisions and technical choices             |
+| [Operations](docs/operations.md)                                      | Deployment, backups, restore and upgrades   |
 | [Design prototype](https://claude.ai/artifact/JdcsDg4L4npnuTN4EBwYZH) | Interactive UI specification                |
 | [Reference material](reference/README.md)                             | Earlier Codex prototype, read-only          |
 
@@ -53,3 +54,15 @@ scripts/integration/stop.sh
 Target databases, TLS modes, read-only enforcement and metadata are described in [docs/databases.md](docs/databases.md).
 
 Keycloak setup, the realm generator (`npm run keycloak:realm`) and connecting Claude Code are described in [docs/identity.md](docs/identity.md).
+
+## Deployment
+
+```sh
+docker build -t database-workbench:0.1.0 .
+```
+
+The image runs with [`deploy/compose.yaml`](deploy/compose.yaml) and an `.env` from [`deploy/.env.example`](deploy/.env.example), for example as a Dockge stack. The operations CLI in the image (`node packages/api/dist/cli.js`) takes online backups, verifies and restores them, applies migrations and prints the Keycloak realm import. [docs/operations.md](docs/operations.md) covers the reverse proxy, graceful shutdown, backups, restore and upgrades.
+
+```sh
+DEPLOY_TEST_IMAGE=database-workbench:0.1.0 npm run test:deploy   # needs the Keycloak and PostgreSQL test containers
+```

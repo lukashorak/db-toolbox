@@ -1,7 +1,19 @@
 export { ConfigError, loadConfig, type Config, type Limits } from './config.js';
 export { createLogger, REDACT_PATHS, REDACTED, type Logger } from './logger.js';
 export { checkDatabase, checkExportDir, checkReadiness, type CheckResult, type Readiness } from './health.js';
-export { createCore, verifyEncryptionKey, type Core, type CoreOptions } from './core.js';
+export { createCore, type Core, type CoreOptions } from './core.js';
+export { keyStatus, verifyEncryptionKey } from './security/key-check.js';
+export {
+  backupDatabase,
+  HEARTBEAT_STALE_MS,
+  inspectBackup,
+  markAlive,
+  markStopped,
+  restoreDatabase,
+  type BackupInspection,
+  type BackupReport,
+  type RestoreReport,
+} from './store/backup.js';
 export { AuditLog, redactDetails, type AuditQuery, type AuditRecord } from './audit.js';
 export { AppError, ERROR_CODES, type ErrorCode } from './domain/errors.js';
 export { ID_PATTERN, ID_PREFIXES, newId, type IdKind } from './domain/ids.js';
@@ -19,7 +31,7 @@ export {
   type WritePolicy,
 } from './security/policy.js';
 export { SecretBox } from './security/secrets.js';
-export { Database, DATABASE_FILE } from './store/database.js';
+export { Database, DATABASE_FILE, SchemaTooNewError } from './store/database.js';
 export { MIGRATIONS } from './store/migrations.js';
 export type {
   ConnectionReferences,

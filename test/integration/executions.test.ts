@@ -450,5 +450,57 @@ for (const { engine, variable, prepare } of engines) {
         await first.shutdown().catch(() => undefined);
       }
     });
+
+    it('on shutdown, running work may finish within the grace period; the rest is interrupted, queued work waits', async () => {
+      const file = join(dir, 'shutdown.sqlite');
+      const open = () => makeCore(file, { CONCURRENCY_PER_CONNECTION: '1' });
+      const first = open();
+      const t = targetFrom(url, engine);
+      const id = first.connections.create(writer, {
+        name: 'Shutdown',
+        engine,
+        environment: 'development',
+        host: t.host,
+        port: t.port,
+        database: t.database,
+        schema: t.schema,
+        username: t.username,
+        password: t.password,
+        tlsMode: 'verify-full',
+        caPem: t.caPem,
+        readOnly: false,
+      }).id;
+      const short = await first.executions.submit(writer, { connectionId: id, sql: sleep(1) });
+      const waiting = await first.executions.submit(writer, { connectionId: id, sql: 'SELECT 1' });
+      await until(() => first.executions.view(short.id).status === 'running');
+      await first.shutdown({ graceMs: 10_000 });
+
+      const second = open();
+      let long: ExecutionView;
+      try {
+        assert.equal(second.executions.view(short.id).status, 'succeeded', 'finished within the grace');
+        assert.equal(second.executions.view(waiting.id).status, 'queued', 'never started, still queued');
+        assert.deepEqual(second.executions.reconcile(), { interrupted: 0, queued: 1 });
+        second.executions.resume();
+        assert.equal((await settle(second, waiting.id)).status, 'succeeded');
+        long = await second.executions.submit(writer, { connectionId: id, sql: sleep(10) });
+        await until(() => second.executions.view(long.id).status === 'running');
+        const started = Date.now();
+        await second.shutdown({ graceMs: 300 });
+        assert.ok(Date.now() - started < 5000, 'the statement was cancelled in the database');
+      } finally {
+        await second.shutdown().catch(() => undefined);
+      }
+
+      const third = open();
+      try {
+        const view = third.executions.view(long.id);
+        assert.deepEqual([view.status, view.transactionOutcome], ['interrupted', 'none']);
+        assert.match(String(view.statusNote), /server shut down/);
+        assert.deepEqual(third.executions.reconcile(), { interrupted: 0, queued: 0 });
+      } finally {
+        await third.shutdown();
+      }
+    });
   });
 }

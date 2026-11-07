@@ -28,6 +28,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run test:web
       - run: npm run build
 
   integration:
@@ -54,6 +55,33 @@ jobs:
       - name: Container logs on failure
         if: failure()
         run: docker ps -a --filter name=workbench-it- --format '{{.Names}}' | xargs -r -n1 docker logs --tail 200
+      - name: Stop containers
+        if: always()
+        run: scripts/integration/stop.sh
+
+  deploy:
+    name: Image and compose deployment (AC14)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WORKBENCH_REQUIRE_INTEGRATION: '1'
+      DEPLOY_TEST_IMAGE: database-workbench:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build image
+        run: docker build --build-arg VERSION="${GITHUB_SHA::12}" -t "$DEPLOY_TEST_IMAGE" .
+      - name: Start containers
+        run: scripts/integration/start.sh keycloak postgres >> "$GITHUB_ENV"
+      - run: npm run test:deploy
+      - name: Container logs on failure
+        if: failure()
+        run: docker ps -a --format '{{.Names}}' | xargs -r -n1 docker logs --tail 200
       - name: Stop containers
         if: always()
         run: scripts/integration/stop.sh

@@ -1,12 +1,12 @@
 import { AuditLog } from './audit.js';
 import type { Limits } from './config.js';
-import { AppError } from './domain/errors.js';
 import { systemClock, type Clock } from './domain/types.js';
 import { AdapterRegistry } from './db/registry.js';
 import { DisclosureService } from './execution/disclosure.js';
 import { ExportService } from './execution/exports.js';
 import { ExecutionService, type ExecutionOptions } from './execution/service.js';
 import { MonitoringService } from './monitoring/service.js';
+import { verifyEncryptionKey } from './security/key-check.js';
 import { SecretBox } from './security/secrets.js';
 import { ConnectionService } from './services/connections.js';
 import { DatabaseService } from './services/databases.js';
@@ -16,9 +16,6 @@ import { ProfileService } from './services/profiles.js';
 import { SettingsService } from './services/settings.js';
 import { UserService } from './services/users.js';
 import { Database } from './store/database.js';
-
-const KEY_CHECK = 'security.key_check';
-const KEY_CHECK_VALUE = 'database-workbench';
 
 export interface CoreOptions {
   /** Path of the SQLite file, or `:memory:` in tests. */
@@ -58,33 +55,11 @@ export interface Core {
   }>;
   /** Closes the application database; open pools close in the background. */
   close(): void;
-  /** Closes pools to target databases, then the application database. */
-  shutdown(): Promise<void>;
-}
-
-/**
- * Confirms that the configured key is the one used for stored credentials. On first start it
- * stores a sealed check value; later starts fail fast instead of failing on the first connection.
- */
-export function verifyEncryptionKey(db: Database, secrets: SecretBox, clock: Clock): void {
-  const row = db.get('SELECT value FROM settings WHERE key = :key', { key: KEY_CHECK });
-  if (!row) {
-    db.run('INSERT INTO settings (key, value, updated_by, updated_at) VALUES (:key, :value, NULL, :now)', {
-      key: KEY_CHECK,
-      value: secrets.seal(KEY_CHECK_VALUE, KEY_CHECK),
-      now: clock.now().toISOString(),
-    });
-    return;
-  }
-  try {
-    if (secrets.open<string>(String(row.value), KEY_CHECK) === KEY_CHECK_VALUE) return;
-  } catch {
-    // fall through
-  }
-  throw new AppError(
-    'encryption_key_mismatch',
-    'ENCRYPTION_KEY does not match the key used to store credentials. Restore the original key; stored credentials cannot be read without it.',
-  );
+  /**
+   * Lets running executions finish for up to `graceMs` (then interrupts them), waits for exports,
+   * closes pools to target databases, then the application database.
+   */
+  shutdown(options?: { graceMs?: number }): Promise<void>;
 }
 
 export function createCore(options: CoreOptions): Core {
@@ -143,8 +118,8 @@ export function createCore(options: CoreOptions): Core {
       void registry.closeAll();
       db.close();
     },
-    shutdown: async () => {
-      await executions.stop();
+    shutdown: async (options = {}) => {
+      await executions.stop(options.graceMs ?? 0);
       await exportService.idle();
       await registry.closeAll();
       db.close();

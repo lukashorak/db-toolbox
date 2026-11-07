@@ -3,9 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { createCore } from '../src/core.js';
 import { AppError } from '../src/domain/errors.js';
-import { Database } from '../src/store/database.js';
+import { Database, SchemaTooNewError } from '../src/store/database.js';
 import { MIGRATIONS } from '../src/store/migrations.js';
 import { limits, TEST_KEY } from './helpers.js';
 
@@ -38,6 +39,18 @@ describe('Database', () => {
     const again = Database.open(file);
     assert.equal(again.migrate(), MIGRATIONS.at(-1)?.version);
     again.close();
+  });
+
+  it('refuses a database written by a newer release instead of opening it', () => {
+    const file = join(dir, 'newer.sqlite');
+    Database.open(file).close();
+    const raw = new DatabaseSync(file);
+    raw.exec(`PRAGMA user_version = ${Number(MIGRATIONS.at(-1)?.version) + 1}`);
+    raw.close();
+    assert.throws(
+      () => Database.open(file),
+      (e: unknown) => e instanceof SchemaTooNewError && /newer than this release/.test(e.message),
+    );
   });
 
   it('rolls back a failed transaction', () => {

@@ -10,3 +10,10 @@ exports/
 .env
 *.tsbuildinfo
 .integration/
+test/
+scripts/
+deploy/
+**/test/
+*.md
+Dockerfile
+.dockerignore

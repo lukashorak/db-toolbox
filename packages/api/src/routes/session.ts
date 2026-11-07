@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import type { FastifyInstance } from 'fastify';
 import { permissionsOf, type Authenticator, type Config, type Core } from '@workbench/core';
 import { describeMcpEndpoint } from '@workbench/mcp';
@@ -38,7 +39,12 @@ export function protectedRoutes(authenticator: Authenticator, core: Core, config
     app.addHook('onRequest', async (request) => {
       request.actor = await authenticator.authenticate(request.headers.authorization, 'gui');
     });
-    v1Routes(core, config).register(app);
+    // Live streams stay open for the token's lifetime; end them so closing the server does not wait.
+    const closing = new EventEmitter().setMaxListeners(0);
+    app.addHook('preClose', async () => {
+      closing.emit('close');
+    });
+    v1Routes(core, config, { closing }).register(app);
 
     app.get('/session', async (request) => {
       const actor = actorOf(request);

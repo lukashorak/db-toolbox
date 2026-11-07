@@ -7,6 +7,20 @@ export type Params = Record<string, SQLInputValue>;
 export type Row = Record<string, unknown>;
 
 export const DATABASE_FILE = 'workbench.sqlite';
+const LATEST_VERSION = Math.max(0, ...MIGRATIONS.map((m) => m.version));
+
+/** The file was written by a newer release; this one must not open (or "migrate") it. */
+export class SchemaTooNewError extends Error {
+  constructor(
+    readonly found: number,
+    readonly latest: number,
+  ) {
+    super(
+      `The application database has schema version ${found}, newer than this release supports (${latest}). Run the release that wrote it, or restore a backup made with this release.`,
+    );
+    this.name = 'SchemaTooNewError';
+  }
+}
 
 /**
  * Thin wrapper around `node:sqlite`. Every write runs in a short IMMEDIATE transaction so that
@@ -27,7 +41,12 @@ export class Database {
     raw.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     if (file !== ':memory:') raw.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
     const db = new Database(raw);
-    db.migrate();
+    try {
+      db.migrate();
+    } catch (error) {
+      raw.close();
+      throw error;
+    }
     return db;
   }
 
@@ -41,6 +60,7 @@ export class Database {
 
   /** Applies pending migrations in order, each in its own transaction. Returns the new version. */
   migrate(): number {
+    if (this.schemaVersion > LATEST_VERSION) throw new SchemaTooNewError(this.schemaVersion, LATEST_VERSION);
     for (const migration of MIGRATIONS) {
       if (migration.version <= this.schemaVersion) continue;
       this.transaction(() => {

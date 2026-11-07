@@ -46,6 +46,8 @@ export interface Config {
   exportDir: string;
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
   trustProxy: boolean;
+  /** On SIGTERM, how long running executions may finish before they are interrupted. */
+  shutdownGraceMs: number;
   limits: Limits;
 }
 
@@ -77,6 +79,7 @@ const schema = z.object({
   CONCURRENCY_PER_CONNECTION: positiveInt(2),
   ORDINARY_TIMEOUT_MS: positiveInt(30_000),
   FULL_TIMEOUT_MAX_MS: positiveInt(300_000),
+  SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(600_000).default(20_000),
 });
 
 function parseOrigin(name: string, value: string, requireHttps: boolean, issues: string[]): string {
@@ -165,6 +168,7 @@ export function loadConfig(env: Env, cwd: string = process.cwd()): Config {
     exportDir: resolve(cwd, e.EXPORT_DIR),
     logLevel: e.LOG_LEVEL,
     trustProxy: e.TRUST_PROXY === 'true',
+    shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
     limits: {
       previewRows: e.PREVIEW_ROWS,
       mcpPreviewRows: e.MCP_PREVIEW_ROWS,

@@ -135,6 +135,7 @@ export class ExecutionService {
   readonly #budget: StorageBudget;
   readonly #globalCap: number;
   #stopped = false;
+  #shuttingDown = false;
 
   constructor(
     private readonly ctx: ServiceContext,
@@ -1001,6 +1002,11 @@ export class ExecutionService {
       status = 'cancelled';
     }
     if (status === 'succeeded' && cancelRequested) note = 'Completed before the cancellation took effect.';
+    if (status === 'cancelled' && this.#shuttingDown && !cancelRequested) {
+      // Nobody cancelled it: the server stopped. Like a restart, it is never run again.
+      status = 'interrupted';
+      note = 'The server shut down while this was running. It is not run again.';
+    }
 
     let outcome: TransactionOutcome;
     if (readOnly) outcome = 'none';
@@ -1114,6 +1120,7 @@ export class ExecutionService {
   /** Starts queued work (after reconcile at startup). */
   resume(): void {
     this.#stopped = false;
+    this.#shuttingDown = false;
     this.#pump();
   }
 
@@ -1179,9 +1186,18 @@ export class ExecutionService {
     while (this.#running.size) await Promise.allSettled([...this.#running.values()].map((r) => r.done));
   }
 
-  /** Stops starting new work and cancels running work (shutdown). */
-  async stop(): Promise<void> {
+  /**
+   * Shutdown: stops starting new work (queued work stays queued for the next start), lets running
+   * work finish for up to `graceMs`, then interrupts what is left.
+   */
+  async stop(graceMs = 0): Promise<void> {
     this.#stopped = true;
+    if (graceMs > 0 && this.#running.size) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([this.idle(), new Promise((r) => (timer = setTimeout(r, graceMs)))]);
+      clearTimeout(timer);
+    }
+    this.#shuttingDown = true;
     for (const r of this.#running.values()) r.controller.abort();
     await this.idle();
   }

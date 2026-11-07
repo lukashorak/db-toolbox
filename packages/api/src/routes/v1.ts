@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import type { EventEmitter } from 'node:events';
 import { z } from 'zod';
 import {
   AppError,
@@ -38,7 +39,11 @@ function submitted(view: ExecutionView): ExecutionView {
 }
 
 /** All /api/v1 resources. Every handler delegates to a core service with the request's actor. */
-export function v1Routes(core: Core, config: Pick<Config, 'limits'>): RouteRegistry {
+export function v1Routes(
+  core: Core,
+  config: Pick<Config, 'limits'>,
+  options: { closing?: EventEmitter } = {},
+): RouteRegistry {
   const r = new RouteRegistry();
 
   // ---------------------------------------------------------------- connections
@@ -660,6 +665,8 @@ export function v1Routes(core: Core, config: Pick<Config, 'limits'>): RouteRegis
       core.executions.events.on('change', onExecution);
       core.exports.events.on('change', onExport);
       core.disclosure.events.on('change', onApproval);
+      const end = () => res.end();
+      options.closing?.once('close', end);
       const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
       // The stream ends when the access token expires; the client reconnects with a fresh token.
       const expiry = actor.expiresAt
@@ -671,6 +678,7 @@ export function v1Routes(core: Core, config: Pick<Config, 'limits'>): RouteRegis
         core.executions.events.off('change', onExecution);
         core.exports.events.off('change', onExport);
         core.disclosure.events.off('change', onApproval);
+        options.closing?.off('close', end);
       };
       request.raw.on('close', close);
       res.on('close', close);
