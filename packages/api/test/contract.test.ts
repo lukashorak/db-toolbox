@@ -412,6 +412,8 @@ describe('API contract', () => {
 
   it('settings and audit', async () => {
     assert.equal((await call('GET', '/settings/execution', 'monitor')).status, 200);
+    const storage = await call('GET', '/settings/storage', 'reader');
+    assert.deepEqual([storage.status, storage.body.totalLimitBytes], [200, config.limits.maxTotalBytes]);
     assert.equal(
       (await call('PATCH', '/settings/execution', 'reader', { ordinaryTimeoutMs: 20000 })).status,
       403,
@@ -436,7 +438,7 @@ describe('API contract', () => {
       (n: number, p) => n + Object.keys(p).length,
       0,
     );
-    assert.equal(operations, v1Routes(core).routes.length);
+    assert.equal(operations, v1Routes(core, config).routes.length);
     const submit = doc.paths['/api/v1/executions'].post;
     assert.ok(submit.requestBody.content['application/json'].schema.properties.sql);
     assert.ok(doc.components.schemas.Error.properties.error.enum.includes('read_only_policy'));

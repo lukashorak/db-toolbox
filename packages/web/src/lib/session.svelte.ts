@@ -34,10 +34,13 @@ export const jobs = $state<{
   items: Job[];
   live: 'connecting' | 'live' | 'offline';
   pendingApprovals: number;
+  /** Bumped on every approval change, so open screens can reload. */
+  approvalChanges: number;
 }>({
   items: [],
   live: 'connecting',
   pendingApprovals: 0,
+  approvalChanges: 0,
 });
 
 export const runningJobs = () => jobs.items.filter((j) => ACTIVE.has(j.status)).length;
@@ -75,6 +78,14 @@ export function followJobs(): () => void {
     // After every (re)connect, fetch the current state by ID: nothing is lost while offline.
     onConnected: () => void resync().catch(() => undefined),
     onEvent: (event) => {
+      if (event.type === 'approval') {
+        jobs.approvalChanges++;
+        if (can('disclosure.decide'))
+          void api<unknown[]>('GET', '/approvals?status=pending')
+            .then((list) => (jobs.pendingApprovals = list.length))
+            .catch(() => undefined);
+        return;
+      }
       if (event.type !== 'execution') return;
       const job = jobs.items.find((j) => j.id === event.data.id);
       if (job) {

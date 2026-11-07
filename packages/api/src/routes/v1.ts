@@ -1,6 +1,14 @@
 import { createReadStream } from 'node:fs';
 import { z } from 'zod';
-import { AppError, can, schemas, type Actor, type Core, type ExecutionView } from '@workbench/core';
+import {
+  AppError,
+  can,
+  schemas,
+  type Actor,
+  type Config,
+  type Core,
+  type ExecutionView,
+} from '@workbench/core';
 import { RouteRegistry } from './registry.js';
 
 const page = z.object({
@@ -30,7 +38,7 @@ function submitted(view: ExecutionView): ExecutionView {
 }
 
 /** All /api/v1 resources. Every handler delegates to a core service with the request's actor. */
-export function v1Routes(core: Core): RouteRegistry {
+export function v1Routes(core: Core, config: Pick<Config, 'limits'>): RouteRegistry {
   const r = new RouteRegistry();
 
   // ---------------------------------------------------------------- connections
@@ -546,6 +554,18 @@ export function v1Routes(core: Core): RouteRegistry {
   // ---------------------------------------------------------------- settings and audit
   r.add({
     method: 'GET',
+    url: '/settings/storage',
+    tag: 'Settings',
+    access: 'any role',
+    summary: 'Captured-result storage: used bytes against the deployment quota',
+    handler: () => ({
+      usedBytes: core.executions.storedBytes,
+      totalLimitBytes: config.limits.maxTotalBytes,
+      executionLimitBytes: config.limits.maxResultBytes,
+    }),
+  });
+  r.add({
+    method: 'GET',
     url: '/settings/execution',
     tag: 'Settings',
     access: 'any role',
@@ -586,7 +606,7 @@ export function v1Routes(core: Core): RouteRegistry {
     tag: 'Live status',
     access: 'any role',
     summary:
-      'Server-sent events for execution and export status changes visible to you. After a reconnect, fetch the executions you follow by ID.',
+      'Server-sent events for execution, export and MCP approval changes visible to you. After a reconnect, fetch the executions you follow by ID.',
     produces: 'text/event-stream',
     handler: ({ actor, request, reply }) => {
       const sees = (owner: unknown) =>
@@ -624,8 +644,22 @@ export function v1Routes(core: Core): RouteRegistry {
           // As above.
         }
       };
+      const onApproval = (e: { id: string }) => {
+        try {
+          const row = core.db.get(
+            `SELECT a.status, a.execution_id, e.owner FROM disclosure_approvals a
+               JOIN executions e ON e.id = a.execution_id WHERE a.id = :id`,
+            { id: e.id },
+          );
+          if (row && actor.source !== 'mcp' && sees(row.owner))
+            send('approval', { id: e.id, executionId: row.execution_id, status: row.status });
+        } catch {
+          // As above.
+        }
+      };
       core.executions.events.on('change', onExecution);
       core.exports.events.on('change', onExport);
+      core.disclosure.events.on('change', onApproval);
       const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
       // The stream ends when the access token expires; the client reconnects with a fresh token.
       const expiry = actor.expiresAt
@@ -636,6 +670,7 @@ export function v1Routes(core: Core): RouteRegistry {
         if (expiry) clearTimeout(expiry);
         core.executions.events.off('change', onExecution);
         core.exports.events.off('change', onExport);
+        core.disclosure.events.off('change', onApproval);
       };
       request.raw.on('close', close);
       res.on('close', close);

@@ -3,7 +3,8 @@ import { accessToken } from './auth';
 export type LiveEvent =
   | { type: 'ready'; data: { tokenExpiresAt: string | null } }
   | { type: 'execution'; data: { id: string; status: string; transactionOutcome: string } }
-  | { type: 'export'; data: { id: string; executionId: string; status: string } };
+  | { type: 'export'; data: { id: string; executionId: string; status: string } }
+  | { type: 'approval'; data: { id: string; executionId: string; status: string } };
 
 /**
  * Server-sent events over fetch (EventSource cannot send the bearer token). Reconnects after a

@@ -79,7 +79,23 @@ A Svelte 5 single-page app (`packages/web`) served by the API process. It talks 
     - retain (`POST /executions/{id}/retain`), delete stored results, cancel, and open in the Workbench.
 - Runs of a tab are kept by ID with the tab. After a reload they are fetched again, and the Executions screen finds them from any browser (AC7).
 
-Screens still to come: monitoring, MCP access and settings (step 12).
+## Monitoring, MCP access, Settings and audit (step 12)
+
+- **Monitoring** (`/monitoring`, needs `monitor:read`).
+  - A connection picker; tabs for Overview, Activity, Blocking and Slow statements.
+  - Each sample shows when it was taken and with which account. Pause, resume and Refresh; the refresh interval comes from the execution defaults (15 seconds unless an administrator changes it).
+  - When a refresh fails, the last sample stays with a warning. Each part (sessions, lock waits, counters, statements) shows `available`, `limited` or `unavailable` with the server's reason, for example "pg_stat_statements is not installed".
+  - Sessions started by this tool link to their execution. Counter rates handle a statistics reset.
+- **MCP access** (`/mcp-access`; `/mcp` is the MCP endpoint itself).
+  - The endpoint, the OAuth client and a Claude Code setup command: `claude mcp add --transport http --client-id workbench-mcp --callback-port 8765 workbench <url>`.
+  - Profiles with their effective access per connection (`GET /profiles/{id}/access`). Administrators add and edit them: name, OAuth client, connections, read-only, enabled and limits.
+  - The approval inbox: pending requests with Review (rows and expiry), Approve and Deny; active approvals with the rows used and Revoke. New requests and usage arrive live, and the sidebar shows the number pending.
+  - The latest MCP executions.
+- **Settings** (`/settings`).
+  - Identity, roles and permissions, and sign out.
+  - Execution defaults, editable by administrators and read-only for everyone else.
+  - Captured-result storage against the quota (`GET /settings/storage`), with a warning above 80 %, and the list of retained results.
+  - For administrators, audit events filtered by action prefix and source. Sensitive details are redacted before they are stored.
 
 ## Tests
 
@@ -98,3 +114,7 @@ KEYCLOAK_TEST_URL=http://127.0.0.1:18080 npm run test:e2e   # Playwright smoke
   - preview, then full result, then CSV and JSON exports, with the 5,000 rows counted in the downloaded files (AC3);
   - partial commit per statement versus rollback in a single transaction (AC6);
   - a running execution recovered after a reload and in a new browser (AC7).
+- The administration flows (`test/e2e/admin.test.ts`) cover:
+  - adding a profile in the GUI, then an MCP SDK client (Keycloak token for `workbench-mcp`) that reads its 1,000-row allowance and gets `approval_required`; the request appears live, is approved in the inbox, used for the remaining 200 rows, revoked, and the next read is refused again (AC5);
+  - execution defaults saved by an administrator, storage use, and the audit trail filtered to disclosure events;
+  - a lock wait between two outside PostgreSQL sessions shown in Blocking with both queries, and Slow statements explained as unavailable because `pg_stat_statements` is not installed (AC12).

@@ -51,7 +51,7 @@ export async function buildServer(config: Config, options: ServerOptions) {
   });
 
   await app.register(publicRoutes(config, core, options.version ?? '0.0.0'), { prefix: API_PREFIX });
-  await app.register(protectedRoutes(authenticator, core), { prefix: API_PREFIX });
+  await app.register(protectedRoutes(authenticator, core, config), { prefix: API_PREFIX });
   await app.register(mcpRoutes({ config, core, authenticator, version: options.version ?? '0.0.0' }));
 
   const webDist = options.webDist === undefined ? WEB_DIST : options.webDist;

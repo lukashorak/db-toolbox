@@ -49,12 +49,13 @@ Clients branch on `error`; `message` is for people and may change. The full list
 
 ## Server-sent events
 
-`GET /api/v1/events` streams status changes of executions and exports the caller may see.
+`GET /api/v1/events` streams status changes of executions, exports and MCP approvals the caller may see.
 
 - Event types:
   - `ready`;
   - `execution` — `{ id, status, transactionOutcome }`;
-  - `export` — `{ id, executionId, status }`.
+  - `export` — `{ id, executionId, status }`;
+  - `approval` — `{ id, executionId, status }`, when an MCP client requests more rows, a person decides, or approved rows are delivered. Not sent to MCP clients.
 - The server sends `retry: 3000` and a keep-alive comment every 15 seconds.
 - The stream closes when the access token expires. The client reconnects with a fresh token.
 - After a reconnect, the client fetches the executions it follows by ID (`GET /executions/{id}`). Their state is stored on the server, so nothing is lost while the stream was down (AC7).

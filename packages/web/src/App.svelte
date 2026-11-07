@@ -7,9 +7,12 @@
   import Connections from './pages/Connections.svelte';
   import Executions from './pages/Executions.svelte';
   import Explorer from './pages/Explorer.svelte';
+  import McpAccess from './pages/McpAccess.svelte';
+  import Monitoring from './pages/Monitoring.svelte';
   import Gate from './pages/Gate.svelte';
   import Placeholder from './pages/Placeholder.svelte';
   import SavedQueries from './pages/SavedQueries.svelte';
+  import Settings from './pages/Settings.svelte';
   import Workbench from './pages/Workbench.svelte';
   import Shell from './shell/Shell.svelte';
 
@@ -19,7 +22,7 @@
     '/queries': 'Saved queries',
     '/executions': 'Executions',
     '/monitoring': 'Monitoring',
-    '/mcp': 'MCP access',
+    '/mcp-access': 'MCP access',
     '/connections': 'Connections',
     '/settings': 'Settings',
   };
@@ -84,6 +87,12 @@
       <Explorer />
     {:else if section === '/queries'}
       <SavedQueries />
+    {:else if section === '/monitoring'}
+      <Monitoring />
+    {:else if section === '/mcp-access'}
+      <McpAccess />
+    {:else if section === '/settings'}
+      <Settings />
     {:else}
       <Placeholder name={TITLES[section] ?? 'This screen'} />
     {/if}

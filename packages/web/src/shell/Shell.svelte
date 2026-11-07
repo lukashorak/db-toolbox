@@ -17,7 +17,12 @@
       { path: '/queries', label: 'Saved queries', show: can('queries.manage') },
       { path: '/executions', label: 'Executions', show: can('sql.read'), badge: runningJobs() },
       { path: '/monitoring', label: 'Monitoring', show: can('monitor.view') },
-      { path: '/mcp', label: 'MCP access', show: can('connections.view'), badge: jobs.pendingApprovals },
+      {
+        path: '/mcp-access',
+        label: 'MCP access',
+        show: can('connections.view'),
+        badge: jobs.pendingApprovals,
+      },
       { path: '/connections', label: 'Connections', show: can('connections.view') },
       { path: '/settings', label: 'Settings', show: true },
     ].filter((n) => n.show),

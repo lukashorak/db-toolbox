@@ -2,12 +2,48 @@
 
 Tracks progress against the [implementation plan](implementation-plan.md). Each step updates this file.
 
-| Step | Title                                       | Status                                                    |
-| ---- | ------------------------------------------- | --------------------------------------------------------- |
-| 0    | Foundation and decision records             | Done (in review)                                          |
-| 1    | Domain model, persistence, policy and audit | Done (in review)                                          |
-| 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
-| 3–14 | See the plan                                | Not started                                               |
+| Step | Title                                                | Status                                                    |
+| ---- | ---------------------------------------------------- | --------------------------------------------------------- |
+| 0    | Foundation and decision records                      | Done (in review)                                          |
+| 1    | Domain model, persistence, policy and audit          | Done (in review)                                          |
+| 2    | Identity with Keycloak                               | Done (in review); manual Claude Code check pending inputs |
+| 3    | Database adapters, SQL analysis and read-only checks | Done (in review); real target versions pending inputs     |
+| 4    | Execution engine, queue and result capture           | Done (in review)                                          |
+| 5    | Exports and retention                                | Done (in review)                                          |
+| 6    | HTTP API                                             | Done (in review)                                          |
+| 7    | MCP server and disclosure control (M1)               | Done (in review)                                          |
+| 8    | Monitoring backend                                   | Done (in review); real monitoring accounts pending inputs |
+| 9    | GUI foundation                                       | Done (in review)                                          |
+| 10   | GUI: Connections, Explorer, Saved queries            | Done (in review)                                          |
+| 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
+| 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
+| 13   | Packaging and operations                             | Waiting for inputs (Dockge host, reverse proxy, URLs)     |
+| 14   | Acceptance and hardening (M3)                        | Not started                                               |
+
+## Step 12 — GUI: Monitoring, MCP access, Settings and audit
+
+Reference: [gui.md](gui.md#monitoring-mcp-access-settings-and-audit-step-12).
+
+### What works
+
+- Monitoring: connection picker, Overview, Activity, Blocking and Slow statements; sample time and account; pause, resume and refresh; stale and unavailable states with reasons; links from sessions to this tool's executions.
+- MCP access (`/mcp-access`):
+  - endpoint and Claude Code setup command;
+  - profiles with effective access, created and edited by administrators;
+  - approval inbox with review, approve, deny and revoke, updated live;
+  - recent MCP executions.
+- Settings: identity and roles, sign out, execution defaults (read-only for non-administrators), storage against the quota with a warning, retained results, and filtered audit events.
+- Server additions:
+  - `GET /settings/storage`;
+  - an `approval` server-sent event when a request is made, decided or used;
+  - a default approval caps bytes at the whole result set, so the rows a person approves are all delivered even when they are wider than average.
+- Fixed: the screen first lived at `/mcp`, which is the MCP endpoint, so a reload or a deep link would not reach the GUI.
+
+### How it was verified
+
+- `npm run check` passes: 162 server and contract tests (1 more skipped as root) and 10 component tests. A new unit test covers the byte cap and the approval events.
+- `npm run test:integration` passes: 108 tests.
+- `npm run test:e2e` passes: 11 flows. The new ones are AC5 (an MCP SDK client with a Keycloak token; the approval is granted, used and revoked in the GUI), settings and audit, and AC12 (an outside lock wait in Blocking; unavailable statement statistics explained).
 
 ## Step 11 — GUI: Workbench, results and Executions (milestone M2)
 

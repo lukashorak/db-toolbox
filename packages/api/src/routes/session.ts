@@ -22,7 +22,7 @@ export function clientConfig(config: Config) {
 }
 
 export function publicRoutes(config: Config, core: Core, version: string) {
-  const document = openApiDocument(v1Routes(core), config, version);
+  const document = openApiDocument(v1Routes(core, config), config, version);
   return async (app: FastifyInstance) => {
     app.get('/client-config', async (_request, reply) => {
       reply.header('cache-control', 'no-cache');
@@ -33,12 +33,12 @@ export function publicRoutes(config: Config, core: Core, version: string) {
 }
 
 /** Routes that require a GUI access token. The hook runs before body parsing. */
-export function protectedRoutes(authenticator: Authenticator, core: Core) {
+export function protectedRoutes(authenticator: Authenticator, core: Core, config: Config) {
   return async (app: FastifyInstance) => {
     app.addHook('onRequest', async (request) => {
       request.actor = await authenticator.authenticate(request.headers.authorization, 'gui');
     });
-    v1Routes(core).register(app);
+    v1Routes(core, config).register(app);
 
     app.get('/session', async (request) => {
       const actor = actorOf(request);

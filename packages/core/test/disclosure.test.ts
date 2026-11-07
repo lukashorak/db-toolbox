@@ -93,6 +93,24 @@ describe('MCP disclosure', () => {
     core.close();
   });
 
+  it('a default approval covers the requested rows even when they are wider than average', async () => {
+    const { core, id, mcp } = await setup();
+    const changes: string[] = [];
+    core.disclosure.events.on('change', (e: { id: string }) => changes.push(e.id));
+    core.disclosure.page(mcp, id, 0, { limit: 20 });
+    const approvalId = String(core.disclosure.page(mcp, id, 0, { offset: 20, limit: 30 }).approval?.id);
+    // Rows 21-50 have two digits; the request estimates its bytes from the average row of the set.
+    const approved = core.disclosure.approve(writer, approvalId);
+    assert.deepEqual(
+      [approved.requested.rows, approved.granted?.rows, approved.granted?.bytes],
+      [30, 30, 300],
+    );
+    const page = core.disclosure.page(mcp, id, 0, { offset: 20, limit: 30 });
+    assert.deepEqual([page.rows.length, page.rows.at(-1)?.[0], page.truncated], [30, '50', false]);
+    assert.deepEqual(changes, [approvalId, approvalId, approvalId], 'requested, approved, used');
+    core.close();
+  });
+
   it('deny and revoke stop further pages; disabled profiles get nothing', async () => {
     const { core, id, mcp, profile } = await setup();
     const pending = String(core.disclosure.page(mcp, id, 0, { offset: 0, limit: 30 }).approval?.id);

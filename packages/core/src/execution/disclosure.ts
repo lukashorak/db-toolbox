@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { z } from 'zod';
 import type { Cell, ColumnInfo } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
@@ -12,7 +13,7 @@ import { readRows } from './capture.js';
 
 const decideSchema = z
   .object({
-    /** Rows and bytes granted; default what was requested. */
+    /** Rows granted (default what was requested) and a byte cap (default the whole result set). */
     rows: z.number().int().positive().optional(),
     bytes: z.number().int().positive().optional(),
     /** Minutes until the approval expires; default 60, bounded by the result's retention. */
@@ -72,6 +73,9 @@ const rowBytes = (row: Cell[]) => Buffer.byteLength(JSON.stringify(row)) + 1;
  * an approval that an authenticated human gave in the GUI for that one result set and profile.
  */
 export class DisclosureService {
+  /** `change` with `{ id }` whenever an approval is requested, granted, denied or revoked. */
+  readonly events = new EventEmitter();
+
   constructor(
     private readonly ctx: ServiceContext,
     private readonly profiles: ProfileService,
@@ -184,6 +188,8 @@ export class DisclosureService {
         });
       }
     });
+    // The owner's approval list shows how much of the approval is used.
+    if (fromApproval.rows && approval) this.events.emit('change', { id: String(approval.id) });
 
     let pending: DisclosedPage['approval'] = null;
     if (truncated) pending = this.#request(actor, execution, resultIndex, set, profile, offset + rows.length);
@@ -250,6 +256,7 @@ export class DisclosureService {
         details: { executionId: String(execution.id), resultIndex, rows, bytes },
       });
     });
+    this.events.emit('change', { id });
     return { id, status: 'pending', message };
   }
 
@@ -277,12 +284,16 @@ export class DisclosureService {
     const v = parseInput(decideSchema, input);
     const row = this.#decidable(actor, id, 'approve');
     const set = this.ctx.db.get(
-      'SELECT expires_at FROM result_sets WHERE execution_id = :id AND result_index = :index',
+      'SELECT expires_at, byte_count FROM result_sets WHERE execution_id = :id AND result_index = :index',
       {
         id: String(row.execution_id),
         index: Number(row.result_index),
       },
     );
+    // The person decides in rows. The requested bytes are an estimate from the average row size, so
+    // by default the byte cap is the whole result set: an approval never reaches beyond it anyway.
+    const bytes = v.bytes ?? Math.max(Number(row.requested_bytes), Number(set?.byte_count ?? 0));
+    const rows = v.rows ?? Number(row.requested_rows);
     const now = this.ctx.clock.now();
     const wanted = now.getTime() + (v.minutes ?? 60) * 60_000;
     const retention = set?.expires_at ? Date.parse(String(set.expires_at)) : wanted;
@@ -303,8 +314,8 @@ export class DisclosureService {
            decided_at = :now, expires_at = :expires, note = :note WHERE id = :id`,
         {
           id,
-          rows: v.rows ?? Number(row.requested_rows),
-          bytes: v.bytes ?? Number(row.requested_bytes),
+          rows,
+          bytes,
           by: actor.subject,
           now: now.toISOString(),
           expires,
@@ -317,12 +328,13 @@ export class DisclosureService {
         target: { type: 'approval', id },
         outcome: 'succeeded',
         details: {
-          rows: v.rows ?? Number(row.requested_rows),
-          bytes: v.bytes ?? Number(row.requested_bytes),
+          rows,
+          bytes,
           expiresAt: expires,
         },
       });
     });
+    this.events.emit('change', { id });
     return this.view(id);
   }
 
@@ -484,6 +496,7 @@ export class DisclosureService {
         outcome: 'succeeded',
       });
     });
+    this.events.emit('change', { id });
   }
 
   #expire(): void {

@@ -40,7 +40,7 @@ Each MCP profile has an allowance per execution: `previewRows` (default 1,000) a
 - When a page would go beyond the allowance, the response returns what fits and opens one pending request per result set and profile. A call that can return nothing fails with `approval_required` and the request ID.
 - Only the person who owns the execution can approve, signed in to the GUI (`POST /api/v1/approvals/{id}/approve`). The approval is scoped:
   - to one result set and one profile ([decision 0008](decisions/0008-disclosure-approval-scope.md));
-  - to an amount of rows and bytes;
+  - to an amount of rows (by default what was requested) and a byte cap (by default the whole result set, because the requested bytes are only an estimate from the average row);
   - to an expiry: 60 minutes by default, never past the result's retention.
 - MCP tokens never carry the disclosure permission. Arguments such as `approved: true` are ignored.
 - Denying, revoking or expiring an approval stops further pages beyond the allowance. Deleting the result revokes it, too.
