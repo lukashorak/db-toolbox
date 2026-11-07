@@ -18,7 +18,7 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
 | 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
 | 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
-| 14   | Acceptance and hardening (M3)                        | In progress: security review done                         |
+| 14   | Acceptance and hardening (M3)                        | In progress: security review and traceability done        |
 
 ## Step 14 — Acceptance and hardening (milestone M3, in progress)
 
@@ -35,9 +35,19 @@ Reference: [security.md](security.md), with the threat model, mitigations, where
 - Dependency audit: no vulnerabilities in runtime dependencies. Two advisories in development tools only are accepted and listed.
 - Verified: `npm run check` (172 server and contract tests, 1 more skipped as root, and 10 component tests), `npm run test:integration` (110), `npm run test:e2e` (12 flows, all under the CSP and the default limits).
 
+### Acceptance traceability
+
+Reference: [acceptance.md](acceptance.md), with every clause of AC1–AC14 and the CI tests that prove it.
+
+- New tests for the clauses that had none:
+  - AC8: a connection killed from outside during a statement, on both engines. The execution fails with an honest outcome (`partial_commit` per statement, `rolled_back` in a single transaction), and the next execution gets a fresh session;
+  - AC10: a total quota shared by retained results; retention cleanup frees it and keeps the history;
+  - AC2 and AC13: saved queries through MCP get the same read-only checks, and connections outside the profile are refused.
+- Found and fixed with the AC8 test: on MySQL, a dropped connection left the execution `running` forever, and shutdown then waited for it. mysql2 reports the loss only on the connection, not on a streaming query; the adapter now fails the statement at once.
+- `npm run test:integration` passes: 115 tests.
+
 Still to do in this step:
 
-- the acceptance criteria mapped one-to-one to tests;
 - an accessibility review;
 - load sanity checks;
 - the remaining guides.

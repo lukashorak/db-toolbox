@@ -256,6 +256,7 @@ class MysqlSession implements DbSession {
     if (options.signal?.aborted) interrupt('cancelled');
 
     let warnings = 0;
+    let lost: ((error?: unknown) => void) | null = null;
     try {
       await new Promise<void>((resolve, reject) => {
         let columns: ColumnInfo[] = [];
@@ -335,6 +336,20 @@ class MysqlSession implements DbSession {
           flush();
           void pending.then(() => (failed ? reject(failed) : resolve()));
         });
+        // A dropped connection (KILL, a restart, the network) reaches mysql2's connection, not a
+        // streaming query: without this, the statement would wait forever.
+        lost = (error?: unknown) =>
+          void pending.finally(() =>
+            reject(
+              error ??
+                Object.assign(new Error('Connection lost: the server closed the connection.'), {
+                  code: 'PROTOCOL_CONNECTION_LOST',
+                  fatal: true,
+                }),
+            ),
+          );
+        this.connection.once('error', lost);
+        this.connection.once('end', lost);
       });
     } catch (error) {
       const mapped = mapMysqlError(error);
@@ -355,6 +370,10 @@ class MysqlSession implements DbSession {
         throw mapped;
       }
     } finally {
+      if (lost) {
+        this.connection.off('error', lost);
+        this.connection.off('end', lost);
+      }
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
       if (killed) await this.#absorbKill(killed);

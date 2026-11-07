@@ -381,6 +381,64 @@ describe('MCP with PostgreSQL', { skip: skipUnless('POSTGRES_TEST_URL') }, () =>
     assert.equal(cancelled.data.status, 'cancelled');
   });
 
+  it('saved queries get the same checks: no write through a read-only profile, no connection outside it (AC2, AC13)', async () => {
+    const { call } = await connect('workbench-mcp');
+    const options = { transactionMode: 'per_statement', captureMode: 'preview' };
+    const write = core.library.createQuery(alice, {
+      name: 'Write in disguise',
+      sql: "INSERT INTO wb_items (name) VALUES ('via saved query')",
+      defaultConnectionId: ids.rw as string,
+    });
+    const refused = await call('run_saved_query', {
+      queryId: write.id,
+      requestKey: 'saved-write-01',
+      ...options,
+    });
+    assert.deepEqual([refused.error, refused.data.code], [true, 'read_only_policy']);
+
+    const t = targetFrom(url, 'postgresql');
+    const outside = core.connections.create(alice, {
+      name: 'Not in any profile',
+      engine: 'postgresql',
+      environment: 'development',
+      host: t.host,
+      port: t.port,
+      database: t.database,
+      schema: 'public',
+      username: t.username,
+      password: t.password,
+      tlsMode: 'verify-full',
+      caPem: t.caPem,
+      readOnly: false,
+    }).id;
+    const elsewhere = core.library.createQuery(alice, {
+      name: 'Elsewhere',
+      sql: 'SELECT 1',
+      defaultConnectionId: outside,
+    });
+    for (const [args, key] of [
+      [{ queryId: elsewhere.id }, 'saved-outside-1'],
+      [{ queryId: write.id, connectionId: outside }, 'saved-outside-2'],
+    ] as const) {
+      const denied = await call('run_saved_query', { ...args, requestKey: key, ...options });
+      assert.deepEqual([denied.error, denied.data.code], [true, 'forbidden'], key);
+    }
+    const direct = await call('execute_sql', {
+      connectionId: outside,
+      sql: 'SELECT 1',
+      requestKey: 'direct-out-01',
+      ...options,
+    });
+    assert.deepEqual([direct.error, direct.data.code], [true, 'forbidden']);
+
+    const check = await core.executions.submit(alice, {
+      connectionId: ids.rw as string,
+      sql: "SELECT count(*) FROM wb_items WHERE name = 'via saved query'",
+    });
+    await core.executions.idle();
+    assert.equal(core.executions.rows(alice, check.id, 0).rows[0]?.[0], '0', 'nothing was written');
+  });
+
   it('rejects bad tokens and disabled profiles (AC13)', async () => {
     const post = async (token: string) =>
       fetch(`${base}/mcp`, {

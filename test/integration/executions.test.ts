@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import mysql from 'mysql2/promise';
+import pg from 'pg';
 import {
   createCore,
   loadConfig,
@@ -336,6 +338,79 @@ for (const { engine, variable, prepare } of engines) {
       assert.equal((await run('SELECT 1')).status, 'succeeded');
     });
 
+    /** Ends the database session that runs an execution, from a client outside the workbench. */
+    async function killSession(executionId: string) {
+      const t = targetFrom(url, engine);
+      const options = {
+        host: t.host,
+        port: t.port,
+        user: t.username,
+        password: t.password,
+        database: t.database,
+      };
+      if (engine === 'postgresql') {
+        const client = new pg.Client({ ...options, ssl: { rejectUnauthorized: false } });
+        await client.connect();
+        try {
+          const killed = await client.query(
+            'SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE application_name = $1',
+            [`database-workbench ${executionId}`],
+          );
+          assert.equal(killed.rowCount, 1);
+        } finally {
+          await client.end();
+        }
+      } else {
+        const client = await mysql.createConnection({ ...options, ssl: { rejectUnauthorized: false } });
+        try {
+          const [rows] = await client.query(
+            'SELECT id FROM information_schema.processlist WHERE info LIKE ? AND id <> CONNECTION_ID()',
+            [`%database-workbench ${executionId}%`],
+          );
+          const ids = (rows as { id: number }[]).map((r) => r.id);
+          assert.equal(ids.length, 1);
+          await client.query(`KILL ${Number(ids[0])}`);
+        } finally {
+          await client.end();
+        }
+      }
+    }
+
+    it('a lost connection fails the execution with an honest outcome; the next one gets a fresh session (AC8)', async () => {
+      const view = await submit(`INSERT INTO wb_items (name) VALUES ('run-lost'); ${sleep(10)}`, {
+        transactionMode: 'per_statement',
+      });
+      await until(() => core.executions.view(view.id).statements[1]?.status === 'running');
+      await new Promise((r) => setTimeout(r, 200));
+      const started = Date.now();
+      await killSession(view.id);
+      const done = await settle(core, view.id);
+      assert.ok(Date.now() - started < 5000, 'noticed at once, not at the end of the sleep');
+      assert.deepEqual([done.status, done.transactionOutcome], ['failed', 'partial_commit']);
+      assert.deepEqual(
+        done.statements.map((s) => [s.status, s.transactionOutcome]),
+        [
+          ['succeeded', 'committed'],
+          ['failed', 'none'],
+        ],
+      );
+      assert.equal((done.error?.detail as { category?: string } | undefined)?.category, 'connectivity');
+      assert.equal(await count("name = 'run-lost'"), 1, 'the committed statement stays');
+      const after = await run('SELECT 1');
+      assert.equal(after.status, 'succeeded', 'the pool hands out a working session');
+
+      // In a single transaction the server discards the open transaction with the session.
+      const atomic = await submit(`INSERT INTO wb_items (name) VALUES ('run-lost-atomic'); ${sleep(10)}`, {
+        transactionMode: 'atomic',
+      });
+      await until(() => core.executions.view(atomic.id).statements[1]?.status === 'running');
+      await new Promise((r) => setTimeout(r, 200));
+      await killSession(atomic.id);
+      const rolledBack = await settle(core, atomic.id);
+      assert.deepEqual([rolledBack.status, rolledBack.transactionOutcome], ['failed', 'rolled_back']);
+      assert.equal(await count("name = 'run-lost-atomic'"), 0);
+    });
+
     it('cancels a queued execution before it starts', async () => {
       await core.executions.idle();
       const a = await submit(sleep(1));
@@ -397,6 +472,64 @@ for (const { engine, variable, prepare } of engines) {
         const [set] = view.resultSets;
         assert.equal(set?.completeness, 'quota_limited');
         assert.ok(set && set.rowCount > 0 && set.rowCount < 1200 && set.byteCount <= 20000);
+      } finally {
+        await small.shutdown();
+      }
+    });
+
+    it('shares a total quota across retained results; retention cleanup frees it and keeps the history (AC10)', async () => {
+      const probe = await run('SELECT n, label FROM wb_rows ORDER BY n', { captureMode: 'full' });
+      const bytes = Number(probe.resultSets[0]?.byteCount);
+      assert.ok(bytes > 10_000);
+      // Room for about one and a half results (the budget keeps 5 % for metadata).
+      const total = Math.ceil((bytes * 1.5) / 0.95);
+      const small = makeCore(join(dir, 'total.sqlite'), {
+        MAX_RESULT_BYTES: String(bytes + 1000),
+        MAX_TOTAL_BYTES: String(total),
+      });
+      try {
+        const t = targetFrom(url, engine);
+        const id = small.connections.create(writer, {
+          name: 'Total quota',
+          engine,
+          environment: 'development',
+          host: t.host,
+          port: t.port,
+          database: t.database,
+          schema: t.schema,
+          username: t.username,
+          password: t.password,
+          tlsMode: 'verify-full',
+          caPem: t.caPem,
+          readOnly: true,
+        }).id;
+        const full = async () =>
+          settle(
+            small,
+            (
+              await small.executions.submit(writer, {
+                connectionId: id,
+                sql: 'SELECT n, label FROM wb_rows ORDER BY n',
+                captureMode: 'full',
+              })
+            ).id,
+          );
+        const first = await full();
+        assert.equal(first.resultSets[0]?.completeness, 'complete');
+        const second = await full();
+        assert.equal(second.status, 'succeeded');
+        assert.equal(second.resultSets[0]?.completeness, 'quota_limited', 'never complete when cut short');
+        assert.ok(Number(second.resultSets[0]?.rowCount) < 1200);
+
+        // A day later the working results expire; their executions stay in history.
+        await small.cleanup(new Date(Date.now() + 25 * 3600_000));
+        const expired = small.executions.view(first.id);
+        assert.deepEqual(
+          [expired.status, expired.resultSets[0]?.completeness, expired.sql],
+          ['succeeded', 'expired', 'SELECT n, label FROM wb_rows ORDER BY n'],
+        );
+        assert.equal(small.executions.storedBytes, 0);
+        assert.equal((await full()).resultSets[0]?.completeness, 'complete', 'the space is free again');
       } finally {
         await small.shutdown();
       }
