@@ -7,5 +7,5 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["packages/core/test", "packages/mcp/test", "packages/api/test", "test"]
+  "include": ["packages/core/test", "packages/mcp/test", "packages/api/test", "test", "scripts"]
 }

@@ -31,11 +31,25 @@ jobs:
       - run: npm run build
 
   integration:
-    # Enabled in step 2 (Keycloak container) and step 3 (PostgreSQL 16 and MySQL 8.4 containers).
-    name: Integration tests (enabled from step 2)
-    if: ${{ false }}
+    name: Integration tests (Keycloak)
     needs: check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WORKBENCH_REQUIRE_INTEGRATION: '1'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Start containers
+        run: scripts/integration/start.sh keycloak >> "$GITHUB_ENV"
       - run: npm run test:integration
+      - name: Container logs on failure
+        if: failure()
+        run: docker ps -a --filter name=workbench-it- --format '{{.Names}}' | xargs -r -n1 docker logs --tail 200
+      - name: Stop containers
+        if: always()
+        run: scripts/integration/stop.sh

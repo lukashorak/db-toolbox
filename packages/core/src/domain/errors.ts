@@ -4,9 +4,19 @@
  */
 export const ERROR_CODES = {
   validation_failed: 400,
+  /** Malformed HTTP request (bad JSON, wrong media type, too large); the HTTP status says which. */
+  bad_request: 400,
   unauthenticated: 401,
+  invalid_token: 401,
+  token_expired: 401,
+  wrong_audience: 401,
+  wrong_client: 401,
+  no_role: 403,
+  profile_unknown: 403,
+  profile_disabled: 403,
   forbidden: 403,
   not_found: 404,
+  method_not_allowed: 405,
   name_conflict: 409,
   client_id_conflict: 409,
   connection_busy: 409,

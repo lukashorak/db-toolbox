@@ -37,3 +37,13 @@ npm run check          # format check, lint, type check, unit tests
 npm run build          # compile server packages and the web app
 npm start              # run the built server
 ```
+
+Integration tests run against disposable containers (Docker required):
+
+```sh
+scripts/integration/start.sh keycloak    # prints the variables to export
+KEYCLOAK_TEST_URL=http://127.0.0.1:18080 npm run test:integration
+scripts/integration/stop.sh
+```
+
+Keycloak setup, the realm generator (`npm run keycloak:realm`) and connecting Claude Code are described in [docs/identity.md](docs/identity.md).

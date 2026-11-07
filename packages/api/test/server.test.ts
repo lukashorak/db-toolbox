@@ -3,8 +3,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { createLogger, loadConfig } from '@workbench/core';
-import { buildServer } from '../src/index.js';
+import {
+  Authenticator,
+  createCore,
+  createLogger,
+  loadConfig,
+  TokenVerifier,
+  type Config,
+} from '@workbench/core';
+import { buildServer as build, type ServerOptions } from '../src/index.js';
 
 const root = await mkdtemp(join(tmpdir(), 'workbench-api-'));
 after(() => rm(root, { recursive: true, force: true }));
@@ -19,6 +26,21 @@ const config = (dirs: { data: string; exports: string }) =>
     EXPORT_DIR: dirs.exports,
   });
 const logger = createLogger({ level: 'silent' });
+
+/** Builds a server with an in-memory core; these tests never present a token. */
+async function buildServer(cfg: Config, options: Pick<ServerOptions, 'webDist'> & { logger: typeof logger }) {
+  const core = createCore({ databaseFile: ':memory:', encryptionKey: cfg.encryptionKey, limits: cfg.limits });
+  const verifier = new TokenVerifier({
+    issuer: cfg.keycloakIssuer,
+    guiClientId: cfg.guiClientId,
+    apiAudience: cfg.apiAudience,
+    mcpAudience: cfg.mcpAudience,
+  });
+  const authenticator = new Authenticator(verifier, { users: core.users, profiles: core.profiles });
+  const app = await build(cfg, { ...options, core, authenticator });
+  app.addHook('onClose', async () => core.close());
+  return app;
+}
 
 describe('health endpoints', () => {
   it('answers liveness without touching storage', async () => {
@@ -70,6 +92,14 @@ describe('web app serving', () => {
     });
     assert.equal(api.statusCode, 404);
     assert.equal(api.json().error, 'not_found');
+    // API paths never fall back to the app, even for a browser.
+    const apiFromBrowser = await app.inject({
+      method: 'GET',
+      url: '/api/v1/unknown',
+      headers: { accept: 'text/html' },
+    });
+    assert.equal(apiFromBrowser.statusCode, 404);
+    assert.equal(apiFromBrowser.json().error, 'not_found');
     await app.close();
   });
 });

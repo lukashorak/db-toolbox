@@ -2,11 +2,64 @@
 
 Tracks progress against the [implementation plan](implementation-plan.md). Each step updates this file.
 
-| Step | Title                                       | Status           |
-| ---- | ------------------------------------------- | ---------------- |
-| 0    | Foundation and decision records             | Done (in review) |
-| 1    | Domain model, persistence, policy and audit | Done (in review) |
-| 2–14 | See the plan                                | Not started      |
+| Step | Title                                       | Status                                                    |
+| ---- | ------------------------------------------- | --------------------------------------------------------- |
+| 0    | Foundation and decision records             | Done (in review)                                          |
+| 1    | Domain model, persistence, policy and audit | Done (in review)                                          |
+| 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
+| 3–14 | See the plan                                | Not started                                               |
+
+## Step 2 — Identity with Keycloak
+
+Details, endpoints and the setup guide: [identity.md](identity.md).
+
+### What works
+
+- `buildRealm` and `npm run keycloak:realm`: a realm import with the four roles and two public PKCE clients, `workbench-gui` (audience `workbench-api`) and `workbench-mcp` (audience `<PUBLIC_URL>/mcp`). No users or secrets.
+- `TokenVerifier`:
+  - signature through the realm JWKS, cached and refreshed on key rotation, with asymmetric algorithms only;
+  - issuer, audience per channel, expiry, authorized party and access-token type;
+  - a stable error code for each failure.
+- `Authenticator`:
+  - turns the bearer token into an actor with its roles, and refuses users without a workbench role;
+  - for MCP, resolves the profile from the token's OAuth client and refuses unknown clients and disabled profiles;
+  - records the user on each request.
+- MCP profiles are shared per OAuth client ([decision 0021](decisions/0021-shared-mcp-profiles.md)). The user's roles still apply.
+- API:
+  - one error model: code, message, details and request ID, with no internal detail on 500;
+  - `WWW-Authenticate` challenges;
+  - `GET /api/v1/client-config` (public) and `GET /api/v1/session`;
+  - JSON 404 for unknown API paths.
+- MCP:
+  - protected resource metadata (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` and at the root form;
+  - a stateless Streamable HTTP endpoint with one tool, `whoami`;
+  - `GET` and `DELETE` answer 405.
+- The server process opens the application database at startup and stops with a clear message when the encryption key does not match.
+- CI runs the integration job against a Keycloak 26.4 container (`scripts/integration/start.sh`). With `WORKBENCH_REQUIRE_INTEGRATION=1` a missing service fails the run instead of skipping.
+
+### How it was verified
+
+- `npm run check` passes: 90 tests, 89 passing and 1 skipped when running as root. New tests:
+  - local-JWKS token tests for each failure: expiry, both audience directions, issuer, unknown key, HS256 and `alg: none`, wrong client, ID token, missing `azp`;
+  - authenticator and realm-template tests;
+  - API and MCP tests through Fastify, including MCP `initialize`, `tools/list` and `tools/call`.
+- `npm run test:integration` against Keycloak 26.4 passes (5 tests):
+  - GUI sign-in through the real login page with the authorization code flow and PKCE;
+  - Keycloak refuses a missing code challenge and a wrong verifier;
+  - refresh, and expiry of a real token;
+  - GUI and MCP tokens are not interchangeable; a user without a role is refused;
+  - the official MCP SDK client discovers Keycloak from the protected resource metadata, signs in with PKCE and the `resource` parameter, then lists and calls `whoami`. This is the flow Claude Code uses.
+- The compiled server (`node packages/api/dist/main.js`) was started and checked with curl: readiness, client config, the `/mcp` challenge and the metadata.
+
+### Pending (needs input)
+
+- The manual check with the real Keycloak and Claude Code ([checklist](identity.md#manual-check-with-the-real-keycloak-and-claude-code)). It needs the Keycloak version, URL and realm, the public URL of the workbench and the Claude Code version.
+
+### Deferred
+
+- The GUI sign-in screens arrive in step 4.
+- Profile management endpoints arrive in step 6.
+- The workbench MCP tools arrive in step 7.
 
 ## Step 1 — Domain model, persistence, policy and audit
 
@@ -73,7 +126,7 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 - `GET /healthz` (liveness) and `GET /readyz` (the application database can take a write lock; the export folder is writable), returning 503 when not ready.
 - The API process serves the built web app with a fallback to `index.html` for browser routes and JSON 404s otherwise.
 - Placeholder web page that shows the readiness checks.
-- GitHub Actions workflow: format, lint, type check, unit tests and build. The integration job is defined but disabled until step 2.
+- GitHub Actions workflow: format, lint, type check, unit tests and build. The integration job was defined here and enabled in step 2.
 - Decision records 0001–0020 in [`decisions/`](decisions/README.md).
 
 ### How it was verified

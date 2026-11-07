@@ -34,3 +34,11 @@ export type {
   UpdateQueryInput,
 } from './services/library.js';
 export type { ExecutionDefaults } from './services/settings.js';
+export { Authenticator } from './identity/authenticator.js';
+export { buildRealm, type RealmOptions } from './identity/realm.js';
+export {
+  TokenVerifier,
+  type Channel,
+  type TokenVerifierOptions,
+  type VerifiedToken,
+} from './identity/tokens.js';

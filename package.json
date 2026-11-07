@@ -22,9 +22,10 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test \"packages/*/test/**/*.test.ts\" \"test/**/*.test.ts\"",
-    "test:integration": "node -e \"console.log('No integration tests yet. They start with step 2 (Keycloak) and step 3 (databases).')\"",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test"
+    "test": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test \"packages/*/test/**/*.test.ts\" \"test/*.test.ts\"",
+    "test:integration": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test --test-concurrency=1 \"test/integration/**/*.test.ts\"",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test",
+    "keycloak:realm": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx scripts/keycloak-realm.ts"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

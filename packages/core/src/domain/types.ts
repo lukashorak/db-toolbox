@@ -78,6 +78,8 @@ export interface Actor {
   clientId: string;
   /** Set for MCP calls: the profile bound to `clientId`. */
   profileId?: string;
+  /** Expiry of the access token that authenticated this request (ISO-8601). */
+  expiresAt?: string;
 }
 
 export interface Clock {
