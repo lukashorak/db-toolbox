@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import Banner from '../components/Banner.svelte';
   import ResultsPanel from '../components/ResultsPanel.svelte';
@@ -30,6 +30,7 @@
   } | null>(null);
   let rejected = $state<{ problems: Problem[]; base: number; statements: CheckedStatement[] } | null>(null);
   let views = $state<Record<string, ExecutionView>>({});
+  let tablist = $state<HTMLElement | null>(null);
   let shownRun = $state<string | null>(null);
   let completion = $state<Record<string, string[]>>({});
   let shortcuts = $state(false);
@@ -236,20 +237,54 @@
   }
 </script>
 
-<div class="tabs" role="tablist" aria-label="Query tabs">
-  {#each workbench.tabs as t (t.id)}
-    <div class="tab" class:active={t.id === workbench.active}>
-      <button role="tab" aria-selected={t.id === workbench.active} onclick={() => (workbench.active = t.id)}
-        >{t.title}</button
+<div class="tabs">
+  <!-- Only tabs inside the tab list (ARIA tabs pattern). Close with ✕ or Delete on the focused tab. -->
+  <div class="tablist" role="tablist" aria-label="Query tabs" bind:this={tablist}>
+    {#each workbench.tabs as t (t.id)}
+      <button
+        class="tab"
+        class:active={t.id === workbench.active}
+        role="tab"
+        aria-selected={t.id === workbench.active}
+        tabindex={t.id === workbench.active ? 0 : -1}
+        aria-keyshortcuts={workbench.tabs.length > 1 ? 'Delete' : undefined}
+        title={workbench.tabs.length > 1 ? 'Delete closes this tab' : undefined}
+        onclick={() => (workbench.active = t.id)}
+        onkeydown={(e) => {
+          const i = workbench.tabs.findIndex((x) => x.id === t.id);
+          if (e.key === 'Delete' && workbench.tabs.length > 1) closeTab(t.id);
+          else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            const next =
+              workbench.tabs[
+                (i + (e.key === 'ArrowRight' ? 1 : -1) + workbench.tabs.length) % workbench.tabs.length
+              ];
+            if (next) {
+              workbench.active = next.id;
+              (
+                e.currentTarget.parentElement?.children[workbench.tabs.indexOf(next)] as
+                  HTMLElement | undefined
+              )?.focus();
+            }
+          } else return;
+          e.preventDefault();
+        }}
+        >{t.title}{#if workbench.tabs.length > 1}<span
+            class="x"
+            aria-hidden="true"
+            onclick={(e) => (e.stopPropagation(), closeTab(t.id))}>✕</span
+          >{/if}</button
       >
-      {#if workbench.tabs.length > 1}<button
-          class="x"
-          aria-label="Close {t.title}"
-          onclick={() => closeTab(t.id)}>✕</button
-        >{/if}
-    </div>
-  {/each}
-  <button class="add" aria-label="New tab" onclick={addTab}>＋</button>
+    {/each}
+  </div>
+  <button
+    class="add"
+    aria-label="New tab"
+    onclick={async () => {
+      addTab();
+      await tick();
+      tablist?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+    }}>＋</button
+  >
 </div>
 
 {#if tab}
@@ -403,23 +438,32 @@
 <style>
   .tabs {
     display: flex;
+    align-items: flex-end;
     gap: 2px;
     border-bottom: 1px solid var(--color-border);
     margin-bottom: 10px;
+    overflow-x: auto;
+  }
+  .tablist {
+    display: flex;
+    gap: 2px;
   }
   .tab {
     display: flex;
     align-items: center;
+    gap: 8px;
     border: 1px solid var(--color-border);
     border-bottom: 0;
     border-radius: 6px 6px 0 0;
     background: var(--color-panel-subtle);
+    padding: 6px 10px;
+    cursor: pointer;
+    white-space: nowrap;
   }
   .tab.active {
     background: var(--color-panel);
     box-shadow: inset 0 2px 0 var(--color-accent);
   }
-  .tab button,
   .add {
     border: 0;
     background: none;

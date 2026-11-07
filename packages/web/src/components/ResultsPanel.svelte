@@ -159,7 +159,13 @@
   }
 </script>
 
-<section class="results" aria-label="Results" data-testid="results" data-status={execution.status}>
+<section
+  class="results"
+  aria-label="Results"
+  data-testid="results"
+  data-status={execution.status}
+  data-execution-id={execution.id}
+>
   <header class="summary">
     <StatusPill kind="execution" value={execution.status} />
     <StatusPill kind="transaction" value={execution.transactionOutcome} />

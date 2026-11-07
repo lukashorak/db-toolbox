@@ -45,9 +45,12 @@ export type Page = Locator & {
   waitForEvent(event: 'download'): Promise<{ path(): Promise<string>; suggestedFilename(): string }>;
   keyboard: { press(key: string): Promise<void> };
   on(event: 'request', listener: (request: { url(): string; method(): string }) => void): void;
+  addScriptTag(options: { path: string }): Promise<unknown>;
+  evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
   close(): Promise<void>;
 };
-export type Browser = { newPage(): Promise<Page>; close(): Promise<void> };
+export type Browser = { newPage(options?: { bypassCSP?: boolean }): Promise<Page>; close(): Promise<void> };
 
 export const built = existsSync(`${WEB_DIST}/index.html`);
 

@@ -324,6 +324,14 @@
     border: 1px solid var(--color-border);
     border-radius: 10px;
     padding: 12px;
+    /* Grid items may shrink below their content; wide tables scroll inside the pane. */
+    min-width: 0;
+    overflow-x: auto;
+  }
+  @media (max-width: 760px) {
+    .library {
+      grid-template-columns: 1fr;
+    }
   }
   .actions {
     display: flex;

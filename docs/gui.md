@@ -114,6 +114,13 @@ KEYCLOAK_TEST_URL=http://127.0.0.1:18080 npm run test:e2e   # Playwright smoke
   - preview, then full result, then CSV and JSON exports, with the 5,000 rows counted in the downloaded files (AC3);
   - partial commit per statement versus rollback in a single transaction (AC6);
   - a running execution recovered after a reload and in a new browser (AC7).
+- The accessibility review (`test/e2e/accessibility.test.ts`) covers:
+  - axe-core with the WCAG 2.0 and 2.1 A and AA rules on every main screen with real data, and on the connection and profile forms;
+  - keyboard use of the Workbench tabs: arrow keys switch and Delete closes, following the ARIA tabs pattern;
+  - a 390 px wide screen, where no screen scrolls sideways.
+
+  Automated checks find about a third of accessibility problems. A manual pass with a screen reader is still worth doing before wide use.
+
 - The administration flows (`test/e2e/admin.test.ts`) cover:
   - adding a profile in the GUI, then an MCP SDK client (Keycloak token for `workbench-mcp`) that reads its 1,000-row allowance and gets `approval_required`; the request appears live, is approved in the inbox, used for the remaining 200 rows, revoked, and the next read is refused again (AC5);
   - execution defaults saved by an administrator, storage use, and the audit trail filtered to disclosure events;

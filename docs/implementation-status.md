@@ -18,7 +18,7 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
 | 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
 | 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
-| 14   | Acceptance and hardening (M3)                        | In progress: security review and traceability done        |
+| 14   | Acceptance and hardening (M3)                        | In progress: security, traceability, accessibility done   |
 
 ## Step 14 — Acceptance and hardening (milestone M3, in progress)
 
@@ -46,9 +46,16 @@ Reference: [acceptance.md](acceptance.md), with every clause of AC1–AC14 and t
 - Found and fixed with the AC8 test: on MySQL, a dropped connection left the execution `running` forever, and shutdown then waited for it. mysql2 reports the loss only on the connection, not on a streaming query; the adapter now fails the statement at once.
 - `npm run test:integration` passes: 115 tests.
 
+### Accessibility review
+
+- axe-core (WCAG 2.0 and 2.1, A and AA) on all nine main screens with real data, and on the connection and profile forms. There are no violations left.
+- Found and fixed:
+  - The Workbench tab bar held close and add buttons inside its `tablist`. It now follows the ARIA tabs pattern: only tabs in the list, arrow keys to switch, Delete to close, and focus moves to a new tab.
+  - Saved queries scrolled sideways on a phone. Its two panes now stack below 760 px.
+- `npm run test:e2e` passes: 24 tests.
+
 Still to do in this step:
 
-- an accessibility review;
 - load sanity checks;
 - the remaining guides.
 
