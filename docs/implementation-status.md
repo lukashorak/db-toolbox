@@ -9,6 +9,30 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 10 — GUI: Connections, Explorer, Saved queries
+
+Reference: [gui.md](gui.md#connections-explorer-and-saved-queries-step-10).
+
+### What works
+
+- Connections:
+  - list and detail with policy, connectivity, the last test report and usage;
+  - an add and edit form where a blank password means keep, with TLS and custom CA, an optional monitoring account, and SSH shown as planned;
+  - a test of unsaved settings, separate from saving;
+  - disable, enable and delete with the consequences disclosed.
+- Explorer: a tree with filter and refresh; object details, definitions, Open SELECT and Preview data; loading, stale, missing, unavailable and permission states.
+- Saved queries: nested folders, search, open, create, rename, move, duplicate and delete; name conflicts in the form; folder deletion with its consequences.
+- A shared tab store, so the Explorer and Saved queries open SQL in Workbench tabs.
+
+### How it was verified
+
+- `npm run check` passes (server, contract and component tests).
+- Playwright (`test/e2e/screens.test.ts`) against Keycloak 26.4 and PostgreSQL 16:
+  - the connection lifecycle;
+  - Explorer details, preview, Open SELECT, and insufficient permission for a read-only account;
+  - saved-query folder and query management, including a name conflict.
+- CI runs these in the integration job.
+
 ## Step 9 — GUI foundation
 
 Reference: [gui.md](gui.md).

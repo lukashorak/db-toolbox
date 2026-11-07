@@ -1,50 +1,33 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { session } from '../lib/session.svelte';
-  import { loadTabs, saveTabs, type DraftTab } from '../lib/storage';
+  import { addTab, closeTab, ensureLoaded, persist, workbench } from '../lib/tabs.svelte';
 
-  /** Step 9: tabs and SQL drafts that survive reloads. The editor and runs arrive in step 11. */
-  let tabs = $state<DraftTab[]>([]);
-  let active = $state<string | null>(null);
-  const subject = $derived(session.user?.subject ?? 'anonymous');
-  const current = $derived(tabs.find((t) => t.id === active) ?? null);
-
-  onMount(() => {
-    const saved = loadTabs(subject);
-    tabs = saved.tabs.length
-      ? saved.tabs
-      : [{ id: crypto.randomUUID(), title: 'Query 1', sql: '', connectionId: null }];
-    active = saved.active && tabs.some((t) => t.id === saved.active) ? saved.active : (tabs[0]?.id ?? null);
-  });
-
+  /** Tabs and SQL drafts that survive reloads. The editor and runs arrive in step 11. */
+  const current = $derived(workbench.tabs.find((t) => t.id === workbench.active) ?? null);
+  onMount(ensureLoaded);
   $effect(() => {
-    if (tabs.length) saveTabs(subject, { tabs: $state.snapshot(tabs), active });
+    void JSON.stringify(workbench.tabs);
+    void workbench.active;
+    persist();
   });
-
-  function add() {
-    const tab = { id: crypto.randomUUID(), title: `Query ${tabs.length + 1}`, sql: '', connectionId: null };
-    tabs.push(tab);
-    active = tab.id;
-  }
-  function close(id: string) {
-    const at = tabs.findIndex((t) => t.id === id);
-    tabs.splice(at, 1);
-    if (active === id) active = tabs[Math.max(0, at - 1)]?.id ?? null;
-  }
 </script>
 
 <div class="tabs" role="tablist" aria-label="Query tabs">
-  {#each tabs as tab (tab.id)}
-    <div class="tab" class:active={tab.id === active}>
-      <button role="tab" aria-selected={tab.id === active} onclick={() => (active = tab.id)}
-        >{tab.title}</button
+  {#each workbench.tabs as tab (tab.id)}
+    <div class="tab" class:active={tab.id === workbench.active}>
+      <button
+        role="tab"
+        aria-selected={tab.id === workbench.active}
+        onclick={() => (workbench.active = tab.id)}>{tab.title}</button
       >
-      {#if tabs.length > 1}<button class="x" aria-label="Close {tab.title}" onclick={() => close(tab.id)}
-          >✕</button
+      {#if workbench.tabs.length > 1}<button
+          class="x"
+          aria-label="Close {tab.title}"
+          onclick={() => closeTab(tab.id)}>✕</button
         >{/if}
     </div>
   {/each}
-  <button class="add" aria-label="New tab" onclick={add}>＋</button>
+  <button class="add" aria-label="New tab" onclick={addTab}>＋</button>
 </div>
 {#if current}
   <label class="field editor">

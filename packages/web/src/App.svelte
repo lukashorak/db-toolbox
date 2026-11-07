@@ -4,9 +4,12 @@
   import { completeSignIn, currentUser, initAuth, loadClientConfig, onSessionLost, signIn } from './lib/auth';
   import { navigate, route } from './lib/router.svelte';
   import { followJobs, session, type SessionUser } from './lib/session.svelte';
+  import Connections from './pages/Connections.svelte';
   import Executions from './pages/Executions.svelte';
+  import Explorer from './pages/Explorer.svelte';
   import Gate from './pages/Gate.svelte';
   import Placeholder from './pages/Placeholder.svelte';
+  import SavedQueries from './pages/SavedQueries.svelte';
   import Workbench from './pages/Workbench.svelte';
   import Shell from './shell/Shell.svelte';
 
@@ -75,6 +78,12 @@
       <Workbench />
     {:else if section === '/executions'}
       <Executions />
+    {:else if section === '/connections'}
+      <Connections />
+    {:else if section === '/explorer'}
+      <Explorer />
+    {:else if section === '/queries'}
+      <SavedQueries />
     {:else}
       <Placeholder name={TITLES[section] ?? 'This screen'} />
     {/if}
