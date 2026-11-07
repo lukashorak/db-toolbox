@@ -1,97 +1,98 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { api, ApiError, whenUnauthorized } from './lib/api';
+  import { completeSignIn, currentUser, initAuth, loadClientConfig, onSessionLost, signIn } from './lib/auth';
+  import { navigate, route } from './lib/router.svelte';
+  import { followJobs, session, type SessionUser } from './lib/session.svelte';
+  import Executions from './pages/Executions.svelte';
+  import Gate from './pages/Gate.svelte';
+  import Placeholder from './pages/Placeholder.svelte';
+  import Workbench from './pages/Workbench.svelte';
+  import Shell from './shell/Shell.svelte';
 
-  interface Check {
-    ok: boolean;
-    detail: string;
-  }
-
-  let status = $state<'loading' | 'ready' | 'not_ready' | 'unreachable'>('loading');
-  let checks = $state<Record<string, Check>>({});
-
-  onMount(async () => {
-    try {
-      const response = await fetch('/readyz', { headers: { accept: 'application/json' } });
-      const body = (await response.json()) as {
-        status: 'ready' | 'not_ready';
-        checks: Record<string, Check>;
-      };
-      status = body.status;
-      checks = body.checks;
-    } catch {
-      status = 'unreachable';
-    }
-  });
-
-  const label = $derived(
-    {
-      loading: 'Checking the server…',
-      ready: 'Server ready',
-      not_ready: 'Server not ready',
-      unreachable: 'Server unreachable',
-    }[status],
+  const TITLES: Record<string, string> = {
+    '/workbench': 'Workbench',
+    '/explorer': 'Explorer',
+    '/queries': 'Saved queries',
+    '/executions': 'Executions',
+    '/monitoring': 'Monitoring',
+    '/mcp': 'MCP access',
+    '/connections': 'Connections',
+    '/settings': 'Settings',
+  };
+  const section = $derived(
+    Object.keys(TITLES).find((p) => route.path === p || route.path.startsWith(`${p}/`)) ?? '/workbench',
   );
+
+  onMount(() => {
+    let stop: (() => void) | undefined;
+    const lost = () => {
+      if (session.status === 'signed_in') session.status = 'lost';
+    };
+    whenUnauthorized(lost);
+    const off = onSessionLost(lost);
+    void (async () => {
+      try {
+        session.config = await loadClientConfig();
+        initAuth(session.config);
+        if (route.path === '/auth/callback') {
+          navigate(await completeSignIn(), true);
+        }
+        if (!(await currentUser())) {
+          await signIn();
+          return;
+        }
+        const me = await api<{ user: SessionUser; permissions: string[] }>('GET', '/session');
+        session.user = me.user;
+        session.permissions = me.permissions;
+        session.status = 'signed_in';
+        if (route.path === '/') navigate('/workbench', true);
+        stop = followJobs();
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'no_role') session.status = 'denied';
+        else if (session.status !== 'lost') {
+          session.status = 'failed';
+          session.error = error instanceof Error ? error.message : String(error);
+        }
+      }
+    })();
+    return () => {
+      stop?.();
+      off();
+    };
+  });
 </script>
 
-<main>
-  <h1>Database Workbench</h1>
-  <p class="note">Foundation build (step 0). The workbench screens arrive from step 9.</p>
-  <section aria-live="polite">
-    <h2>{label}</h2>
-    {#if Object.keys(checks).length}
-      <ul>
-        {#each Object.entries(checks) as [name, check] (name)}
-          <li class:ok={check.ok}>
-            <span class="name">{name}</span>
-            <span>{check.ok ? 'OK' : 'Problem'} · {check.detail}</span>
-          </li>
-        {/each}
-      </ul>
+{#if session.status === 'loading'}
+  <p class="loading" role="status">Signing in…</p>
+{:else if session.status === 'denied'}
+  <Gate kind="denied" />
+{:else if session.status === 'failed'}
+  <Gate kind="failed" />
+{:else}
+  <Shell title={TITLES[section] ?? 'Workbench'}>
+    {#if section === '/workbench'}
+      <Workbench />
+    {:else if section === '/executions'}
+      <Executions />
+    {:else}
+      <Placeholder name={TITLES[section] ?? 'This screen'} />
     {/if}
-  </section>
-</main>
+  </Shell>
+  {#if session.status === 'lost'}
+    <div class="overlay"><Gate kind="lost" /></div>
+  {/if}
+{/if}
 
 <style>
-  main {
-    max-width: 640px;
-    margin: 64px auto;
-    padding: 24px 28px;
-    background: var(--color-panel);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-panel);
-  }
-  h1 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 600;
-  }
-  h2 {
-    margin: 20px 0 8px;
-    font-size: 14px;
-    font-weight: 600;
-  }
-  .note {
-    margin: 6px 0 0;
+  .loading {
+    padding: 24px;
     color: var(--color-text-muted);
   }
-  ul {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  li {
-    display: flex;
-    gap: 12px;
-    padding: 6px 0;
-    border-top: 1px solid var(--color-border);
-    color: var(--color-danger);
-  }
-  li.ok {
-    color: var(--color-success);
-  }
-  .name {
-    min-width: 90px;
-    color: var(--color-text);
-    font-weight: 500;
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(20, 25, 37, 0.4);
   }
 </style>

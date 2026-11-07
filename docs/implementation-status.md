@@ -9,6 +9,43 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 9 — GUI foundation
+
+Reference: [gui.md](gui.md).
+
+### What works
+
+- Design tokens from the prototype's visual system, as CSS variables.
+- Shared components:
+  - status pill, policy chip, environment label and connectivity indicator;
+  - key-value list, tree row, and a virtualized data grid;
+  - side, confirm and form panels with focus management;
+  - banners, toasts in a live region, menus and listboxes.
+- The shell:
+  - permission-aware navigation with badges;
+  - a Jobs popover kept live by server-sent events, with a resync by ID after each reconnect;
+  - the account menu;
+  - a demo-only "Demo data" flag.
+- Keycloak sign-in through `oidc-client-ts` with PKCE and silent refresh; a lost-session dialog that keeps drafts; access-denied and sign-in-failure pages.
+- Tabs and SQL drafts per user in browser storage, restored after a reload and guarded when storage is blocked.
+- An accessibility baseline: a skip link, visible focus, keyboard navigation in grid, tree, menu and listbox, and Escape with focus return in panels.
+
+### How it was verified
+
+- `npm run check` passes. It now runs the component tests too: 161 server tests (160 passing, 1 skipped as root) and 10 component tests covering:
+  - status labels with icons, and policy layers;
+  - grid virtualization over 1,000 rows, NULL versus empty, binary, keyboard selection;
+  - side-panel focus and Escape;
+  - the live region;
+  - drafts per user, and blocked storage.
+- Playwright smoke test (`npm run test:e2e`, Chromium) against Keycloak 26.4 and the built app:
+  - sign-in through the Keycloak login page;
+  - navigation;
+  - a draft restored after a reload;
+  - an execution submitted through the API that appears and reaches its final status live;
+  - the access-denied page for a user without a role.
+- CI builds the app and runs the Playwright test in the integration job.
+
 ## Step 8 — Monitoring backend
 
 Reference: [monitoring.md](monitoring.md).

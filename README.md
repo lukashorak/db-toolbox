@@ -33,7 +33,7 @@ npm run dev:web        # web app on http://127.0.0.1:5173, proxied to the API
 ```
 
 ```sh
-npm run check          # format check, lint, type check, unit tests
+npm run check          # format check, lint, type check, unit and component tests
 npm run build          # compile server packages and the web app
 npm start              # run the built server
 ```
@@ -46,6 +46,7 @@ export KEYCLOAK_TEST_URL=http://127.0.0.1:18080 INTEGRATION_CERTS=$PWD/.integrat
 export POSTGRES_TEST_URL=postgres://postgres:workbench-it@localhost:15432/postgres
 export MYSQL_TEST_URL=mysql://root:workbench-it@localhost:13306/mysql
 npm run test:integration
+npm run build && npm run test:e2e        # Playwright GUI smoke test (needs KEYCLOAK_TEST_URL)
 scripts/integration/stop.sh
 ```
 
