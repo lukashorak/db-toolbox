@@ -29,7 +29,8 @@
     "test:web": "npm run test -w @workbench/web",
     "test:e2e": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test --test-concurrency=1 \"test/e2e/**/*.test.ts\"",
     "test:deploy": "node --conditions=development --disable-warning=ExperimentalWarning --import tsx --test --test-concurrency=1 \"test/deploy/**/*.test.ts\"",
-    "cli": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env packages/api/dist/cli.js"
+    "cli": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env packages/api/dist/cli.js",
+    "test:load": "node --conditions=development --disable-warning=ExperimentalWarning --expose-gc --import tsx --test --test-concurrency=1 \"test/load/**/*.test.ts\""
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

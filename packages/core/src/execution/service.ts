@@ -842,12 +842,16 @@ export class ExecutionService {
       return new Date(Date.now() + hours * 3_600_000).toISOString();
     };
 
+    let skippedForCancel = false;
     try {
       await adapter.withSession(async (session: DbSession) => {
         await session.tag(id);
         if (atomic) await session.begin({ readOnly });
         for (const st of statements) {
-          if (signal.aborted) break;
+          if (signal.aborted) {
+            skippedForCancel = true;
+            break;
+          }
           const ordinal = Number(st.ordinal);
           const remaining = deadline - Date.now();
           if (remaining <= 0) {
@@ -997,8 +1001,9 @@ export class ExecutionService {
     );
     let status: ExecutionStatus = failure ? (failure as { status: ExecutionStatus }).status : 'succeeded';
     let note: string | null = null;
-    if (signal.aborted && !failure) {
-      // Cancelled between statements: what ran stays as it is.
+    if (signal.aborted && !failure && (atomic || skippedForCancel)) {
+      // Cancelled between statements (what ran stays as it is), or before COMMIT (rolled back).
+      // When the last statement finished anyway, the execution succeeded and says so in its note.
       status = 'cancelled';
     }
     if (status === 'succeeded' && cancelRequested) note = 'Completed before the cancellation took effect.';

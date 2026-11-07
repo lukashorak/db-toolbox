@@ -48,6 +48,8 @@ jobs:
       - name: Start containers
         run: scripts/integration/start.sh keycloak postgres mysql >> "$GITHUB_ENV"
       - run: npm run test:integration
+      - name: Load sanity (one million rows, concurrency, cancellation)
+        run: npm run test:load
       - run: npm run build
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium

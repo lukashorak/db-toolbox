@@ -94,7 +94,8 @@ describe(
             axe: { run: (c: unknown, o: unknown) => Promise<{ violations: Violation[] }> };
           }
         ).axe;
-        const result = await axe.run(document, {
+        // These callbacks run in the browser; the test's own types are Node's.
+        const result = await axe.run((globalThis as unknown as { document: unknown }).document, {
           runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
         });
         return result.violations.map((v) => ({
@@ -172,9 +173,14 @@ describe(
       for (const [name, path, ready] of SCREENS) {
         await page.goto(`${env.base}${path || `/executions/${executionId}`}`);
         await page.locator(ready).first().waitFor({ timeout: 15_000 });
-        const overflow = await page.evaluate(
-          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        );
+        const overflow = await page.evaluate(() => {
+          const root = (
+            globalThis as unknown as {
+              document: { documentElement: { scrollWidth: number; clientWidth: number } };
+            }
+          ).document.documentElement;
+          return root.scrollWidth - root.clientWidth;
+        });
         if (overflow > 1) wide.push(`${name}: ${overflow} px too wide`);
       }
       assert.deepEqual(wide, []);

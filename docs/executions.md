@@ -65,6 +65,8 @@ Statements that change session state mark the session dirty, and the session is 
   - `succeeded`, with the note "Completed before the cancellation took effect", when the statement finished first;
   - `unknown` when the connection was lost.
 - The time limit applies to the whole execution. Each statement runs with the time that is left, and the result is `timed_out`.
+- A long read that streams many batches is stopped between batches as well. There the database has no running statement to cancel, and PostgreSQL's `statement_timeout` counts each fetch separately. A cancel or time limit therefore takes effect within one batch.
+- In a single transaction, a cancel always rolls back, so the execution is `cancelled` even if the last statement finished.
 
 ## Capture
 

@@ -4,6 +4,17 @@ Claude Code (or another MCP client) uses Database Workbench at `<PUBLIC_URL>/mcp
 
 Every tool calls the same core services as the GUI and the API, with the MCP user as the actor and the profile bound to the token's OAuth client. MCP has no permission system of its own.
 
+## Setting up Claude Code
+
+1. An administrator adds an MCP profile on the GUI's **MCP access** screen and binds it to the OAuth client `workbench-mcp`. The profile says which connections, whether writes are allowed, and the limits.
+2. On the same screen, copy the setup command and run it where Claude Code runs:
+
+   ```bash
+   claude mcp add --transport http --client-id workbench-mcp --callback-port 8765 workbench https://db.example.com/mcp
+   ```
+
+3. In Claude Code, run `/mcp` and sign in with Keycloak in the browser. [identity.md](identity.md#connecting-claude-code) explains what happens.
+
 ## Tools
 
 | Tool               | Does                                                                                                                                                                                                              |

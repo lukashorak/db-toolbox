@@ -264,12 +264,15 @@ class MysqlSession implements DbSession {
         let index = -1;
         let pending: Promise<void> = Promise.resolve();
         let failed: unknown = null;
-        const flush = () => {
+        // `pause`: hold the socket while the sink catches up. Not after the last row: once the
+        // statement has ended (or was cancelled), a paused connection can swallow the reply to the
+        // next command, which then never returns.
+        const flush = (pause = true) => {
           if (!batch.length) return;
           const rows = batch;
           const at = index;
           batch = [];
-          this.connection.pause();
+          if (pause) this.connection.pause();
           pending = pending
             .then(async () => {
               if (interrupted) return;
@@ -283,7 +286,9 @@ class MysqlSession implements DbSession {
               failed ??= error;
               interrupt('stopped');
             })
-            .finally(() => this.connection.resume());
+            .finally(() => {
+              if (pause) this.connection.resume();
+            });
         };
         const query = this.connection.query({
           sql: this.#label + sql,
@@ -333,7 +338,7 @@ class MysqlSession implements DbSession {
           void pending.finally(() => reject(error));
         });
         query.on('end', () => {
-          flush();
+          flush(false);
           void pending.then(() => (failed ? reject(failed) : resolve()));
         });
         // A dropped connection (KILL, a restart, the network) reaches mysql2's connection, not a

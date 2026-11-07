@@ -18,9 +18,9 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
 | 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
 | 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
-| 14   | Acceptance and hardening (M3)                        | In progress: security, traceability, accessibility done   |
+| 14   | Acceptance and hardening (M3)                        | Done (in review), apart from the manual checks            |
 
-## Step 14 — Acceptance and hardening (milestone M3, in progress)
+## Step 14 — Acceptance and hardening (milestone M3)
 
 ### Security review
 
@@ -54,10 +54,35 @@ Reference: [acceptance.md](acceptance.md), with every clause of AC1–AC14 and t
   - Saved queries scrolled sideways on a phone. Its two panes now stack below 760 px.
 - `npm run test:e2e` passes: 24 tests.
 
-Still to do in this step:
+### Load sanity
 
-- load sanity checks;
-- the remaining guides.
+`npm run test:load` runs on both engines with a table of one million rows, in CI after the integration tests (about 30 seconds):
+
+- a preview of the million-row table takes about 0.2 s and stops reading early;
+- a full capture of all million rows plus a CSV export (header and one line each) takes 5–7 s, with heap growth well below the 45 MB of data;
+- ten executions on one connection run at most two at a time, and start in the order they were submitted;
+- a two-million-row capture stops at a 1-second time limit;
+- a two-million-row capture is cancelled within a second, and deleting its partial result frees the storage.
+
+Found and fixed:
+
+- **MySQL**: a cancel during a large capture never finished: the execution stayed `cancel_requested`, and shutdown waited for it. After the last rows, the adapter paused the connection, and the next command's reply was lost. The final flush no longer pauses.
+- **PostgreSQL**: a cancel or time limit during a long streaming read had no effect, because between fetches the server has nothing to cancel. The capture ran to the end. The adapter now stops reading between batches.
+- When a cancel arrived while the last statement finished, the execution said `cancelled` while its result said `complete`. It is now `succeeded` with the note "Completed before the cancellation took effect", as documented. Single-transaction runs are still rolled back and `cancelled`.
+
+### Verified
+
+- `npm run check`: 172 server and contract tests (1 more skipped as root) and 10 component tests.
+- `npm run test:integration`: 115 tests.
+- `npm run test:e2e`: 24 tests.
+- `npm run test:load`: 10 tests.
+- `npm run test:deploy`: 3 tests.
+
+### Still manual
+
+- The check with the real Keycloak and Claude Code ([identity.md](identity.md#manual-check-with-the-real-keycloak-and-claude-code)).
+- The deployment on the Dockge host behind its reverse proxy ([operations.md](operations.md#what-still-depends-on-your-environment)).
+- A screen-reader pass of the main flows.
 
 ## Step 13 — Packaging and operations
 

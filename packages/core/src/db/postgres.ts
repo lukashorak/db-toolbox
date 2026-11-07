@@ -284,6 +284,17 @@ class PostgresSession implements DbSession {
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       for (;;) {
+        // Between batches the server has no running query, so pg_cancel_backend (and
+        // statement_timeout, which counts per fetch) cannot stop a long read: stop reading here.
+        if (interrupted) {
+          await cursor.close().catch(() => undefined);
+          throw new DbError(
+            interrupted,
+            interrupted === 'timeout'
+              ? `The statement exceeded its time limit of ${timeout} ms.`
+              : 'The statement was cancelled.',
+          );
+        }
         const { rows, result } = await new Promise<{ rows: Cell[][]; result?: pg.QueryResult }>(
           (resolve, reject) =>
             cursor.read(batchSize, (error, rows, result) =>
