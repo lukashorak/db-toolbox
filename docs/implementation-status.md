@@ -18,7 +18,29 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
 | 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
 | 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
-| 14   | Acceptance and hardening (M3)                        | Not started                                               |
+| 14   | Acceptance and hardening (M3)                        | In progress: security review done                         |
+
+## Step 14 — Acceptance and hardening (milestone M3, in progress)
+
+### Security review
+
+Reference: [security.md](security.md), with the threat model, mitigations, where each is tested, and accepted risks.
+
+- Security headers on every response: a CSP allowing only this origin and Keycloak (no inline scripts), `frame-ancestors 'none'`, `nosniff`, `no-referrer`, a permissions policy, and HSTS with HTTPS. Static bundles are cached as immutable, the page itself is always revalidated.
+- Rate limits, with `rate_limited` (429) and `Retry-After`:
+  - per user, 600 requests a minute;
+  - per user and MCP client, 300 a minute;
+  - per address for rejected tokens, 60 a minute.
+- Found and fixed: the Workbench and Executions screens refetched a running execution in a tight loop (hundreds of requests a second) whenever the live status and the fetched view disagreed. The rate limit exposed it. They now react only to changes of the live status, and the Workbench flows check a request budget.
+- Dependency audit: no vulnerabilities in runtime dependencies. Two advisories in development tools only are accepted and listed.
+- Verified: `npm run check` (172 server and contract tests, 1 more skipped as root, and 10 component tests), `npm run test:integration` (110), `npm run test:e2e` (12 flows, all under the CSP and the default limits).
+
+Still to do in this step:
+
+- the acceptance criteria mapped one-to-one to tests;
+- an accessibility review;
+- load sanity checks;
+- the remaining guides.
 
 ## Step 13 — Packaging and operations
 

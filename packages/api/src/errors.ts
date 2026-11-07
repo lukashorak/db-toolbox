@@ -41,6 +41,8 @@ export function sendError(
   if (status === 401) {
     reply.header('www-authenticate', bearerChallenge(config, request.url.split('?')[0] === MCP_PATH, error));
   }
+  if (error.code === 'rate_limited')
+    reply.header('retry-after', String(error.details?.retryAfterSeconds ?? 60));
   const body: ErrorBody = { error: error.code, message: error.message, requestId: String(request.id) };
   if (error.details) body.details = error.details;
   return reply.code(status).send(body);

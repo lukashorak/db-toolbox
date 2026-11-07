@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import Banner from '../components/Banner.svelte';
   import ResultsPanel from '../components/ResultsPanel.svelte';
@@ -108,18 +108,25 @@
     persist();
   });
 
-  // Live status: refetch a run of this tab when its status changes.
+  // Live status: refetch a shown run when its live status changes. React to changes of the live
+  // status only, never to a difference from the fetched view: the two can disagree for a moment, and
+  // a refetch must not trigger another one.
+  const seenStatus: Record<string, string> = {};
   $effect(() => {
     for (const job of jobs.items) {
-      const view = views[job.id];
-      if (view && view.status !== job.status) void load(job.id);
+      if (seenStatus[job.id] === job.status) continue;
+      seenStatus[job.id] = job.status;
+      if (untrack(() => views[job.id])) void load(job.id);
     }
   });
 
   // Load the runs of the active tab after a tab switch or reload (recovers runs by ID).
   $effect(() => {
-    shownRun = null;
-    for (const id of runs.slice(0, 5)) if (!views[id]) void load(id);
+    const ids = runs.slice(0, 5);
+    untrack(() => {
+      shownRun = null;
+      for (const id of ids) if (!views[id]) void load(id);
+    });
   });
 
   // Statement ranges and preflight problems, a moment after typing stops.

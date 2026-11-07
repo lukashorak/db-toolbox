@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Banner from '../components/Banner.svelte';
   import ConfirmPanel from '../components/ConfirmPanel.svelte';
   import KeyValueList from '../components/KeyValueList.svelte';
@@ -66,11 +66,17 @@
     if (id) void loadDetail(id);
     else void loadList();
   });
-  // Live updates: refresh what is shown when one of its executions changes.
+  // Live updates: refresh what is shown when a live status changes (only then: reading `detail` or
+  // `filters` here would make every refresh trigger the next one).
+  let lastStatuses = '';
   $effect(() => {
-    void jobs.items.map((j) => j.status).join();
-    if (id && detail && !TERMINAL.has(detail.status)) void loadDetail(id);
-    else if (!id) void loadList();
+    const statuses = jobs.items.map((j) => `${j.id}:${j.status}`).join();
+    if (statuses === lastStatuses) return;
+    lastStatuses = statuses;
+    untrack(() => {
+      if (id && detail && !TERMINAL.has(detail.status)) void loadDetail(id);
+      else if (!id) void loadList();
+    });
   });
 
   async function retain() {

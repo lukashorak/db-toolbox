@@ -30,6 +30,8 @@ export const ERROR_CODES = {
   engine_immutable: 409,
   folder_cycle: 409,
   idempotency_conflict: 409,
+  /** Too many requests from one user, MCP client or address; `details.retryAfterSeconds` says when to retry. */
+  rate_limited: 429,
   result_expired: 410,
   export_not_ready: 409,
   not_complete: 409,

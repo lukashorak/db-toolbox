@@ -45,7 +45,13 @@ Clients branch on `error`; `message` is for people and may change. The full list
 | `result_expired`, `export_missing`                                    | 410  | The stored data or file is gone                                                                                                               |
 | `read_only_policy`                                                    | 422  | Rejected before running because of a read-only policy. `details.execution` is the stored execution, `details.problems` the preflight problems |
 | `preflight_rejected`                                                  | 422  | Rejected before running for another reason, for example transaction control or an implicit commit                                             |
+| `rate_limited`                                                        | 429  | Too many requests from this user, MCP client or address. Retry after `details.retryAfterSeconds`, also sent as `Retry-After`                  |
 | `database_error`                                                      | 502  | The target database failed. `details` carries `category`, `code`, `sqlState`, `detail`, `hint` and `position`                                 |
+
+## Rate limits and headers
+
+- Requests are limited per signed-in user (`RATE_LIMIT_PER_MINUTE`, 600), per user and MCP client (`MCP_RATE_LIMIT_PER_MINUTE`, 300), and per address for rejected tokens (`AUTH_FAILURES_PER_MINUTE`, 60). A limit allows bursts of its own size; 0 turns it off.
+- Every response carries a content security policy and other security headers ([security.md](security.md#security-headers)).
 
 ## Server-sent events
 

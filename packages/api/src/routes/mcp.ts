@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { AppError, type Authenticator, type Config, type Core } from '@workbench/core';
+import { AppError, type Config, type Core } from '@workbench/core';
 import { handleMcpRequest, MCP_PATH, protectedResourceMetadata } from '@workbench/mcp';
+import type { RequestGuard } from '../guard.js';
 
 export interface McpRouteOptions {
   config: Config;
   core: Core;
-  authenticator: Authenticator;
+  guard: RequestGuard;
   version: string;
 }
 
@@ -14,7 +15,7 @@ export interface McpRouteOptions {
  * profile is resolved from the token's OAuth client, never from anything the client sends.
  */
 export function mcpRoutes(options: McpRouteOptions) {
-  const { config, core, authenticator, version } = options;
+  const { config, core, guard, version } = options;
   const metadata = protectedResourceMetadata(config);
   return async (app: FastifyInstance) => {
     // RFC 9728 path-insertion form for the resource `${PUBLIC_URL}/mcp`, plus the root form that
@@ -30,7 +31,7 @@ export function mcpRoutes(options: McpRouteOptions) {
     }
 
     app.post(MCP_PATH, async (request, reply) => {
-      const actor = await authenticator.authenticate(request.headers.authorization, 'mcp');
+      const actor = await guard.authenticate(request, 'mcp');
       reply.hijack();
       try {
         await handleMcpRequest(request.raw, reply.raw, request.body, actor, { core, version });

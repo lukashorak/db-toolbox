@@ -22,6 +22,7 @@ describe(
   () => {
     let env: GuiEnv;
     let page: Page;
+    let apiRequests = 0;
 
     before(async () => {
       const url = String(process.env.POSTGRES_TEST_URL);
@@ -54,6 +55,9 @@ describe(
         readOnly: false,
       });
       page = await env.browser.newPage();
+      page.on('request', (r) => {
+        if (r.url().includes('/api/v1/')) apiRequests++;
+      });
       await env.signIn(page, 'alice', '/workbench');
     });
     after(async () => {
@@ -112,6 +116,12 @@ describe(
           );
         }
       }
+    });
+
+    it('stays within a request budget: live status, not polling loops', () => {
+      // The three runs and two exports above need a few dozen requests. A refetch loop once sent
+      // hundreds a second and ran into the per-user rate limit.
+      assert.ok(apiRequests > 10 && apiRequests < 150, `${apiRequests} API requests`);
     });
 
     it('shows a partial commit per statement and a rollback in a single transaction (AC6)', async () => {

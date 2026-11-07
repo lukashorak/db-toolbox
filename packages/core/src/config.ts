@@ -48,6 +48,15 @@ export interface Config {
   trustProxy: boolean;
   /** On SIGTERM, how long running executions may finish before they are interrupted. */
   shutdownGraceMs: number;
+  /** Requests per minute (bursts up to the same number); 0 turns a limit off. */
+  rateLimits: {
+    /** Per signed-in user, for the API and GUI. */
+    apiPerMinute: number;
+    /** Per user and MCP client. */
+    mcpPerMinute: number;
+    /** Failed sign-ins (rejected tokens) per client address. */
+    authFailuresPerMinute: number;
+  };
   limits: Limits;
 }
 
@@ -80,6 +89,9 @@ const schema = z.object({
   ORDINARY_TIMEOUT_MS: positiveInt(30_000),
   FULL_TIMEOUT_MAX_MS: positiveInt(300_000),
   SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(600_000).default(20_000),
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(600),
+  MCP_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(0).default(300),
+  AUTH_FAILURES_PER_MINUTE: z.coerce.number().int().min(0).default(60),
 });
 
 function parseOrigin(name: string, value: string, requireHttps: boolean, issues: string[]): string {
@@ -169,6 +181,11 @@ export function loadConfig(env: Env, cwd: string = process.cwd()): Config {
     logLevel: e.LOG_LEVEL,
     trustProxy: e.TRUST_PROXY === 'true',
     shutdownGraceMs: e.SHUTDOWN_GRACE_MS,
+    rateLimits: {
+      apiPerMinute: e.RATE_LIMIT_PER_MINUTE,
+      mcpPerMinute: e.MCP_RATE_LIMIT_PER_MINUTE,
+      authFailuresPerMinute: e.AUTH_FAILURES_PER_MINUTE,
+    },
     limits: {
       previewRows: e.PREVIEW_ROWS,
       mcpPreviewRows: e.MCP_PREVIEW_ROWS,

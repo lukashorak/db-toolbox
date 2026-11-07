@@ -95,7 +95,9 @@ Whatever proxy you use, it must:
   - `/mcp` (Streamable HTTP);
 - allow long reads: an event stream stays open until the access token expires, so set the read timeout to at least 10 minutes;
 - accept request bodies of at least 2 MiB, for long SQL scripts;
-- pass `Authorization` to the app, and `WWW-Authenticate` back to the client, unchanged. MCP clients find Keycloak from the 401 challenge.
+- pass `Authorization` to the app, and `WWW-Authenticate` back to the client, unchanged. MCP clients find Keycloak from the 401 challenge;
+- keep the app's security headers, including its `Content-Security-Policy` ([security.md](security.md#security-headers));
+- forward the client address (`X-Forwarded-For`), because rejected tokens are rate-limited per address.
 
 Two examples, to adapt once the proxy is known.
 

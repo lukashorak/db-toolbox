@@ -44,6 +44,7 @@ export type Page = Locator & {
   getByTestId(id: string): Locator;
   waitForEvent(event: 'download'): Promise<{ path(): Promise<string>; suggestedFilename(): string }>;
   keyboard: { press(key: string): Promise<void> };
+  on(event: 'request', listener: (request: { url(): string; method(): string }) => void): void;
   close(): Promise<void>;
 };
 export type Browser = { newPage(): Promise<Page>; close(): Promise<void> };

@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events';
 import type { FastifyInstance } from 'fastify';
-import { permissionsOf, type Authenticator, type Config, type Core } from '@workbench/core';
+import { permissionsOf, type Config, type Core } from '@workbench/core';
 import { describeMcpEndpoint } from '@workbench/mcp';
 import { actorOf } from '../auth.js';
+import type { RequestGuard } from '../guard.js';
 import { openApiDocument } from '../openapi.js';
 import { v1Routes } from './v1.js';
 
@@ -34,10 +35,10 @@ export function publicRoutes(config: Config, core: Core, version: string) {
 }
 
 /** Routes that require a GUI access token. The hook runs before body parsing. */
-export function protectedRoutes(authenticator: Authenticator, core: Core, config: Config) {
+export function protectedRoutes(guard: RequestGuard, core: Core, config: Config) {
   return async (app: FastifyInstance) => {
     app.addHook('onRequest', async (request) => {
-      request.actor = await authenticator.authenticate(request.headers.authorization, 'gui');
+      request.actor = await guard.authenticate(request, 'gui');
     });
     // Live streams stay open for the token's lifetime; end them so closing the server does not wait.
     const closing = new EventEmitter().setMaxListeners(0);
