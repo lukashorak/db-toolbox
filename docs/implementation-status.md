@@ -42,5 +42,5 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 ### Deferred or not verified
 
 - No Dockerfile yet (step 13); `.dockerignore` already excludes `reference/`.
-- The CI workflow runs on GitHub; its first run is on this pull request.
+- The first CI run on GitHub (run 42378646950, 7 Nov 2026) passed format, lint, type check, unit tests and build in about 20 seconds; the integration job was skipped as intended.
 - The local environment used here has Node.js 22 by default; checks ran with Node.js 24.22.2.
