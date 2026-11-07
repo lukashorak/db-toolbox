@@ -249,10 +249,7 @@ describe('MCP authentication', () => {
     assert.equal(init.json().result.serverInfo.name, 'database-workbench');
 
     const list = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, token);
-    assert.deepEqual(
-      list.json().result.tools.map((t: { name: string }) => t.name),
-      ['whoami'],
-    );
+    assert.ok(list.json().result.tools.some((t: { name: string }) => t.name === 'whoami'));
 
     const call = await post(
       { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'whoami', arguments: {} } },
@@ -262,9 +259,19 @@ describe('MCP authentication', () => {
     const whoami = call.json().result.structuredContent;
     assert.equal(whoami.user.subject, 'u-5');
     assert.equal(whoami.profile.name, 'Claude Code');
-    assert.deepEqual(whoami.connections, [
-      { id: connectionId, name: 'Analytics', readOnly: true, restrictedBy: ['profile'] },
-    ]);
+    const listed = await post(
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'list_connections', arguments: {} } },
+      token,
+    );
+    assert.deepEqual(
+      listed
+        .json()
+        .result.structuredContent.connections.map((c: { connectionId: string; readOnly: boolean }) => [
+          c.connectionId,
+          c.readOnly,
+        ]),
+      [[connectionId, true]],
+    );
     assert.doesNotMatch(call.body, /not-a-real-password/);
   });
 

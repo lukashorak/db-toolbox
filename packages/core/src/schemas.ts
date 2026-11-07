@@ -11,3 +11,4 @@ export {
 export { executionDefaultsSchema } from './services/settings.js';
 export { executionSubmitSchema } from './execution/service.js';
 export { exportCreateSchema } from './execution/exports.js';
+export { disclosureDecideSchema } from './execution/disclosure.js';

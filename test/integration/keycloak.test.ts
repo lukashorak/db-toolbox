@@ -25,6 +25,7 @@ import {
   type Core,
 } from '@workbench/core';
 import { buildServer, type WorkbenchServer } from '@workbench/api';
+import { TOOLS } from '@workbench/mcp';
 import {
   codeGrant,
   freePort,
@@ -306,20 +307,19 @@ describe('Keycloak integration', { skip: skipUnless('KEYCLOAK_TEST_URL') }, () =
     const client = new Client({ name: 'integration', version: '1.0.0' });
     await client.connect(new StreamableHTTPClientTransport(url, { authProvider: provider }));
     const { tools } = await client.listTools();
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      ['whoami'],
-    );
+    assert.deepEqual(tools.map((t) => t.name).sort(), [...TOOLS].sort());
     const result = await client.callTool({ name: 'whoami', arguments: {} });
-    const whoami = result.structuredContent as {
-      user: { username: string };
-      profile: { name: string };
-      connections: { name: string; readOnly: boolean; restrictedBy: string[] }[];
-    };
+    const whoami = result.structuredContent as { user: { username: string }; profile: { name: string } };
     assert.equal(whoami.user.username, 'bob');
     assert.equal(whoami.profile.name, 'Claude Code');
+    const listed = await client.callTool({ name: 'list_connections', arguments: {} });
+    const connections = (
+      listed.structuredContent as {
+        connections: { name: string; readOnly: boolean; readOnlyBecause: string[] }[];
+      }
+    ).connections;
     assert.deepEqual(
-      whoami.connections.map((c) => [c.name, c.readOnly, c.restrictedBy]),
+      connections.map((c) => [c.name, c.readOnly, c.readOnlyBecause]),
       [['Analytics', true, ['user', 'profile']]],
     );
     await client.close();

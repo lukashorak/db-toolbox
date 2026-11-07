@@ -62,7 +62,7 @@ The profile is always taken from the token's client. A profile ID sent by a clie
 claude mcp add --transport http --client-id workbench-mcp --callback-port 8765 workbench https://db.example.com/mcp
 ```
 
-Then run `/mcp` in Claude Code, choose **workbench** and sign in in the browser. Until step 7 the server offers one tool, `whoami`, which shows the user, the profile and the effective access per connection.
+Then run `/mcp` in Claude Code, choose **workbench** and sign in in the browser. The tools are described in [mcp.md](mcp.md).
 
 ## Automated verification
 
@@ -88,7 +88,7 @@ To be done once the Keycloak URL, realm, public URL and Claude Code version are 
 2. Start the workbench with `PUBLIC_URL` and `KEYCLOAK_ISSUER` set; `GET /api/v1/client-config` shows them.
 3. Create an MCP profile bound to `workbench-mcp` (API in step 6; until then with a one-off script).
 4. Add the server in Claude Code with the command above, then run `/mcp` and sign in.
-5. Ask Claude Code to call `whoami`. Expect the user, the profile and read-only access.
+5. Ask Claude Code to call `whoami` and `list_connections`. Expect the user, the profile and read-only access.
 6. Wait more than 5 minutes and call `whoami` again: Claude Code refreshes the token without a new sign-in.
 7. Disable the profile and call `whoami`: expect `profile_disabled`.
 8. Remove the user's roles in Keycloak, sign in again: expect `no_role`.

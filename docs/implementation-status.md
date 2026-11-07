@@ -9,6 +9,47 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 7 — MCP server and disclosure control (milestone M1)
+
+Reference: [mcp.md](mcp.md).
+
+### What works
+
+- Tools: `whoami`, `list_connections`, `inspect_database`, `execute_sql`, `run_saved_query`, `get_execution`, `cancel_execution`, `get_result` and `export_result`.
+  - Inputs require explicit transaction and capture modes and a request key.
+  - Outputs carry identifiers and metadata.
+  - Errors use the stable codes.
+- Database values are returned as data, with a notice. No MCP resources are offered.
+- Allowance per execution and profile (1,000 rows, 256 KiB by default), counted across result sets, pages and calls.
+- Disclosure:
+  - a pending request is opened beyond the allowance;
+  - only the owner approves, in the GUI, scoped to one result set and profile, an amount and an expiry bounded by retention;
+  - deny, revoke and expiry stop further pages;
+  - a client-supplied approval flag is ignored.
+- API: `GET /approvals`, `POST /approvals/{id}/approve`, `…/deny` and `…/revoke`.
+- Milestone M1: both engines can be connected, a background query can be run from Claude Code or the API, its status found again by ID, and its complete captured result exported.
+
+### How it was verified
+
+- `npm run check` passes: 156 tests, 155 passing and 1 skipped when running as root. New disclosure unit tests cover:
+  - the allowance, and one pending request;
+  - owner-only approval in the GUI, where an administrator may deny but not approve, and strangers get not found;
+  - expiry bounded by retention;
+  - deny, revoke and disabled profiles.
+- `npm run test:integration`: 94 tests across Keycloak, PostgreSQL and MySQL pass. `test/integration/mcp.test.ts` uses the official MCP client and covers:
+  - every tool;
+  - the 8-combination read-only matrix (AC1);
+  - the allowance and approvals;
+  - bypass attempts through pages, resources, a client flag and export links (AC5);
+  - request keys;
+  - cancellation;
+  - token errors (AC13).
+
+### Pending
+
+- The manual Claude Code check against the real Keycloak (see step 2).
+- `get_activity` and `get_slow_statements` arrive with the monitoring backend (step 8).
+
 ## Step 6 — HTTP API
 
 Reference: [api.md](api.md), and the generated `GET /api/v1/openapi.json`.

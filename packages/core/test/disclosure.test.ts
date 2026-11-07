@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { createCore } from '../src/core.js';
+import { AppError } from '../src/domain/errors.js';
+import { actor, admin, limits, pgInput, reader, TEST_KEY, writer } from './helpers.js';
+
+const code = (c: string) => (e: unknown) => e instanceof AppError && e.code === c;
+
+/** One execution owned by `writer` with a 50-row result, and an MCP profile allowing 20 rows. */
+async function setup() {
+  let now = Date.UTC(2026, 10, 7, 10, 0, 0);
+  const clock = { now: () => new Date(now) };
+  const core = createCore({
+    databaseFile: ':memory:',
+    encryptionKey: TEST_KEY,
+    limits,
+    clock,
+    executions: { globalCap: 0 },
+  });
+  for (const a of [admin, writer, reader]) core.users.touch(a);
+  const connection = core.connections.create(admin, pgInput).id;
+  const profile = core.profiles.create(admin, {
+    name: 'Claude',
+    clientId: 'workbench-mcp',
+    connectionIds: [connection],
+    previewRows: 20,
+  });
+  const mcp = actor('writer', ['query:read'], {
+    source: 'mcp',
+    clientId: 'workbench-mcp',
+    profileId: profile.id,
+  });
+  const { id } = await core.executions.submit(mcp, { connectionId: connection, sql: 'SELECT n FROM t' });
+  const rows = Array.from({ length: 50 }, (_, i) => [String(i + 1)]);
+  core.db.run("UPDATE executions SET status = 'succeeded' WHERE id = :id", { id });
+  core.db.run(
+    `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, completeness, expires_at)
+     VALUES (:id, 0, 0, '[{"name":"n","type":"int4","binary":false}]', 50, 300, 'complete', '2026-11-07T10:30:00.000Z')`,
+    { id },
+  );
+  core.db.run(
+    'INSERT INTO result_chunks (execution_id, result_index, chunk_index, row_start, row_count, byte_count, data) VALUES (:id, 0, 0, 0, 50, 300, :d)',
+    { id, d: Buffer.from(JSON.stringify(rows)) },
+  );
+  return { core, id, mcp, profile, advance: (ms: number) => (now += ms) };
+}
+
+describe('MCP disclosure', () => {
+  it('delivers up to the allowance and opens one pending request beyond it', async () => {
+    const { core, id, mcp } = await setup();
+    const first = core.disclosure.page(mcp, id, 0, { limit: 15 });
+    assert.deepEqual([first.rows.length, first.truncated, first.allowance.rowsRemaining], [15, false, 5]);
+    const second = core.disclosure.page(mcp, id, 0, { offset: 15, limit: 15 });
+    assert.deepEqual([second.rows.length, second.truncated, second.approval?.status], [5, true, 'pending']);
+    const third = core.disclosure.page(mcp, id, 0, { offset: 20, limit: 15 });
+    assert.equal(third.approval?.id, second.approval?.id);
+    const [request] = core.disclosure.list(writer, { status: 'pending' });
+    assert.deepEqual(
+      [request?.requested.rows, request?.requested.by, request?.profile.name],
+      [30, 'writer', 'Claude'],
+    );
+    assert.throws(
+      () => core.disclosure.page(writer, id, 0),
+      code('forbidden'),
+      'GUI users read rows through the API',
+    );
+    core.close();
+  });
+
+  it('only the owner approves, in the GUI; the approval expires within the result retention', async () => {
+    const { core, id, mcp, advance } = await setup();
+    core.disclosure.page(mcp, id, 0, { limit: 20 });
+    const approvalId = String(core.disclosure.page(mcp, id, 0, { offset: 20, limit: 10 }).approval?.id);
+    assert.throws(() => core.disclosure.approve(mcp, approvalId), code('forbidden'));
+    assert.throws(
+      () => core.disclosure.approve(admin, approvalId),
+      code('forbidden'),
+      'an administrator cannot approve for someone else',
+    );
+    assert.throws(() => core.disclosure.approve(reader, approvalId), code('not_found'));
+    const approved = core.disclosure.approve(writer, approvalId, { rows: 10, minutes: 120 });
+    assert.equal(
+      approved.expiresAt,
+      '2026-11-07T10:30:00.000Z',
+      'bounded by the result retention, not 2 hours',
+    );
+    const page = core.disclosure.page(mcp, id, 0, { offset: 20, limit: 30 });
+    assert.deepEqual([page.rows.length, page.truncated, page.allowance.approvedRowsRemaining], [10, true, 0]);
+    advance(31 * 60_000);
+    const later = core.disclosure.page(mcp, id, 0, { offset: 30, limit: 5 });
+    assert.equal(later.rows.length, 0);
+    assert.equal(core.disclosure.view(approvalId).status, 'expired');
+    core.close();
+  });
+
+  it('deny and revoke stop further pages; disabled profiles get nothing', async () => {
+    const { core, id, mcp, profile } = await setup();
+    const pending = String(core.disclosure.page(mcp, id, 0, { offset: 0, limit: 30 }).approval?.id);
+    assert.equal(core.disclosure.deny(writer, pending, 'Too much').status, 'denied');
+    const next = String(core.disclosure.page(mcp, id, 0, { offset: 20, limit: 5 }).approval?.id);
+    assert.notEqual(next, pending);
+    core.disclosure.approve(writer, next);
+    assert.equal(core.disclosure.page(mcp, id, 0, { offset: 20, limit: 5 }).rows.length, 5);
+    assert.equal(core.disclosure.revoke(admin, next).status, 'revoked');
+    assert.equal(core.disclosure.page(mcp, id, 0, { offset: 25, limit: 5 }).rows.length, 0);
+    core.profiles.update(admin, profile.id, { enabled: false });
+    assert.throws(() => core.disclosure.page(mcp, id, 0), code('profile_disabled'));
+    core.close();
+  });
+});

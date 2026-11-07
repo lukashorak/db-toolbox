@@ -4,6 +4,8 @@
  */
 export const ERROR_CODES = {
   validation_failed: 400,
+  /** MCP asked for more than its allowance; a human must approve in the GUI. */
+  approval_required: 403,
   /** The script was rejected before it ran; the stored execution is in `details.execution`. */
   preflight_rejected: 422,
   /** As preflight_rejected, when a read-only policy is the reason. */

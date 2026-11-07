@@ -100,3 +100,9 @@ export {
   type ExportView,
 } from './execution/exports.js';
 export * as schemas from './schemas.js';
+export {
+  DisclosureService,
+  type ApprovalView,
+  type DecideInput,
+  type DisclosedPage,
+} from './execution/disclosure.js';

@@ -454,6 +454,38 @@ export function v1Routes(core: Core): RouteRegistry {
     handler: ({ actor, params }) => core.profiles.effectiveAccess(actor, String(params.id)),
   });
 
+  // ---------------------------------------------------------------- MCP disclosure approvals
+  r.add({
+    method: 'GET',
+    url: '/approvals',
+    tag: 'Approvals',
+    access: 'query:read (your own executions; admin sees all)',
+    summary: 'Disclosure requests from MCP clients',
+    query: z.object({ status: z.enum(['pending', 'active', 'expired', 'revoked', 'denied']).optional() }),
+    handler: ({ actor, query }) => core.disclosure.list(actor, query.status ? { status: query.status } : {}),
+  });
+  r.add({
+    method: 'POST',
+    url: '/approvals/:id/approve',
+    tag: 'Approvals',
+    access: 'the execution owner, in the GUI',
+    summary: 'Allow an MCP client more rows of one result set, for a limited time',
+    body: schemas.disclosureDecideSchema,
+    handler: ({ actor, params, body }) => core.disclosure.approve(actor, String(params.id), body),
+  });
+  for (const verb of ['deny', 'revoke'] as const) {
+    r.add({
+      method: 'POST',
+      url: `/approvals/:id/${verb}`,
+      tag: 'Approvals',
+      access: 'the execution owner or admin',
+      summary:
+        verb === 'deny' ? 'Deny a pending disclosure request' : 'End an approval; further pages are refused',
+      body: z.object({ note: z.string().max(500).optional() }).strict(),
+      handler: ({ actor, params, body }) => core.disclosure[verb](actor, String(params.id), body.note),
+    });
+  }
+
   // ---------------------------------------------------------------- settings and audit
   r.add({
     method: 'GET',

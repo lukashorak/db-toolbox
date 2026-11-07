@@ -3,6 +3,7 @@ import type { Limits } from './config.js';
 import { AppError } from './domain/errors.js';
 import { systemClock, type Clock } from './domain/types.js';
 import { AdapterRegistry } from './db/registry.js';
+import { DisclosureService } from './execution/disclosure.js';
 import { ExportService } from './execution/exports.js';
 import { ExecutionService, type ExecutionOptions } from './execution/service.js';
 import { SecretBox } from './security/secrets.js';
@@ -43,6 +44,8 @@ export interface Core {
   executions: ExecutionService;
   /** CSV and JSON exports of captured results. */
   exports: ExportService;
+  /** What MCP clients may receive of results, and human approvals beyond that. */
+  disclosure: DisclosureService;
   /** Retention: export files first, then captured results and old execution metadata. */
   cleanup(now?: Date): Promise<{
     exportsExpired: number;
@@ -126,6 +129,7 @@ export function createCore(options: CoreOptions): Core {
     databases,
     executions,
     exports: exportService,
+    disclosure: new DisclosureService(ctx, profiles),
     cleanup: async (now) => {
       const exportsExpired = await exportService.cleanup(now);
       return { exportsExpired, ...executions.cleanup(now) };
