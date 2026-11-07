@@ -8,9 +8,9 @@ This plan turns the agreed requirements and the interactive design prototype int
 
 | Source | Role |
 | - | - |
-| Database Workbench requirements (baseline, 7 Nov 2026) | Functional scope, defaults and the 14 acceptance criteria (AC1–AC14) referenced below |
+| [Database Workbench requirements](requirements.md) (baseline, 7 Nov 2026) | Functional scope, defaults and the 14 acceptance criteria (AC1–AC14) referenced below |
 | Interactive design prototype, iterations 1–3 ([Claude Design canvas](https://claude.ai/artifact/JdcsDg4L4npnuTN4EBwYZH)) | UI specification: screens, states, copy, visual tokens, handoff notes and coverage matrix |
-| Codex prototype `db-workbench` 0.1.0 (archive) | Reference only. Useful for adapter details, the 1,200-row test fixture and early MCP/OAuth findings. Not imported as a base. |
+| [Codex prototype `db-workbench` 0.1.0](../reference/codex-db-workbench/) | Reference only; see [`reference/README.md`](../reference/README.md). Useful for adapter details, the 1,200-row test fixture and early MCP/OAuth findings. Not imported as a base. |
 
 ## Decisions already taken
 
@@ -25,11 +25,11 @@ This plan turns the agreed requirements and the interactive design prototype int
 | CSV: NULL is an empty unquoted field; an empty string is `""` | Documented in the export format notes and covered by tests. |
 | MCP disclosure approval is scoped to one result set of one execution for one profile | The approval table key is `(execution_id, result_set, profile_id)`. |
 
-## Technical choices to confirm in step 0
+## Technical choices
 
-These are recommendations. Step 0 records the final choice as a short decision record in `docs/decisions/`.
+Confirmed on 7 Nov 2026. Step 0 records each one as a short decision record in `docs/decisions/`; changing one later needs a new decision record.
 
-| Area | Recommendation | Alternative |
+| Area | Choice | Alternative considered |
 | - | - | - |
 | Runtime and language | Node.js 24 LTS, TypeScript (strict), ESM | — |
 | Repository layout | npm workspaces: `packages/core`, `packages/api`, `packages/mcp`, `packages/web`, built into one image | Single package with folders |
@@ -52,6 +52,7 @@ These are recommendations. Step 0 records the final choice as a short decision r
 - New user-visible states use the names from the prototype (for example "Preview-limited", "Partial commit", "Rejected before start").
 - Every sensitive action writes an audit event. Logs and audit details never contain passwords, tokens or result data.
 - Each step updates `docs/implementation-status.md` with what works, what is deferred and how it was verified.
+- Code taken from `reference/codex-db-workbench/` is copied on purpose, adapted and tested in the same pull request; nothing imports from `reference/`.
 
 ## Overview
 
@@ -90,7 +91,8 @@ Steps 5, 6 and 8 can run in parallel after step 4. GUI work (9–12) can start a
 **Goal.** A clean repository that builds, tests and deploys an empty application, with the main technical choices written down.
 
 **Scope**
-- npm workspaces (or the chosen layout), TypeScript project references, ESLint, Prettier, `svelte-check`.
+- npm workspaces (`packages/core`, `packages/api`, `packages/mcp`, `packages/web`), TypeScript project references, ESLint, Prettier, `svelte-check`.
+- `reference/` excluded from builds, lint, formatting, tests and the Docker context.
 - Module boundaries enforced by lint: `mcp` and `api` depend on `core` services only.
 - Configuration loading with validation (zod). Fail fast on missing `PUBLIC_URL`, `KEYCLOAK_ISSUER` and `ENCRYPTION_KEY`.
 - Structured logging with redaction of secrets and SQL parameters.
@@ -98,7 +100,7 @@ Steps 5, 6 and 8 can run in parallel after step 4. GUI work (9–12) can start a
 - GitHub Actions: lint, type check, unit tests. Integration jobs are stubbed and enabled in later steps.
 - `docs/decisions/` with records for every row of "Decisions already taken" and "Technical choices".
 
-**Done when** CI is green on an empty app, `npm run dev` serves the health endpoints, and the decision records are reviewed.
+**Done when** CI is green on an empty app, `npm run dev` serves the health endpoints, and the decision records exist for every decision and technical choice above.
 
 ## Step 1 — Domain model, persistence, policy and audit
 
