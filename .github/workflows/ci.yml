@@ -31,7 +31,7 @@ jobs:
       - run: npm run build
 
   integration:
-    name: Integration tests (Keycloak)
+    name: Integration tests (Keycloak, PostgreSQL 16, MySQL 8.4)
     needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -45,7 +45,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Start containers
-        run: scripts/integration/start.sh keycloak >> "$GITHUB_ENV"
+        run: scripts/integration/start.sh keycloak postgres mysql >> "$GITHUB_ENV"
       - run: npm run test:integration
       - name: Container logs on failure
         if: failure()

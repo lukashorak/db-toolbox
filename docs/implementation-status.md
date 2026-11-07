@@ -9,6 +9,74 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 3 — Database adapters, SQL analysis and read-only enforcement
+
+Details: [databases.md](databases.md). Decisions: [0022](decisions/0022-read-only-layers.md) (read-only layers and their limits) and [0023](decisions/0023-values-as-text.md) (values as text).
+
+### What works
+
+- Statement splitting for both dialects, with line and column ranges:
+  - comments and quoting rules, PostgreSQL dollar quotes and `BEGIN ATOMIC`;
+  - MySQL `DELIMITER` and executable comments;
+  - unclosed quotes or comments are flagged.
+- Classification with libpg-query (PostgreSQL) and keyword rules plus node-sql-parser (MySQL). It covers:
+  - writable CTEs, `SELECT … INTO` and `INTO OUTFILE`, locking reads;
+  - `EXPLAIN ANALYZE` of writes, `COPY`, `DO` and `CALL`;
+  - side-effect functions;
+  - settings that would turn read-only off;
+  - session changes, transaction control, MySQL implicit commits, and PostgreSQL statements that cannot run in a transaction block.
+  - Unparsable SQL is never read-only safe.
+- Preflight for whole scripts, with nine problem codes (read-only violation with its policy source, transaction control in automatic modes, implicit commits and non-transactional MySQL tables in single-transaction mode, and others).
+- Adapters for PostgreSQL (`pg`, `pg-cursor`) and MySQL (`mysql2`):
+  - bounded pools per connection: work slots plus a reserved metadata and a reserved control connection;
+  - sessions discarded when their state is not known to be clean;
+  - batched streaming that the sink can stop;
+  - read-only transactions;
+  - server-side time limits, and cancellation that works with all slots busy;
+  - lossless text values with binary as hex;
+  - several MySQL result sets;
+  - notices and warnings;
+  - error mapping with codes and positions.
+- TLS verify-full, verify-ca, require and disable, with a custom CA. MySQL verify-full refuses IP addresses, because the driver would not check the name.
+- Connection test with separate steps (reach, TLS, authenticate, probe), failure categories and capabilities, including whether the account itself can write. Results are recorded and audited without the password.
+- Metadata readers for both engines. Each list says whether it is complete, not permitted, or unavailable.
+- `core.databases`:
+  - adapter for a connection the actor may use: enabled, and for MCP in the profile;
+  - stored and draft connection tests;
+  - pools replaced when a connection changes.
+
+### How it was verified
+
+- `npm run check` passes: 123 tests, 122 passing and 1 skipped when running as root. New tests cover:
+  - the splitter;
+  - the classification corpus: 48 PostgreSQL and 48 MySQL statements, including indirect writes and bypass attempts;
+  - preflight;
+  - error mapping and TLS options;
+  - connection validation and MCP connection access.
+- `npm run test:integration` against Keycloak 26.4, PostgreSQL 16 and MySQL 8.4 passes (50 tests). The database tests cover:
+  - the connection test, including each failure type: connectivity (refused, unknown host), authentication, TLS (hostname mismatch, other CA, no CA), configuration and timeout;
+  - verify-ca and require behaviour;
+  - every corpus write the database must reject inside a read-only transaction (22 statements), and every read-only-safe statement running inside one;
+  - MySQL DDL running inside a read-only transaction, which is why the classifier rejects it first;
+  - MyISAM detection for preflight;
+  - value fidelity;
+  - streaming with an early stop, time limits, and cancellation while the work slots are full;
+  - error codes and positions, notices, procedure result sets, and replacement of dirty sessions;
+  - metadata against fixture schemas, including permission-limited accounts;
+  - connection tests through core.
+- The built packages load the WASM parser from `dist`.
+
+### Pending (needs input)
+
+- The PostgreSQL and MySQL versions of the real targets. The tests use 16 and 8.4.
+- Whether read-only and monitoring accounts can be created for the real connections. The connection test already reports both.
+
+### Deferred
+
+- The execution engine, queue, capture and transaction modes arrive in step 4.
+- SSH transport comes after v1.
+- MySQL compound statements need `DELIMITER`, as in the MySQL client.
+
 ## Step 2 — Identity with Keycloak
 
 Details, endpoints and the setup guide: [identity.md](identity.md).

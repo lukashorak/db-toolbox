@@ -34,6 +34,7 @@ export type {
   UpdateQueryInput,
 } from './services/library.js';
 export type { ExecutionDefaults } from './services/settings.js';
+export type { ConnectionDraft } from './services/databases.js';
 export { Authenticator } from './identity/authenticator.js';
 export { buildRealm, type RealmOptions } from './identity/realm.js';
 export {
@@ -42,3 +43,43 @@ export {
   type TokenVerifierOptions,
   type VerifiedToken,
 } from './identity/tokens.js';
+export { splitStatements, lineIndex, type SourceRange, type SplitStatement } from './sql/split.js';
+export { analyzeScript, analyzeStatement } from './sql/analyze.js';
+export {
+  preflight,
+  type PreflightCode,
+  type PreflightOptions,
+  type PreflightProblem,
+  type TransactionMode,
+} from './sql/preflight.js';
+export type {
+  AnalyzedStatement,
+  StatementAnalysis,
+  StatementKind,
+  TableRef,
+  TransactionControl,
+} from './sql/types.js';
+export { DbError, mapDbError, type DbErrorCategory, type DbErrorPosition } from './db/errors.js';
+export { AdapterRegistry, DirectTransport, type RegistryOptions } from './db/registry.js';
+export {
+  testConnection,
+  type Capability,
+  type ConnectionTestReport,
+  type TestFailureCategory,
+  type TestStep,
+} from './db/connection-test.js';
+export { describeTls } from './db/tls.js';
+export type * from './db/metadata.js';
+export type {
+  Cell,
+  ColumnInfo,
+  ConnectionTarget,
+  DbAdapter,
+  DbSession,
+  Endpoint,
+  ExecuteOptions,
+  PoolSizes,
+  ResultSink,
+  StatementOutcome,
+  Transport,
+} from './db/types.js';

@@ -30,6 +30,8 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "@types/pg-cursor": "2.7.2",
     "eslint": "10.14.0",
     "eslint-plugin-svelte": "3.24.1",
     "globals": "17.14.0",

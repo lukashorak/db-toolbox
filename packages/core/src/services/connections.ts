@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 import { AppError, assert } from '../domain/errors.js';
 import { newId } from '../domain/ids.js';
@@ -107,6 +108,16 @@ const toView = (r: Row): ConnectionView => ({
   updatedAt: String(r.updated_at),
 });
 
+/** MySQL's driver checks certificate names only for host names (see db/tls.ts). */
+function checkTls(engine: Engine, host: string, tlsMode: string): void {
+  if (engine === 'mysql' && tlsMode === 'verify-full' && isIP(host)) {
+    throw fieldError(
+      'host',
+      'For MySQL with verify-full, use the host name in the server certificate, or choose verify-ca.',
+    );
+  }
+}
+
 const ACTIVE = ACTIVE_EXECUTION_STATUSES.map((s) => `'${s}'`).join(', ');
 
 export class ConnectionService {
@@ -128,6 +139,7 @@ export class ConnectionService {
     if (value.engine === 'mysql' && value.schema) {
       throw fieldError('schema', 'MySQL has no separate schema; set the default database instead.');
     }
+    checkTls(value.engine, value.host, value.tlsMode);
     const id = newId('connection', this.ctx.clock.now());
     const now = isoNow(this.ctx);
     this.ctx.db.transaction(() => {
@@ -186,6 +198,7 @@ export class ConnectionService {
     if (before.engine === 'mysql' && schema) {
       throw fieldError('schema', 'MySQL has no separate schema; set the default database instead.');
     }
+    checkTls(before.engine, patch.host ?? before.host, patch.tlsMode ?? before.tlsMode);
     const replacePassword = typeof patch.password === 'string' && patch.password.length > 0;
     const { password: _password, engine: _engine, caPem, ...fields } = patch;
     const changed = changedFields(before, fields);
@@ -234,6 +247,7 @@ export class ConnectionService {
         },
       });
     });
+    this.ctx.onConnectionChanged?.(id);
     return toView(this.row(id));
   }
 
@@ -254,6 +268,7 @@ export class ConnectionService {
         outcome: 'succeeded',
       });
     });
+    this.ctx.onConnectionChanged?.(id);
     return toView(this.row(id));
   }
 
@@ -293,7 +308,7 @@ export class ConnectionService {
   delete(actor: Actor, id: string): ConnectionReferences {
     requirePermission(actor, 'connections.manage');
     const before = toView(this.row(id));
-    return this.ctx.db.transaction(() => {
+    const result = this.ctx.db.transaction(() => {
       const refs = this.references(actor, id);
       if (refs.activeExecutions.length) {
         throw new AppError(
@@ -314,6 +329,8 @@ export class ConnectionService {
       });
       return refs;
     });
+    this.ctx.onConnectionChanged?.(id);
+    return result;
   }
 
   /** Stores the outcome of a connection test (step 3). */

@@ -27,3 +27,5 @@ Each record states its status, date, context, decision and consequences.
 | [0019](0019-testing.md)                          | node:test, containers for integration, Playwright end-to-end      | Accepted |
 | [0020](0020-continuous-integration.md)           | GitHub Actions with service containers                            | Accepted |
 | [0021](0021-shared-mcp-profiles.md)              | MCP profiles are shared and bound to an OAuth client              | Accepted |
+| [0022](0022-read-only-layers.md)                 | Read-only enforcement layers and their limits                     | Accepted |
+| [0023](0023-values-as-text.md)                   | Result values are captured as the engine's text form              | Accepted |

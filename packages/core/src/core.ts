@@ -2,8 +2,10 @@ import { AuditLog } from './audit.js';
 import type { Limits } from './config.js';
 import { AppError } from './domain/errors.js';
 import { systemClock, type Clock } from './domain/types.js';
+import { AdapterRegistry } from './db/registry.js';
 import { SecretBox } from './security/secrets.js';
 import { ConnectionService } from './services/connections.js';
+import { DatabaseService } from './services/databases.js';
 import type { ServiceContext } from './services/context.js';
 import { LibraryService } from './services/library.js';
 import { ProfileService } from './services/profiles.js';
@@ -30,7 +32,12 @@ export interface Core {
   profiles: ProfileService;
   library: LibraryService;
   settings: SettingsService;
+  /** Target databases: adapters (pools opened on first use) and connection tests. */
+  databases: DatabaseService;
+  /** Closes the application database; open pools close in the background. */
   close(): void;
+  /** Closes pools to target databases, then the application database. */
+  shutdown(): Promise<void>;
 }
 
 /**
@@ -69,15 +76,36 @@ export function createCore(options: CoreOptions): Core {
     throw error;
   }
   const audit = new AuditLog(db, clock);
-  const ctx: ServiceContext = { db, secrets, audit, clock, limits: options.limits };
+  const registry = new AdapterRegistry({
+    // Work slots are shared by the GUI and MCP; metadata and control connections are reserved.
+    sizes: { work: options.limits.concurrencyPerConnection, metadata: 1, control: 1 },
+  });
+  const ctx: ServiceContext = {
+    db,
+    secrets,
+    audit,
+    clock,
+    limits: options.limits,
+    onConnectionChanged: (id) => void registry.invalidate(id),
+  };
+  const connections = new ConnectionService(ctx);
+  const profiles = new ProfileService(ctx);
   return {
     db,
     audit,
     users: new UserService(ctx),
-    connections: new ConnectionService(ctx),
-    profiles: new ProfileService(ctx),
+    connections,
+    profiles,
     library: new LibraryService(ctx),
     settings: new SettingsService(ctx),
-    close: () => db.close(),
+    databases: new DatabaseService(ctx, registry, connections, profiles),
+    close: () => {
+      void registry.closeAll();
+      db.close();
+    },
+    shutdown: async () => {
+      await registry.closeAll();
+      db.close();
+    },
   };
 }

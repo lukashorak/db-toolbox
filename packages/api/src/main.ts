@@ -64,7 +64,7 @@ const app = await buildServer(config, { logger, core, authenticator, version });
 const shutdown = async (signal: string) => {
   logger.info({ signal }, 'shutting down');
   await app.close();
-  core.close();
+  await core.shutdown();
   process.exit(0);
 };
 process.once('SIGTERM', () => void shutdown('SIGTERM'));

@@ -12,6 +12,8 @@ export interface ServiceContext {
   clock: Clock;
   /** Deployment limits; administrators may lower some of them through settings. */
   limits: Limits;
+  /** Called after a connection is changed, disabled or deleted, so open pools are replaced. */
+  onConnectionChanged?: (id: string) => void;
 }
 
 export const isoNow = (ctx: ServiceContext): string => ctx.clock.now().toISOString();

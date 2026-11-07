@@ -41,9 +41,14 @@ npm start              # run the built server
 Integration tests run against disposable containers (Docker required):
 
 ```sh
-scripts/integration/start.sh keycloak    # prints the variables to export
-KEYCLOAK_TEST_URL=http://127.0.0.1:18080 npm run test:integration
+scripts/integration/start.sh             # Keycloak, PostgreSQL 16, MySQL 8.4; prints the variables to export
+export KEYCLOAK_TEST_URL=http://127.0.0.1:18080 INTEGRATION_CERTS=$PWD/.integration/certs
+export POSTGRES_TEST_URL=postgres://postgres:workbench-it@localhost:15432/postgres
+export MYSQL_TEST_URL=mysql://root:workbench-it@localhost:13306/mysql
+npm run test:integration
 scripts/integration/stop.sh
 ```
+
+Target databases, TLS modes, read-only enforcement and metadata are described in [docs/databases.md](docs/databases.md).
 
 Keycloak setup, the realm generator (`npm run keycloak:realm`) and connecting Claude Code are described in [docs/identity.md](docs/identity.md).

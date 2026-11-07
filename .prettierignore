@@ -6,3 +6,4 @@ package-lock.json
 data/
 exports/
 docs/requirements.md
+.integration/

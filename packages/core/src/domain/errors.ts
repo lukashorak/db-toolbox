@@ -20,6 +20,7 @@ export const ERROR_CODES = {
   name_conflict: 409,
   client_id_conflict: 409,
   connection_busy: 409,
+  connection_disabled: 409,
   engine_immutable: 409,
   folder_cycle: 409,
   secret_unreadable: 500,

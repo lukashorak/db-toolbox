@@ -1,0 +1,341 @@
+import { loadModule, parseSync } from 'libpg-query';
+import { baseAnalysis, unsafe, type StatementAnalysis, type StatementKind } from './types.js';
+
+type Node = Record<string, unknown>;
+
+let ready: Promise<void> | undefined;
+/** Loads the WASM parser once. */
+export function loadPostgresParser(): Promise<void> {
+  ready ??= loadModule();
+  return ready;
+}
+
+/** Functions whose effects a read-only transaction does not stop, or that change server state. */
+const UNSAFE_FUNCTIONS: Record<string, string> = {
+  dblink: 'runs SQL over another connection that is not read-only',
+  dblink_exec: 'runs SQL over another connection that is not read-only',
+  dblink_send_query: 'runs SQL over another connection that is not read-only',
+  dblink_connect: 'opens another database connection',
+  dblink_connect_u: 'opens another database connection',
+  set_config: 'changes a configuration setting',
+  pg_terminate_backend: 'terminates another session',
+  pg_cancel_backend: 'cancels another session’s query',
+  pg_reload_conf: 'reloads the server configuration',
+  pg_rotate_logfile: 'rotates the server log',
+  pg_promote: 'promotes a standby',
+  pg_switch_wal: 'switches the WAL file',
+  pg_create_restore_point: 'creates a restore point',
+  pg_create_physical_replication_slot: 'creates a replication slot',
+  pg_create_logical_replication_slot: 'creates a replication slot',
+  pg_drop_replication_slot: 'drops a replication slot',
+  pg_log_backend_memory_contexts: 'writes to the server log',
+  pg_notify: 'sends a notification',
+  nextval: 'advances a sequence',
+  setval: 'changes a sequence',
+  pg_read_file: 'reads files on the database server',
+  pg_read_binary_file: 'reads files on the database server',
+  pg_ls_dir: 'lists files on the database server',
+  pg_file_write: 'writes files on the database server',
+  pg_file_rename: 'renames files on the database server',
+  pg_file_unlink: 'deletes files on the database server',
+  lo_import: 'reads files on the database server',
+  lo_export: 'writes files on the database server',
+  lo_create: 'creates a large object',
+  lo_creat: 'creates a large object',
+  lo_from_bytea: 'creates a large object',
+  lo_put: 'changes a large object',
+  lo_unlink: 'deletes a large object',
+};
+const UNSAFE_PREFIXES: [string, string][] = [
+  ['pg_advisory_', 'takes advisory locks'],
+  ['pg_try_advisory_', 'takes advisory locks'],
+  ['pg_stat_reset', 'resets statistics'],
+  ['pg_replication_origin_', 'changes replication state'],
+];
+
+const WRITE_NODES = new Set(['InsertStmt', 'UpdateStmt', 'DeleteStmt', 'MergeStmt']);
+
+/** Visits every node of the parse tree as (type, body). */
+function walk(value: unknown, visit: (type: string, body: Node) => void): void {
+  if (Array.isArray(value)) {
+    for (const item of value) walk(item, visit);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value as Node)) {
+    if (/^[A-Z]/.test(key) && child && typeof child === 'object' && !Array.isArray(child)) {
+      visit(key, child as Node);
+    }
+    walk(child, visit);
+  }
+}
+
+const strings = (list: unknown): string[] =>
+  Array.isArray(list)
+    ? list.map((item) => String(((item as Node).String as Node | undefined)?.sval ?? '')).filter(Boolean)
+    : [];
+
+/** Value of a boolean-ish constant: `off`, `false`, `0` and protobuf's omitted zero are false. */
+function constIsFalse(arg: unknown): boolean {
+  const c = (arg as Node | undefined)?.A_Const as Node | undefined;
+  if (!c) return false;
+  if ('sval' in c) return /^(off|false|0|no|f|n)$/i.test(String((c.sval as Node).sval ?? ''));
+  if ('ival' in c) return Number((c.ival as Node).ival ?? 0) === 0;
+  if ('boolval' in c) return !(c.boolval as Node).boolval;
+  return false;
+}
+
+/** DefElem lists such as BEGIN READ WRITE or SET SESSION CHARACTERISTICS. */
+function setsReadWrite(options: unknown): boolean {
+  return (Array.isArray(options) ? options : []).some((o) => {
+    const d = (o as Node).DefElem as Node | undefined;
+    return d?.defname === 'transaction_read_only' && constIsFalse(d.arg);
+  });
+}
+
+const READ_ONLY_SETTINGS = new Set(['transaction_read_only', 'default_transaction_read_only']);
+
+function commandName(type: string, body: Node): string {
+  switch (type) {
+    case 'SelectStmt':
+      return body.intoClause ? 'SELECT INTO' : 'SELECT';
+    case 'InsertStmt':
+      return 'INSERT';
+    case 'UpdateStmt':
+      return 'UPDATE';
+    case 'DeleteStmt':
+      return 'DELETE';
+    case 'MergeStmt':
+      return 'MERGE';
+    case 'ExplainStmt':
+      return 'EXPLAIN';
+    case 'VariableSetStmt':
+      return body.kind === 'VAR_RESET' || body.kind === 'VAR_RESET_ALL' ? 'RESET' : 'SET';
+    case 'VariableShowStmt':
+      return 'SHOW';
+    case 'TransactionStmt':
+      return String(body.kind ?? '')
+        .replace('TRANS_STMT_', '')
+        .replace('_', ' ');
+    case 'CreateStmt':
+      return 'CREATE TABLE';
+    case 'CreateTableAsStmt':
+      return 'CREATE TABLE AS';
+    case 'IndexStmt':
+      return 'CREATE INDEX';
+    case 'ViewStmt':
+      return 'CREATE VIEW';
+    case 'CreateFunctionStmt':
+      return 'CREATE FUNCTION';
+    case 'DropStmt':
+      return 'DROP';
+    case 'AlterTableStmt':
+      return 'ALTER TABLE';
+    default:
+      return type
+        .replace(/Stmt$/, '')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .toUpperCase();
+  }
+}
+
+function checkTree(analysis: StatementAnalysis, tree: unknown): void {
+  walk(tree, (type, body) => {
+    if (WRITE_NODES.has(type)) {
+      analysis.kind = 'write';
+      unsafe(analysis, 'contains a data-modifying statement');
+    }
+    if (type === 'LockingClause') unsafe(analysis, 'takes row locks (FOR UPDATE / FOR SHARE)');
+    if (type === 'SelectStmt' && body.intoClause) {
+      analysis.kind = 'write';
+      unsafe(analysis, 'SELECT INTO creates a table');
+    }
+    if (type === 'FuncCall') {
+      const name = (strings(body.funcname).at(-1) ?? '').toLowerCase();
+      const reason =
+        UNSAFE_FUNCTIONS[name] ?? UNSAFE_PREFIXES.find(([prefix]) => name.startsWith(prefix))?.[1];
+      if (reason) unsafe(analysis, `${name}() ${reason}`);
+    }
+  });
+}
+
+function analyzeNode(type: string, body: Node): StatementAnalysis {
+  const kindOf = (kind: StatementKind) => baseAnalysis(kind, commandName(type, body));
+  switch (type) {
+    case 'SelectStmt': {
+      const a = kindOf('read');
+      a.returnsRows = !body.intoClause;
+      checkTree(a, { SelectStmt: body });
+      return a;
+    }
+    case 'InsertStmt':
+    case 'UpdateStmt':
+    case 'DeleteStmt':
+    case 'MergeStmt': {
+      const a = unsafe(kindOf('write'), 'modifies data');
+      // PostgreSQL 18 parse trees use returningClause.exprs; older ones returningList.
+      const returning = ((body.returningClause as Node | undefined)?.exprs ?? body.returningList) as unknown;
+      a.returnsRows = Array.isArray(returning) && returning.length > 0;
+      checkTree(a, body);
+      return a;
+    }
+    case 'ExplainStmt': {
+      const analyze = (Array.isArray(body.options) ? body.options : []).some((o) => {
+        const d = (o as Node).DefElem as Node | undefined;
+        return d?.defname === 'analyze' && !constIsFalse(d.arg);
+      });
+      const [innerType, innerBody] = Object.entries((body.query as Node) ?? {})[0] ?? [];
+      if (analyze && innerType) {
+        const inner = analyzeNode(innerType, innerBody as Node);
+        inner.command = `EXPLAIN ANALYZE ${inner.command}`;
+        inner.returnsRows = true;
+        if (!inner.readOnlySafe) inner.reasons.unshift('EXPLAIN ANALYZE executes the statement');
+        return inner;
+      }
+      const a = kindOf('read');
+      a.returnsRows = true;
+      return a;
+    }
+    case 'VariableShowStmt': {
+      const a = kindOf('read');
+      a.returnsRows = true;
+      return a;
+    }
+    case 'VariableSetStmt': {
+      const a = kindOf('session');
+      const name = String(body.name ?? '').toLowerCase();
+      if (
+        READ_ONLY_SETTINGS.has(name) &&
+        (body.kind === 'VAR_SET_VALUE' ? constIsFalse((body.args as unknown[])?.[0]) : true)
+      ) {
+        unsafe(a, `changing ${name} would disable read-only mode`);
+      }
+      if ((name === 'session characteristics' || name === 'transaction') && setsReadWrite(body.args)) {
+        unsafe(a, 'READ WRITE would disable read-only mode');
+      }
+      if (body.kind === 'VAR_RESET_ALL')
+        unsafe(a, 'RESET ALL would restore settings including read-only mode');
+      a.changesSession = !body.is_local;
+      return a;
+    }
+    case 'TransactionStmt': {
+      const a = kindOf('transaction');
+      const kind = String(body.kind ?? '');
+      a.transactionControl =
+        kind === 'TRANS_STMT_BEGIN' || kind === 'TRANS_STMT_START'
+          ? 'begin'
+          : kind === 'TRANS_STMT_COMMIT' ||
+              kind === 'TRANS_STMT_PREPARE' ||
+              kind === 'TRANS_STMT_COMMIT_PREPARED'
+            ? 'commit'
+            : kind === 'TRANS_STMT_ROLLBACK' || kind === 'TRANS_STMT_ROLLBACK_PREPARED'
+              ? 'rollback'
+              : 'savepoint';
+      a.readOnlySafe = true;
+      if (setsReadWrite(body.options)) unsafe(a, 'READ WRITE would disable read-only mode');
+      if (kind.includes('PREPARED') || kind === 'TRANS_STMT_PREPARE')
+        a.unsupported = 'Two-phase commit is not supported.';
+      return a;
+    }
+    case 'CopyStmt': {
+      if (body.is_from) return unsafe(kindOf('write'), 'COPY FROM loads data');
+      if (body.filename || body.is_program) {
+        return unsafe(kindOf('write'), 'COPY TO a file or program writes on the database server');
+      }
+      const a = kindOf('read');
+      a.unsupported = 'COPY is not supported here. Use SELECT and export the result.';
+      return a;
+    }
+    case 'DeclareCursorStmt':
+    case 'FetchStmt':
+    case 'ClosePortalStmt': {
+      const a = kindOf('session');
+      a.unsupported = 'Cursors are managed by the workbench; run the query directly.';
+      return a;
+    }
+    case 'PrepareStmt':
+    case 'DeallocateStmt': {
+      const a = kindOf('session');
+      a.changesSession = true;
+      return a;
+    }
+    case 'ExecuteStmt':
+      return unsafe(kindOf('unknown'), 'EXECUTE runs a prepared statement that cannot be checked');
+    case 'DoStmt':
+      return unsafe(kindOf('unknown'), 'DO runs procedural code that cannot be checked');
+    case 'CallStmt':
+      return unsafe(kindOf('write'), 'procedures can modify data and control transactions');
+    case 'ListenStmt':
+    case 'UnlistenStmt':
+    case 'DiscardStmt': {
+      const a = kindOf('session');
+      a.changesSession = true;
+      return a;
+    }
+    case 'LockStmt':
+      return unsafe(kindOf('write'), 'takes table locks');
+    case 'VacuumStmt': {
+      const a = unsafe(kindOf('write'), 'maintenance command');
+      a.command = body.is_vacuumcmd ? 'VACUUM' : 'ANALYZE';
+      a.noTransactionBlock = Boolean(body.is_vacuumcmd);
+      return a;
+    }
+    default: {
+      const a = unsafe(kindOf('write'), 'changes the database');
+      const concurrent =
+        Boolean(body.concurrent) ||
+        (Array.isArray(body.params) &&
+          body.params.some((p) => ((p as Node).DefElem as Node | undefined)?.defname === 'concurrently'));
+      a.noTransactionBlock =
+        concurrent ||
+        [
+          'CreatedbStmt',
+          'DropdbStmt',
+          'CreateTableSpaceStmt',
+          'DropTableSpaceStmt',
+          'AlterSystemStmt',
+        ].includes(type);
+      return a;
+    }
+  }
+}
+
+/** Combines analyses when one statement text contains several parsed statements. */
+function combine(parts: StatementAnalysis[]): StatementAnalysis {
+  if (parts.length === 1) return parts[0] as StatementAnalysis;
+  const order: StatementKind[] = ['read', 'session', 'transaction', 'write', 'unknown'];
+  const kind = parts.map((p) => p.kind).reduce((a, b) => (order.indexOf(b) > order.indexOf(a) ? b : a));
+  const result = baseAnalysis(kind, parts.map((p) => p.command).join('; '));
+  result.readOnlySafe = parts.every((p) => p.readOnlySafe);
+  result.reasons = [...new Set(parts.flatMap((p) => p.reasons))];
+  result.changesSession = parts.some((p) => p.changesSession);
+  result.returnsRows = parts.some((p) => p.returnsRows);
+  result.noTransactionBlock = parts.some((p) => p.noTransactionBlock);
+  result.transactionControl = parts.find((p) => p.transactionControl)?.transactionControl;
+  result.unsupported = parts.find((p) => p.unsupported)?.unsupported;
+  return result;
+}
+
+/** Analyzes one PostgreSQL statement. Call `loadPostgresParser()` first. */
+export function analyzePostgres(text: string): StatementAnalysis {
+  let parsed: { stmts?: { stmt: Node }[] };
+  try {
+    parsed = parseSync(text) as { stmts?: { stmt: Node }[] };
+  } catch (error) {
+    const a = unsafe(baseAnalysis('unknown', 'UNKNOWN'), 'the statement could not be parsed');
+    const details = (error as { sqlDetails?: { message?: string; cursorPosition?: number } }).sqlDetails;
+    a.parseError = {
+      message: details?.message ?? (error as Error).message,
+      ...(typeof details?.cursorPosition === 'number'
+        ? { offset: Buffer.from(text).subarray(0, details.cursorPosition).toString().length }
+        : {}),
+    };
+    return a;
+  }
+  const parts = (parsed.stmts ?? []).map(({ stmt }) => {
+    const [type, body] = Object.entries(stmt)[0] ?? ['Unknown', {}];
+    return analyzeNode(type, body as Node);
+  });
+  if (!parts.length) return unsafe(baseAnalysis('unknown', 'EMPTY'), 'no statement found');
+  return combine(parts);
+}
