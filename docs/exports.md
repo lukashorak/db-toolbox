@@ -4,12 +4,12 @@ Exports are written from captured results only. They never run SQL, so creating,
 
 ## When an export is possible
 
-| Result completeness                               | Full export              | "Export preview only" |
-| ------------------------------------------------- | ------------------------ | --------------------- |
-| `complete`                                        | yes                      | yes                   |
-| `preview_limited`, `quota_limited`, `interrupted` | no (`export_incomplete`) | yes                   |
-| `capturing`                                       | no (`export_not_ready`)  | no                    |
-| `expired`, `deleted`                              | no (`result_expired`)    | no                    |
+| Result completeness                               | Full export             | "Export preview only" |
+| ------------------------------------------------- | ----------------------- | --------------------- |
+| `complete`                                        | yes                     | yes                   |
+| `preview_limited`, `quota_limited`, `interrupted` | no (`not_complete`)     | yes                   |
+| `capturing`                                       | no (`export_not_ready`) | no                    |
+| `expired`, `deleted`                              | no (`result_expired`)   | no                    |
 
 A preview-only export says so in two places:
 

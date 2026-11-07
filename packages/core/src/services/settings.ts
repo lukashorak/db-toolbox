@@ -93,3 +93,5 @@ export class SettingsService {
     return this.defaults();
   }
 }
+
+export { schema as executionDefaultsSchema };

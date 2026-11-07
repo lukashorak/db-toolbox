@@ -129,3 +129,5 @@ export class DatabaseService {
     });
   }
 }
+
+export { draftSchema as connectionDraftSchema };

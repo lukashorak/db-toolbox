@@ -4,6 +4,10 @@
  */
 export const ERROR_CODES = {
   validation_failed: 400,
+  /** The script was rejected before it ran; the stored execution is in `details.execution`. */
+  preflight_rejected: 422,
+  /** As preflight_rejected, when a read-only policy is the reason. */
+  read_only_policy: 422,
   /** Malformed HTTP request (bad JSON, wrong media type, too large); the HTTP status says which. */
   bad_request: 400,
   unauthenticated: 401,
@@ -23,14 +27,16 @@ export const ERROR_CODES = {
   connection_disabled: 409,
   engine_immutable: 409,
   folder_cycle: 409,
-  request_conflict: 409,
+  idempotency_conflict: 409,
   result_expired: 410,
   export_not_ready: 409,
-  export_incomplete: 409,
+  not_complete: 409,
   export_missing: 410,
   exports_unavailable: 503,
   secret_unreadable: 500,
   encryption_key_mismatch: 500,
+  /** The target database reported an error; `details.category` says which kind. */
+  database_error: 502,
   internal: 500,
 } as const;
 

@@ -282,3 +282,5 @@ export class ProfileService {
       });
   }
 }
+
+export { createSchema as profileCreateSchema, updateSchema as profileUpdateSchema };

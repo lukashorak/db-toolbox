@@ -9,6 +9,41 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 6 — HTTP API
+
+Reference: [api.md](api.md), and the generated `GET /api/v1/openapi.json`.
+
+### What works
+
+- Versioned resources over the core services:
+  - connections, including tests and references;
+  - metadata;
+  - executions: submit, list, status, cancel, result pages, result deletion;
+  - exports and downloads;
+  - folders and saved queries;
+  - MCP profiles and their effective access;
+  - execution settings and audit.
+- One error model with stable codes, including `idempotency_conflict`, `not_complete`, `read_only_policy`, `preflight_rejected` (with the stored execution) and `database_error` (with category and engine code).
+- Server-sent events for execution and export status, limited to what the caller may see. The stream ends when the token expires, and clients resume by fetching executions by ID.
+- An OpenAPI 3.0 document built from the route registry and the services' zod schemas.
+- Downloads stream the file with a safe `Content-Disposition`.
+
+### How it was verified
+
+- `npm run check` passes. The contract tests (`packages/api/test/contract.test.ts`) call every endpoint without a token and with the reader, writer, administrator and monitor-only roles, and check status codes, error codes and the key response shapes. They also check:
+  - the SSE stream: owner-only events, and the stream ending at token expiry;
+  - that the OpenAPI document covers every route.
+- Integration (`test/integration/api.test.ts`, PostgreSQL):
+  - metadata over HTTP;
+  - a submission followed over SSE;
+  - a dropped stream, then a reconnect that resumes by ID and reaches the same final state (AC7);
+  - rows read back;
+  - an idempotent resubmission.
+
+### Deferred
+
+- Approval endpoints arrive in step 7, and monitoring endpoints in steps 9–10.
+
 ## Step 5 — Exports and retention
 
 Format reference: [exports.md](exports.md).
@@ -54,7 +89,7 @@ Details: [executions.md](executions.md).
 
 - Submission:
   - the execution, its SQL snapshot and its statements are stored before the call returns;
-  - request-key idempotency, with `request_conflict` for a changed payload;
+  - request-key idempotency, with `idempotency_conflict` for a changed payload;
   - timeout bounds per capture mode and MCP profile;
   - preflight rejections are stored with their problems.
 - Scheduling:

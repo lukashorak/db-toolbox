@@ -35,7 +35,7 @@ Status, transaction outcome and result completeness are reported separately.
    - preview runs: up to the ordinary limit (30 s by default);
    - full capture: up to the administrator maximum (5 min by default);
    - MCP: also capped by the profile.
-4. Idempotency: `(owner, requestKey)` is unique. The same key with the same payload returns the existing execution. The same key with a different SQL text or different settings is `request_conflict`.
+4. Idempotency: `(owner, requestKey)` is unique. The same key with the same payload returns the existing execution. The same key with a different SQL text or different settings is `idempotency_conflict`.
 5. Analysis and [preflight](databases.md#preflight). MySQL single-transaction runs look up storage engines first.
 6. The execution, its SQL snapshot and one row per statement are stored in one transaction, then the call returns. A rejected script is stored as `preflight_rejected`, with its problems in `error.detail`.
 

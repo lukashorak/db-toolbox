@@ -363,3 +363,5 @@ export class ConnectionService {
       });
   }
 }
+
+export { createSchema as connectionCreateSchema, updateSchema as connectionUpdateSchema };

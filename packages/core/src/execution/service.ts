@@ -216,7 +216,7 @@ export class ExecutionService {
     if (existing) {
       if (existing.request_hash !== hash) {
         throw new AppError(
-          'request_conflict',
+          'idempotency_conflict',
           'This request key was already used for a different SQL text or different settings.',
           { executionId: String(existing.id) },
         );
@@ -1105,3 +1105,5 @@ function describe(error: unknown): { code: string | null; message: string; detai
 }
 
 export type { Cell };
+
+export { submitSchema as executionSubmitSchema };

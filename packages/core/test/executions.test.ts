@@ -65,7 +65,7 @@ describe('execution submission', () => {
         requestKey: 'key-00000002',
         captureMode: 'full',
       }),
-      code('request_conflict'),
+      code('idempotency_conflict'),
     );
     // Keys are per owner.
     const other = await core.executions.submit(admin, {

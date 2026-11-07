@@ -293,7 +293,7 @@ for (const { engine, variable, prepare } of engines) {
       const first = await submit('SELECT 1', { requestKey: key });
       const again = await submit('SELECT 1', { requestKey: key });
       assert.equal(again.id, first.id);
-      await assert.rejects(submit('SELECT 2', { requestKey: key }), { code: 'request_conflict' });
+      await assert.rejects(submit('SELECT 2', { requestKey: key }), { code: 'idempotency_conflict' });
     });
 
     it('queues beyond two running executions per connection, first in first out, with a visible reason', async () => {

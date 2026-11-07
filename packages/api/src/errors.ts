@@ -1,5 +1,5 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { AppError, ERROR_CODES, type Config, type ErrorCode } from '@workbench/core';
+import { AppError, DbError, ERROR_CODES, type Config, type ErrorCode } from '@workbench/core';
 import { MCP_PATH } from '@workbench/mcp';
 
 export interface ErrorBody {
@@ -51,10 +51,18 @@ export function sendError(
  * internal detail (SQL, stack traces, credentials) for unexpected failures.
  */
 export function installErrorHandler(app: FastifyInstance, config: Config): void {
-  app.setErrorHandler((error: FastifyError | AppError, request, reply) => {
+  app.setErrorHandler((error: FastifyError | AppError | DbError, request, reply) => {
     if (error instanceof AppError) {
       if (error.status >= 500) request.log.error({ err: error }, 'request failed');
       return sendError(config, request, reply, error);
+    }
+    if (error instanceof DbError) {
+      return sendError(
+        config,
+        request,
+        reply,
+        new AppError('database_error', error.message, { ...error.toJSON(), message: undefined }),
+      );
     }
     const fastifyError = error as FastifyError;
     if (fastifyError.validation) {

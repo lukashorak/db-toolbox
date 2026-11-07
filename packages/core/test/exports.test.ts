@@ -129,7 +129,7 @@ describe('export formats', () => {
 describe('export rules', () => {
   it('exports only complete results in full; previews are labelled', async () => {
     const { core, id } = await fixture('preview_limited');
-    await assert.rejects(core.exports.create(writer, id, 0, { format: 'csv' }), code('export_incomplete'));
+    await assert.rejects(core.exports.create(writer, id, 0, { format: 'csv' }), code('not_complete'));
     const preview = await core.exports.create(writer, id, 0, { format: 'json', previewOnly: true });
     await core.exports.idle();
     const ready = core.exports.get(writer, preview.id);

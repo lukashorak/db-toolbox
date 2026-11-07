@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
 import { mkdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -85,6 +86,8 @@ function write(stream: WriteStream, chunk: string): Promise<void> {
  * SQL, so regenerating it cannot change the database or create another execution.
  */
 export class ExportService {
+  /** `change` events ({ id, executionId, status }) for live status in the GUI. */
+  readonly events = new EventEmitter();
   readonly #pending = new Set<Promise<void>>();
 
   constructor(
@@ -109,7 +112,7 @@ export class ExportService {
       throw new AppError('export_not_ready', 'The result is still being captured.');
     if (!v.previewOnly && completeness !== 'complete') {
       throw new AppError(
-        'export_incomplete',
+        'not_complete',
         `Only a complete result can be exported in full; this one is ${completeness.replace('_', ' ')}. Export the preview only, or run the query again with full capture.`,
         { completeness },
       );
@@ -391,8 +394,22 @@ export class ExportService {
     this.ctx.onResultBytesFreed?.(bytes);
   }
 
+  #changed(id: string): void {
+    const row = this.ctx.db.get('SELECT execution_id, status FROM exports WHERE id = :id', { id });
+    if (row)
+      this.events.emit('change', { id, executionId: String(row.execution_id), status: String(row.status) });
+  }
+
   #generate(id: string): void {
-    const job = this.#write(id).finally(() => this.#pending.delete(job));
+    this.#changed(id);
+    const job = this.#write(id).finally(() => {
+      this.#pending.delete(job);
+      try {
+        this.#changed(id);
+      } catch {
+        // Database closed during shutdown.
+      }
+    });
     this.#pending.add(job);
   }
 
@@ -488,3 +505,5 @@ export class ExportService {
     }
   }
 }
+
+export { createSchema as exportCreateSchema };

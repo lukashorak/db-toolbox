@@ -399,3 +399,10 @@ export class LibraryService {
     });
   }
 }
+
+export {
+  folderCreate as folderCreateSchema,
+  folderUpdate as folderUpdateSchema,
+  queryCreate as queryCreateSchema,
+  queryUpdate as queryUpdateSchema,
+};
