@@ -9,6 +9,32 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 11 — GUI: Workbench, results and Executions (milestone M2)
+
+Reference: [gui.md](gui.md#workbench-results-and-executions-step-11).
+
+### What works
+
+- Workbench:
+  - tabs with their own connection and run settings, locked during a run;
+  - CodeMirror 6 with dialects, completion, formatting and shortcuts;
+  - a precise run target from the server's splitter;
+  - live preflight warnings, and error positions in the editor.
+- Results: separate status, transaction and capture badges; statement tabs; a grid with labelled local sort and filter; a row inspector; full result, both exports, and share with MCP, each with the reason when unavailable.
+- Executions: filters and a detail view with the SQL snapshot, statements, timeline, outcome guidance, capture, exports, disclosure, request key, retain, delete and cancel.
+- API additions:
+  - `POST /sql/check` (ranges, policy and preflight without running);
+  - `POST /executions/{id}/retain`;
+  - `POST /executions/{id}/results/{index}/share`;
+  - filters for the execution list.
+- Milestone M2: a person can do the same work in the GUI as through the API and Claude Code.
+
+### How it was verified
+
+- `npm run check` passes: 161 server and contract tests (1 more skipped as root) and 10 component tests. The contract tests now cover check, retain and share.
+- `npm run test:integration` passes: 108 tests.
+- `npm run test:e2e` (Playwright, Chromium, Keycloak 26.4, PostgreSQL 16) passes: 8 flows. The new ones are AC3 (5,000 rows counted in the downloaded CSV and JSON), AC6 (partial commit versus rollback) and AC7 (recovery after a reload and in a new browser).
+
 ## Step 10 — GUI: Connections, Explorer, Saved queries
 
 Reference: [gui.md](gui.md#connections-explorer-and-saved-queries-step-10).

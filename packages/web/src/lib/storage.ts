@@ -24,12 +24,32 @@ export function write(
   }
 }
 
+export interface RunSettings {
+  captureMode: 'preview' | 'full';
+  transactionMode: 'per_statement' | 'atomic';
+  continueOnError: boolean;
+  timeoutSeconds: number | null;
+  /** null: working results (24 h); a number keeps them that many days. */
+  retainDays: number | null;
+}
+
 export interface DraftTab {
   id: string;
   title: string;
   sql: string;
   connectionId: string | null;
+  settings?: RunSettings;
+  /** Executions started from this tab, newest first. */
+  runs?: string[];
 }
+
+export const DEFAULT_SETTINGS: RunSettings = {
+  captureMode: 'preview',
+  transactionMode: 'per_statement',
+  continueOnError: false,
+  timeoutSeconds: null,
+  retainDays: null,
+};
 
 const TABS = 'workbench.tabs.v1';
 

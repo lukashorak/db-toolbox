@@ -1,5 +1,8 @@
 /** Shared setup for Playwright GUI tests: a Keycloak realm, the built app and a browser. */
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
@@ -24,6 +27,7 @@ export type Locator = {
   selectOption(v: string | { label: string }): Promise<unknown>;
   check(): Promise<void>;
   count(): Promise<number>;
+  getAttribute(name: string): Promise<string | null>;
   first(): Locator;
   nth(i: number): Locator;
   locator(selector: string): Locator;
@@ -38,6 +42,8 @@ export type Page = Locator & {
   click(selector: string): Promise<void>;
   reload(): Promise<unknown>;
   getByTestId(id: string): Locator;
+  waitForEvent(event: 'download'): Promise<{ path(): Promise<string>; suggestedFilename(): string }>;
+  keyboard: { press(key: string): Promise<void> };
   close(): Promise<void>;
 };
 export type Browser = { newPage(): Promise<Page>; close(): Promise<void> };
@@ -76,10 +82,12 @@ export async function startGui(
     KEYCLOAK_ISSUER: issuer,
     ENCRYPTION_KEY: randomBytes(32).toString('base64'),
   });
+  const exportDir = await mkdtemp(join(tmpdir(), 'workbench-gui-exports-'));
   const core = createCore({
     databaseFile: ':memory:',
     encryptionKey: config.encryptionKey,
     limits: config.limits,
+    exportDir,
   });
   const verifier = new TokenVerifier({
     issuer,
@@ -115,6 +123,7 @@ export async function startGui(
       await browser.close();
       await app.close();
       await core.shutdown();
+      await rm(exportDir, { recursive: true, force: true });
       await keycloak.deleteRealm(realm);
     },
   };

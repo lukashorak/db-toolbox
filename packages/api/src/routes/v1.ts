@@ -197,11 +197,49 @@ export function v1Routes(core: Core): RouteRegistry {
     query: z.object({
       status: z.string().optional(),
       connectionId: z.string().optional(),
+      source: z.enum(['gui', 'api', 'mcp']).optional(),
+      from: z.string().optional(),
+      to: z.string().optional(),
       before: z.string().optional(),
       limit: z.coerce.number().int().min(1).max(200).optional(),
     }),
     handler: ({ actor, query }) =>
       core.executions.list(actor, query as Parameters<Core['executions']['list']>[1]),
+  });
+  r.add({
+    method: 'POST',
+    url: '/sql/check',
+    tag: 'Executions',
+    access: 'query:read',
+    summary: 'Statement ranges, policy and preflight problems for SQL, without running it (editor support)',
+    body: z
+      .object({
+        connectionId: z.string(),
+        sql: z.string().max(1_000_000),
+        transactionMode: z.enum(['per_statement', 'atomic']).optional(),
+      })
+      .strict(),
+    handler: ({ actor, body }) => core.executions.check(actor, body),
+  });
+  r.add({
+    method: 'POST',
+    url: '/executions/:id/retain',
+    tag: 'Executions',
+    access: 'owner or admin',
+    summary: 'Keep the captured results for a number of days (within the administrator maximum)',
+    body: z.object({ days: z.number().int() }).strict(),
+    handler: ({ actor, params, body }) => core.executions.retain(actor, String(params.id), body.days),
+  });
+  r.add({
+    method: 'POST',
+    url: '/executions/:id/results/:index/share',
+    tag: 'Approvals',
+    access: 'the execution owner, in the GUI',
+    summary: 'Share a result with an MCP profile in advance (scoped approval with an amount and an expiry)',
+    body: schemas.disclosureDecideSchema.extend({ profileId: z.string() }),
+    status: 201,
+    handler: ({ actor, params, body }) =>
+      core.disclosure.grant(actor, String(params.id), index(params.index), body),
   });
   r.add({
     method: 'GET',

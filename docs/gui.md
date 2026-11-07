@@ -53,7 +53,33 @@ A Svelte 5 single-page app (`packages/web`) served by the API process. It talks 
   - Name conflicts are reported in the form.
   - Folder deletion lists its consequences, whether contents move up or are deleted.
 
-Screens still to come: the Workbench editor, results and executions (step 11); monitoring, MCP access and settings (step 12).
+## Workbench, results and Executions (step 11)
+
+- **Workbench.**
+  - Each tab has its own connection, SQL and run settings: capture (preview or full), transaction mode (per statement, optionally continuing after errors, or single transaction), timeout and how long to keep results. The settings are locked while the tab has a run going.
+  - The CodeMirror 6 editor has the PostgreSQL or MySQL dialect, completion from the default schema's tables, formatting (`sql-formatter`), search and a shortcuts panel.
+  - The Run button names its target precisely: "Run statement 2 · line 5", or "Run selection". The target is highlighted in the editor. Statement ranges come from the server's own splitter through `POST /api/v1/sql/check`, so the editor and the executor never disagree.
+  - Preflight problems, such as read-only violations, show before running. After a run, error positions are marked in the editor.
+- **Results.**
+  - Separate badges for status, transaction outcome and capture, plus the policy.
+  - Statement tabs with command, line, affected rows, duration, errors and notices.
+  - A grid with sorting and filtering, labelled as applying only to the rows shown, and a row inspector.
+  - Actions that say why they are unavailable when they are:
+    - **Run full result** — a new execution, for reads only;
+    - **Export full result** — complete results only;
+    - **Export preview only** — labelled partial;
+    - **Share full result with MCP** — a scoped approval for one profile with an expiry, through `POST /executions/{id}/results/{index}/share`.
+  - Unknown outcomes come with guidance.
+- **Executions.**
+  - Filters for source, status, connection and time.
+  - The detail view shows:
+    - the SQL snapshot, statements and timeline;
+    - transaction outcome and capture;
+    - exports with download, disclosure, and the request key;
+    - retain (`POST /executions/{id}/retain`), delete stored results, cancel, and open in the Workbench.
+- Runs of a tab are kept by ID with the tab. After a reload they are fetched again, and the Executions screen finds them from any browser (AC7).
+
+Screens still to come: monitoring, MCP access and settings (step 12).
 
 ## Tests
 
@@ -68,3 +94,7 @@ KEYCLOAK_TEST_URL=http://127.0.0.1:18080 npm run test:e2e   # Playwright smoke
   - the connection lifecycle: test before saving with the test CA, save, edit with the password kept, test, disable, enable, delete with references;
   - the Explorer: details, keys, preview data, Open SELECT into the Workbench, and the insufficient-permission state of a read-only account;
   - saved-query management: folders, a name conflict, rename, duplicate, move, folder deletion with its contents, and opening a query in the Workbench.
+- The Workbench flows (`test/e2e/workbench.test.ts`) cover:
+  - preview, then full result, then CSV and JSON exports, with the 5,000 rows counted in the downloaded files (AC3);
+  - partial commit per statement versus rollback in a single transaction (AC6);
+  - a running execution recovered after a reload and in a new browser (AC7).

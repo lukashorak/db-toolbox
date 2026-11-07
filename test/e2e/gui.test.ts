@@ -148,11 +148,11 @@ describe(
       await page.getByRole('heading', { name: 'Workbench' }).waitFor();
       assert.ok((await page.locator('header').textContent())?.includes('alice'));
 
-      await page.getByTestId('sql-draft').fill('SELECT 42 -- draft');
+      await page.getByTestId('sql-editor').fill('SELECT 42 -- draft');
       await page.reload();
-      await page.getByTestId('sql-draft').waitFor();
+      await page.getByTestId('sql-editor').waitFor();
       assert.equal(
-        await page.getByTestId('sql-draft').inputValue(),
+        await page.getByTestId('sql-editor').textContent(),
         'SELECT 42 -- draft',
         'the draft survives a reload',
       );

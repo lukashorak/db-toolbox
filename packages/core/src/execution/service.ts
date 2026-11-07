@@ -355,7 +355,15 @@ export class ExecutionService {
 
   list(
     actor: Actor,
-    query: { status?: ExecutionStatus; connectionId?: string; limit?: number; before?: string } = {},
+    query: {
+      status?: ExecutionStatus;
+      connectionId?: string;
+      source?: Actor['source'];
+      from?: string;
+      to?: string;
+      limit?: number;
+      before?: string;
+    } = {},
   ) {
     requirePermission(actor, 'sql.read');
     const where = ['owner = :owner'];
@@ -363,6 +371,17 @@ export class ExecutionService {
       owner: actor.subject,
       limit: Math.min(query.limit ?? 50, 200),
     };
+    for (const [key, clause] of [
+      ['source', 'source = :source'],
+      ['from', 'submitted_at >= :from'],
+      ['to', 'submitted_at <= :to'],
+    ] as const) {
+      const value = query[key];
+      if (value) {
+        where.push(clause);
+        params[key] = value;
+      }
+    }
     if (query.status) {
       where.push('status = :status');
       params.status = query.status;
@@ -536,6 +555,87 @@ export class ExecutionService {
   #changed(id: string): void {
     const row = this.ctx.db.get('SELECT status, connection_id FROM executions WHERE id = :id', { id });
     this.events.emit('change', { id, status: row?.status, connectionId: row?.connection_id ?? null });
+  }
+
+  /**
+   * What would happen if this SQL were submitted: statement ranges for the editor, the policy and
+   * the preflight problems. Nothing is stored and nothing runs.
+   */
+  async check(
+    actor: Actor,
+    input: { connectionId: string; sql: string; transactionMode?: 'per_statement' | 'atomic' },
+  ): Promise<{
+    readOnly: boolean;
+    policySources: string[];
+    statements: unknown[];
+    problems: PreflightProblem[];
+  }> {
+    requirePermission(actor, 'sql.read');
+    const connection = this.deps.databases.usable(actor, input.connectionId);
+    const profile = actor.profileId ? this.deps.profiles.findByClientId(actor.clientId) : undefined;
+    const policy = evaluateWritePolicy({
+      actor,
+      connection: { name: connection.name, readOnly: connection.readOnly },
+      ...(profile ? { profile: { name: profile.name, readOnly: profile.readOnly } } : {}),
+    });
+    const statements = await analyzeScript(input.sql, connection.engine);
+    const problems = await preflight(statements, {
+      engine: connection.engine,
+      transactionMode: input.transactionMode ?? 'per_statement',
+      readOnly: policy.readOnly,
+      readOnlySources: policy.sources,
+    });
+    return {
+      readOnly: policy.readOnly,
+      policySources: policy.sources,
+      statements: statements.map((s) => ({
+        index: s.index,
+        range: s.range,
+        incomplete: s.incomplete,
+        kind: s.analysis.kind,
+        command: s.analysis.command,
+        readOnlySafe: s.analysis.readOnlySafe,
+        returnsRows: s.analysis.returnsRows,
+        reasons: s.analysis.reasons,
+      })),
+      problems,
+    };
+  }
+
+  /** Keeps captured results for `days` (at most the administrator maximum) after the run ended. */
+  retain(actor: Actor, id: string, days: number): ExecutionView {
+    const row = this.#row(id);
+    this.#assertVisible(actor, row);
+    const max = this.deps.settings.defaults().retainedMaxDays;
+    if (!Number.isInteger(days) || days < 1 || days > max) {
+      throw new AppError('validation_failed', `Keep results for 1 to ${max} days.`, {
+        fields: [{ path: 'days', message: `1 to ${max}` }],
+      });
+    }
+    const base = Date.parse(String(row.finished_at ?? row.submitted_at));
+    const expires = new Date(base + days * 86_400_000).toISOString();
+    this.ctx.db.transaction(() => {
+      this.ctx.db.run(
+        "UPDATE executions SET retention = 'retained', retain_days = :days, result_expires_at = :expires WHERE id = :id",
+        { id, days, expires },
+      );
+      this.ctx.db.run(
+        "UPDATE result_sets SET expires_at = :expires WHERE execution_id = :id AND completeness NOT IN ('expired', 'deleted')",
+        { id, expires },
+      );
+      this.ctx.db.run(
+        "UPDATE exports SET expires_at = :expires WHERE execution_id = :id AND status IN ('generating', 'ready')",
+        { id, expires },
+      );
+      this.ctx.audit.record({
+        actor,
+        action: 'execution.retain',
+        target: { type: 'execution', id },
+        outcome: 'succeeded',
+        details: { days },
+      });
+    });
+    return this.view(id);
   }
 
   // ---------------------------------------------------------------- cancellation

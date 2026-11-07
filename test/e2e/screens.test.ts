@@ -115,7 +115,7 @@ describe(
 
       await page.getByRole('button', { name: 'Open SELECT' }).click();
       await page.waitForURL(/\/workbench$/);
-      assert.match(await page.getByTestId('sql-draft').inputValue(), /FROM public\.wb_items/);
+      assert.match(String(await page.getByTestId('sql-editor').textContent()), /FROM public\.wb_items/);
 
       await page.getByRole('link', { name: 'Explorer' }).click();
       await page.getByLabel('Connection').selectOption({ label: 'Reader' });
@@ -166,7 +166,7 @@ describe(
         .getByRole('button', { name: 'Daily (copy)' })
         .click();
       await page.waitForURL(/\/workbench$/);
-      assert.equal(await page.getByTestId('sql-draft').inputValue(), "SELECT 'Daily'");
+      assert.equal(await page.getByTestId('sql-editor').textContent(), "SELECT 'Daily'");
     });
   },
 );

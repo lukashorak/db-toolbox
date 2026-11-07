@@ -326,6 +326,59 @@ export class DisclosureService {
     return this.view(id);
   }
 
+  /**
+   * The owner shares a result with an MCP profile in advance ("Share full result with MCP"), without
+   * waiting for a request. Same scope and limits as an approval.
+   */
+  grant(
+    actor: Actor,
+    executionId: string,
+    resultIndex: number,
+    input: DecideInput & { profileId: string },
+  ): ApprovalView {
+    requirePermission(actor, 'disclosure.decide');
+    if (actor.source !== 'gui') {
+      throw new AppError('forbidden', 'Disclosure is decided by a person in the Database Workbench GUI.');
+    }
+    const execution = this.ctx.db.get('SELECT owner FROM executions WHERE id = :id', { id: executionId });
+    if (!execution || execution.owner !== actor.subject) {
+      throw new AppError('not_found', 'Execution not found.', { id: executionId });
+    }
+    const set = this.ctx.db.get(
+      'SELECT * FROM result_sets WHERE execution_id = :id AND result_index = :index',
+      {
+        id: executionId,
+        index: resultIndex,
+      },
+    );
+    if (!set || ['expired', 'deleted', 'capturing'].includes(String(set.completeness))) {
+      throw new AppError('result_expired', 'The result is not stored.');
+    }
+    const profile = this.ctx.db.get('SELECT id, name FROM mcp_profiles WHERE id = :id', {
+      id: input.profileId,
+    });
+    assert(profile, 'not_found', 'MCP profile not found.', { profileId: input.profileId });
+    const id = newId('approval', this.ctx.clock.now());
+    this.ctx.db.run(
+      `INSERT INTO disclosure_approvals (id, execution_id, result_index, profile_id, profile_name, status, requested_rows,
+         requested_bytes, requested_by, requested_at)
+       VALUES (:id, :execution, :index, :profile, :name, 'pending', :rows, :bytes, :by, :now)`,
+      {
+        id,
+        execution: executionId,
+        index: resultIndex,
+        profile: String(profile.id),
+        name: String(profile.name),
+        rows: input.rows ?? Number(set.row_count),
+        bytes: input.bytes ?? Number(set.byte_count),
+        by: actor.subject,
+        now: isoNow(this.ctx),
+      },
+    );
+    const { profileId: _profileId, ...decision } = input;
+    return this.approve(actor, id, decision);
+  }
+
   deny(actor: Actor, id: string, note?: string): ApprovalView {
     this.#decidable(actor, id, 'deny');
     this.#close(actor, id, 'denied', note ?? null);

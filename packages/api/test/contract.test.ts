@@ -291,6 +291,66 @@ describe('API contract', () => {
     );
   });
 
+  it('editor support, retention and sharing with MCP', async () => {
+    const check = await call('POST', '/sql/check', 'writer', {
+      connectionId: readOnly,
+      sql: 'SELECT 1;\nUPDATE t SET a = 1',
+    });
+    assert.equal(check.status, 200);
+    assert.deepEqual([check.body.readOnly, check.body.policySources], [true, ['connection']]);
+    assert.deepEqual(
+      check.body.statements.map((s: { kind: string; range: { startLine: number } }) => [
+        s.kind,
+        s.range.startLine,
+      ]),
+      [
+        ['read', 1],
+        ['write', 2],
+      ],
+    );
+    assert.equal(check.body.problems[0].code, 'read_only_violation');
+    assert.equal(
+      (await call('POST', '/sql/check', 'monitor', { connectionId: connection, sql: 'SELECT 1' })).status,
+      403,
+    );
+
+    const { body } = await call('POST', '/executions', 'writer', {
+      connectionId: connection,
+      sql: 'SELECT 1 AS a',
+    });
+    core.db.run(
+      "UPDATE executions SET status = 'succeeded', finished_at = '2026-11-07T10:00:00Z' WHERE id = :id",
+      { id: body.id },
+    );
+    core.db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, completeness, expires_at)
+       VALUES (:id, 0, 0, '[]', 1, 6, 'complete', '2026-11-08T10:00:00Z')`,
+      { id: body.id },
+    );
+    const retained = await call('POST', `/executions/${body.id}/retain`, 'writer', { days: 3 });
+    assert.deepEqual(
+      [retained.status, retained.body.retention, retained.body.resultExpiresAt],
+      [200, 'retained', '2026-11-10T10:00:00.000Z'],
+    );
+    assert.equal((await call('POST', `/executions/${body.id}/retain`, 'writer', { days: 99 })).status, 400);
+
+    const profile = await call('POST', '/profiles', 'admin', {
+      name: 'Sharing',
+      clientId: 'workbench-mcp-share',
+      connectionIds: [connection],
+    });
+    const shared = await call('POST', `/executions/${body.id}/results/0/share`, 'writer', {
+      profileId: profile.body.id,
+      minutes: 30,
+    });
+    assert.deepEqual([shared.status, shared.body.status, shared.body.granted.rows], [201, 'active', 1]);
+    assert.equal(
+      (await call('POST', `/executions/${body.id}/results/0/share`, 'reader', { profileId: profile.body.id }))
+        .status,
+      404,
+    );
+  });
+
   it('library: folders and saved queries are private per user', async () => {
     const folder = await call('POST', '/folders', 'reader', { name: 'Reports' });
     assert.equal(folder.status, 201);
@@ -338,7 +398,9 @@ describe('API contract', () => {
       connectionIds: [connection],
     });
     assert.equal(created.status, 201);
-    assert.equal((await call('GET', '/profiles', 'reader')).body.length, 1);
+    assert.ok(
+      (await call('GET', '/profiles', 'reader')).body.some((p: { name: string }) => p.name === 'Claude Code'),
+    );
     assert.equal((await call('GET', `/profiles/${created.body.id}/access`, 'reader')).body.length, 2);
     assert.equal(
       (await call('PATCH', `/profiles/${created.body.id}`, 'admin', { readOnly: false })).body.profile
