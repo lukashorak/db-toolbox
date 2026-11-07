@@ -65,7 +65,13 @@ export class DatabaseService {
     return connection;
   }
 
-  async adapter(actor: Actor, connectionId: string): Promise<DbAdapter> {
+  /** Adapter for metadata browsing (`sql.read`) or monitoring (`monitor.view`). */
+  async adapter(
+    actor: Actor,
+    connectionId: string,
+    purpose: 'query' | 'monitor' = 'query',
+  ): Promise<DbAdapter> {
+    requirePermission(actor, purpose === 'monitor' ? 'monitor.view' : 'sql.read');
     this.usable(actor, connectionId);
     return this.registry.get(this.connections.credentials(connectionId));
   }

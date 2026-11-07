@@ -103,6 +103,8 @@ export interface ConnectionView {
   hasPassword: boolean;
   tlsMode: TlsMode;
   hasCustomCa: boolean;
+  /** Separate account for monitoring queries, when configured. */
+  monitorUsername: string | null;
   readOnly: boolean;
   enabled: boolean;
   transport: 'direct';

@@ -106,3 +106,16 @@ export {
   type DecideInput,
   type DisclosedPage,
 } from './execution/disclosure.js';
+export {
+  EXECUTION_TAG,
+  MonitoringService,
+  rates,
+  type ActivitySnapshot,
+  type Availability,
+  type Counters,
+  type LockWait,
+  type Section,
+  type SessionInfo,
+  type StatementStat,
+  type StatementsSnapshot,
+} from './monitoring/service.js';

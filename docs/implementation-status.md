@@ -9,6 +9,38 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 8 — Monitoring backend
+
+Reference: [monitoring.md](monitoring.md).
+
+### What works
+
+- Activity snapshots per connection: sessions, lock-wait chains and counter rates, each marked available, limited or unavailable with a reason.
+  - PostgreSQL: `pg_stat_activity`, `pg_blocking_pids` with `pg_locks`, and `pg_stat_database`.
+  - MySQL: `performance_schema` threads, data and metadata lock waits, and global status, falling back to the process list.
+- Statement statistics: `pg_stat_statements` (with `stats_reset`) and MySQL statement digests.
+- Rates with reset detection, and bounded polling (a 2-second cache per connection).
+- This tool's sessions are tagged with their execution ID: PostgreSQL `application_name`, MySQL a leading comment.
+- An optional separate monitoring account per connection, sealed and used only for the fixed queries on a reserved connection.
+- API: `…/monitoring/activity` and `…/monitoring/statements`. MCP: `get_activity` and `get_slow_statements`.
+- `monitor:read` now includes viewing connection settings, so monitoring users can choose a connection. Metadata browsing requires `sql.read`.
+
+### How it was verified
+
+- `npm run check` passes: 161 tests, 160 passing and 1 skipped when running as root. New tests cover rate and reset logic, tag parsing, and the monitoring API contract.
+- `npm run test:integration` passes: 108 tests. The monitoring tests run on both engines (AC12):
+  - a second client creates a row-lock wait, and both sessions and queries show;
+  - a running execution is found by its ID;
+  - rates, bounded polling, and a PostgreSQL statistics reset;
+  - `pg_stat_statements` missing is reported as unavailable, while MySQL digests are available;
+  - a read-only account sees limited and unavailable parts, never zeros;
+  - a monitoring account restores full visibility;
+  - the role is required.
+
+### Pending (needs input)
+
+- Whether monitoring accounts (`pg_monitor`; MySQL `PROCESS` with SELECT on `performance_schema`) can be created for the real targets, and whether `pg_stat_statements` is available there.
+
 ## Step 7 — MCP server and disclosure control (milestone M1)
 
 Reference: [mcp.md](mcp.md).
@@ -48,7 +80,7 @@ Reference: [mcp.md](mcp.md).
 ### Pending
 
 - The manual Claude Code check against the real Keycloak (see step 2).
-- `get_activity` and `get_slow_statements` arrive with the monitoring backend (step 8).
+- `get_activity` and `get_slow_statements` were added in step 8.
 
 ## Step 6 — HTTP API
 

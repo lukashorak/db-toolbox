@@ -82,15 +82,18 @@ export class MysqlAdapter implements DbAdapter {
   readonly #work: Pool;
   readonly #meta: Pool;
   readonly #control: Pool;
+  readonly #monitor: Pool;
+  readonly monitorAccount: string;
   readonly #refusal: DbError | null;
   #active = 0;
 
   constructor(target: ConnectionTarget, endpoint: Endpoint, options: MysqlOptions) {
     this.#refusal = mysqlVerifyFullProblem(target.tlsMode, endpoint.host);
     const base = mysqlConnectionOptions(target, endpoint, options.connectTimeoutMs);
-    const pool = (connectionLimit: number) => {
+    const pool = (connectionLimit: number, account?: { username: string; password: string } | null) => {
       const p = mysql.createPool({
         ...base,
+        ...(account ? { user: account.username, password: account.password } : {}),
         connectionLimit,
         maxIdle: connectionLimit,
         idleTimeout: 30_000,
@@ -103,6 +106,8 @@ export class MysqlAdapter implements DbAdapter {
     this.#work = pool(options.sizes.work);
     this.#meta = pool(options.sizes.metadata);
     this.#control = pool(options.sizes.control);
+    this.#monitor = pool(options.sizes.monitor ?? 1, target.monitor);
+    this.monitorAccount = target.monitor?.username ?? target.username;
     this.metadata = new MysqlMetadata((sql, params) => this.#metaQuery(sql, params), target.database);
   }
 
@@ -168,9 +173,13 @@ export class MysqlAdapter implements DbAdapter {
     return this.#active;
   }
 
+  monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
+    return this.#pooledQuery(this.#monitor, sql, params);
+  }
+
   async close(): Promise<void> {
     const end = (p: Pool) => new Promise<void>((resolve) => p.end(() => resolve()));
-    await Promise.allSettled([end(this.#work), end(this.#meta), end(this.#control)]);
+    await Promise.allSettled([end(this.#work), end(this.#meta), end(this.#control), end(this.#monitor)]);
   }
 }
 
@@ -178,6 +187,8 @@ class MysqlSession implements DbSession {
   readonly backendId: number;
   dirty: string | null = null;
   #inTransaction = false;
+  /** Leading comment that shows the execution ID in the process list (digests ignore comments). */
+  #label = '';
   readonly #onError = (error: Error) => this.markDirty(`connection error: ${error.message}`);
 
   constructor(
@@ -200,6 +211,10 @@ class MysqlSession implements DbSession {
           : resolve((Array.isArray(rows) ? rows : []) as Record<string, unknown>[]),
       ),
     );
+  }
+
+  async tag(executionId: string): Promise<void> {
+    this.#label = `/* database-workbench ${executionId.replace(/[^\w-]/g, '')} */ `;
   }
 
   async begin(options: { readOnly: boolean }): Promise<void> {
@@ -269,7 +284,11 @@ class MysqlSession implements DbSession {
             })
             .finally(() => this.connection.resume());
         };
-        const query = this.connection.query({ sql, rowsAsArray: true, typeCast: RAW as never });
+        const query = this.connection.query({
+          sql: this.#label + sql,
+          rowsAsArray: true,
+          typeCast: RAW as never,
+        });
         /** An exception inside a driver event handler would otherwise leave this promise pending. */
         const guard =
           <A extends unknown[]>(handler: (...args: A) => void) =>

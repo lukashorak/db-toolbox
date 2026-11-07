@@ -55,6 +55,8 @@ export const TOOLS = [
   'cancel_execution',
   'get_result',
   'export_result',
+  'get_activity',
+  'get_slow_statements',
 ] as const;
 
 const DATA_NOTICE =
@@ -539,6 +541,38 @@ export function buildMcpServer(actor: Actor, deps: McpDeps): McpServer {
           note: 'The user can download the file in Database Workbench. Its contents are not available through MCP.',
         };
       },
+    ),
+  );
+
+  server.registerTool(
+    'get_activity',
+    {
+      title: 'Database activity',
+      description:
+        'Current sessions, lock waits and counter rates of the database behind a connection (needs the monitor:read role). Each part says whether it is available, limited or unavailable, and why.',
+      inputSchema: { connectionId: z.string() },
+      annotations: readOnlyTool,
+    },
+    run(async (args: { connectionId: string }) => {
+      const snapshot = await core.monitoring.activity(actor, args.connectionId);
+      return ok(
+        { ...snapshot, sessions: { ...snapshot.sessions, items: snapshot.sessions.items.slice(0, 100) } },
+        DATA_NOTICE,
+      );
+    }),
+  );
+
+  server.registerTool(
+    'get_slow_statements',
+    {
+      title: 'Slow statements',
+      description:
+        'Statement statistics by total execution time since the statistics were last reset (pg_stat_statements or performance_schema digests).',
+      inputSchema: { connectionId: z.string(), limit: z.number().int().min(1).max(100).optional() },
+      annotations: readOnlyTool,
+    },
+    run(async (args: { connectionId: string; limit?: number }) =>
+      ok({ ...(await core.monitoring.statements(actor, args.connectionId, args.limit ?? 20)) }, DATA_NOTICE),
     ),
   );
 

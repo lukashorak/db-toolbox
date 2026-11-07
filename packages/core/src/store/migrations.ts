@@ -58,6 +58,8 @@ CREATE TABLE connections (
   schema_name      TEXT,
   username         TEXT NOT NULL,
   secret           TEXT NOT NULL,
+  monitor_username    TEXT,
+  monitor_secret      TEXT,
   tls_mode         TEXT NOT NULL ${enumCheck('tls_mode', ['verify-full', 'verify-ca', 'require', 'disable'])},
   ca_pem           TEXT,
   read_only        INTEGER NOT NULL CHECK (read_only IN (0, 1)),

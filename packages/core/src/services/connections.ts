@@ -39,6 +39,9 @@ const createSchema = z
     ...common,
     engine: z.enum(ENGINES),
     password: z.string().min(1, 'Enter the password for a new connection.').max(4096),
+    /** Optional separate account used only by the fixed monitoring queries. */
+    monitorUsername: z.string().trim().min(1).max(128).nullable().default(null),
+    monitorPassword: z.string().max(4096).default(''),
     schema: common.schema.optional().default(null),
     caPem: common.caPem.optional().default(null),
     readOnly: common.readOnly.default(true),
@@ -61,6 +64,9 @@ const updateSchema = z
     readOnly: common.readOnly,
     enabled: common.enabled,
     password: z.string().max(4096),
+    /** null removes the monitoring account; a blank password keeps the stored one. */
+    monitorUsername: z.string().trim().min(1).max(128).nullable(),
+    monitorPassword: z.string().max(4096),
     engine: z.enum(ENGINES),
   })
   .partial()
@@ -77,6 +83,8 @@ interface Secret {
 export interface ConnectionCredentials extends ConnectionView {
   password: string;
   caPem: string | null;
+  /** Separate monitoring account, when configured. */
+  monitor: { username: string; password: string } | null;
 }
 
 export interface ConnectionReferences {
@@ -99,6 +107,7 @@ const toView = (r: Row): ConnectionView => ({
   hasPassword: true,
   tlsMode: r.tls_mode as ConnectionView['tlsMode'],
   hasCustomCa: r.ca_pem != null,
+  monitorUsername: (r.monitor_username as string | null) ?? null,
   readOnly: bool(r.read_only),
   enabled: bool(r.enabled),
   transport: 'direct',
@@ -140,15 +149,18 @@ export class ConnectionService {
       throw fieldError('schema', 'MySQL has no separate schema; set the default database instead.');
     }
     checkTls(value.engine, value.host, value.tlsMode);
+    if (value.monitorUsername && !value.monitorPassword) {
+      throw fieldError('monitorPassword', 'Enter the password of the monitoring account.');
+    }
     const id = newId('connection', this.ctx.clock.now());
     const now = isoNow(this.ctx);
     this.ctx.db.transaction(() => {
       this.assertNameFree(value.name);
       this.ctx.db.run(
         `INSERT INTO connections (id, owner, name, engine, environment, host, port, database_name, schema_name, username,
-           secret, tls_mode, ca_pem, read_only, enabled, created_at, updated_at)
+           secret, monitor_username, monitor_secret, tls_mode, ca_pem, read_only, enabled, created_at, updated_at)
          VALUES (:id, :owner, :name, :engine, :environment, :host, :port, :database, :schema, :username,
-           :secret, :tls, :ca, :ro, :enabled, :now, :now)`,
+           :secret, :monitorUser, :monitorSecret, :tls, :ca, :ro, :enabled, :now, :now)`,
         {
           id,
           owner: actor.subject,
@@ -161,6 +173,10 @@ export class ConnectionService {
           schema: value.schema,
           username: value.username,
           secret: this.ctx.secrets.seal({ password: value.password } satisfies Secret, id),
+          monitorUser: value.monitorUsername,
+          monitorSecret: value.monitorUsername
+            ? this.ctx.secrets.seal({ password: value.monitorPassword } satisfies Secret, `${id}:monitor`)
+            : null,
           tls: value.tlsMode,
           ca: value.caPem,
           ro: int(value.readOnly),
@@ -200,7 +216,19 @@ export class ConnectionService {
     }
     checkTls(before.engine, patch.host ?? before.host, patch.tlsMode ?? before.tlsMode);
     const replacePassword = typeof patch.password === 'string' && patch.password.length > 0;
-    const { password: _password, engine: _engine, caPem, ...fields } = patch;
+    const monitorUser = patch.monitorUsername === undefined ? before.monitorUsername : patch.monitorUsername;
+    const replaceMonitor =
+      Boolean(monitorUser) && typeof patch.monitorPassword === 'string' && patch.monitorPassword.length > 0;
+    if (monitorUser && !before.monitorUsername && !replaceMonitor) {
+      throw fieldError('monitorPassword', 'Enter the password of the monitoring account.');
+    }
+    const {
+      password: _password,
+      engine: _engine,
+      monitorPassword: _monitorPassword,
+      caPem,
+      ...fields
+    } = patch;
     const changed = changedFields(before, fields);
     this.ctx.db.transaction(() => {
       if (patch.name !== undefined && patch.name.toLowerCase() !== before.name.toLowerCase())
@@ -210,6 +238,8 @@ export class ConnectionService {
            database_name = :database, schema_name = :schema, username = :username, tls_mode = :tls,
            ca_pem = CASE WHEN :caSet = 1 THEN :ca ELSE ca_pem END,
            secret = CASE WHEN :secretSet = 1 THEN :secret ELSE secret END,
+           monitor_username = :monitorUser,
+           monitor_secret = CASE WHEN :monitorUser IS NULL THEN NULL WHEN :monitorSet = 1 THEN :monitorSecret ELSE monitor_secret END,
            read_only = :ro, enabled = :enabled, updated_at = :now
          WHERE id = :id`,
         {
@@ -228,6 +258,14 @@ export class ConnectionService {
           secret: replacePassword
             ? this.ctx.secrets.seal({ password: String(patch.password) } satisfies Secret, id)
             : '',
+          monitorUser: monitorUser ?? null,
+          monitorSet: int(replaceMonitor),
+          monitorSecret: replaceMonitor
+            ? this.ctx.secrets.seal(
+                { password: String(patch.monitorPassword) } satisfies Secret,
+                `${id}:monitor`,
+              )
+            : '',
           ro: int(patch.readOnly ?? before.readOnly),
           enabled: int(patch.enabled ?? before.enabled),
           now: isoNow(this.ctx),
@@ -241,6 +279,13 @@ export class ConnectionService {
         details: {
           changed: [...changed, ...(caPem !== undefined ? ['caPem'] : [])],
           credential: replacePassword ? 'replaced' : 'kept',
+          monitorCredential: !monitorUser
+            ? before.monitorUsername
+              ? 'removed'
+              : 'none'
+            : replaceMonitor
+              ? 'replaced'
+              : 'kept',
           ...(patch.readOnly !== undefined && patch.readOnly !== before.readOnly
             ? { readOnly: { from: before.readOnly, to: patch.readOnly } }
             : {}),
@@ -346,7 +391,19 @@ export class ConnectionService {
   credentials(id: string): ConnectionCredentials {
     const row = this.row(id);
     const secret = this.ctx.secrets.open<Secret>(String(row.secret), id);
-    return { ...toView(row), password: secret.password, caPem: (row.ca_pem as string | null) ?? null };
+    const monitor =
+      row.monitor_username && row.monitor_secret
+        ? {
+            username: String(row.monitor_username),
+            password: this.ctx.secrets.open<Secret>(String(row.monitor_secret), `${id}:monitor`).password,
+          }
+        : null;
+    return {
+      ...toView(row),
+      password: secret.password,
+      caPem: (row.ca_pem as string | null) ?? null,
+      monitor,
+    };
   }
 
   private row(id: string): Row {

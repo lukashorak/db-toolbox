@@ -95,14 +95,17 @@ export class PostgresAdapter implements DbAdapter {
   readonly #work: pg.Pool;
   readonly #meta: pg.Pool;
   readonly #control: pg.Pool;
+  readonly #monitor: pg.Pool;
+  readonly monitorAccount: string;
   readonly #typeNames = new Map(BUILTIN_TYPES);
   #active = 0;
 
   constructor(target: ConnectionTarget, endpoint: Endpoint, options: PostgresOptions) {
     const base = postgresClientConfig(target, endpoint, options.connectTimeoutMs, options.applicationName);
-    const pool = (max: number, name: string) => {
+    const pool = (max: number, name: string, account?: { username: string; password: string } | null) => {
       const p = new pg.Pool({
         ...base,
+        ...(account ? { user: account.username, password: account.password } : {}),
         application_name: `${options.applicationName} (${name})`,
         max,
         idleTimeoutMillis: 30_000,
@@ -114,6 +117,8 @@ export class PostgresAdapter implements DbAdapter {
     this.#work = pool(options.sizes.work, 'work');
     this.#meta = pool(options.sizes.metadata, 'metadata');
     this.#control = pool(options.sizes.control, 'control');
+    this.#monitor = pool(options.sizes.monitor ?? 1, 'monitor', target.monitor);
+    this.monitorAccount = target.monitor?.username ?? target.username;
     this.metadata = new PostgresMetadata((sql, params) => this.#metaQuery(sql, params), target.schema);
   }
 
@@ -173,12 +178,20 @@ export class PostgresAdapter implements DbAdapter {
     return null;
   }
 
+  async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
+    try {
+      return (await this.#monitor.query({ text: sql, values: params })).rows as Record<string, unknown>[];
+    } catch (error) {
+      throw mapPostgresError(error);
+    }
+  }
+
   activeSessions(): number {
     return this.#active;
   }
 
   async close(): Promise<void> {
-    await Promise.allSettled([this.#work.end(), this.#meta.end(), this.#control.end()]);
+    await Promise.allSettled([this.#work.end(), this.#meta.end(), this.#control.end(), this.#monitor.end()]);
   }
 }
 
@@ -187,6 +200,7 @@ class PostgresSession implements DbSession {
   dirty: string | null = null;
   #inTransaction = false;
   #sessionTimeoutSet = false;
+  #tagged = false;
   readonly #onError = (error: Error) => this.markDirty(`connection error: ${error.message}`);
 
   constructor(
@@ -207,6 +221,12 @@ class PostgresSession implements DbSession {
     } catch (error) {
       throw mapPostgresError(error);
     }
+  }
+
+  async tag(executionId: string): Promise<void> {
+    const label = `database-workbench ${executionId}`.replace(/[^\w .:-]/g, '');
+    await this.#run(`SET application_name = '${label}'`);
+    this.#tagged = true;
   }
 
   async begin(options: { readOnly: boolean }): Promise<void> {
@@ -330,6 +350,7 @@ class PostgresSession implements DbSession {
         await this.client.query('ROLLBACK');
       }
       if (this.#sessionTimeoutSet && !this.dirty) await this.client.query('RESET statement_timeout');
+      if (this.#tagged && !this.dirty) await this.client.query('RESET application_name');
     } catch {
       this.markDirty('could not restore the session');
     } finally {

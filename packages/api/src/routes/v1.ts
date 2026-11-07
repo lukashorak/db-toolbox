@@ -454,6 +454,25 @@ export function v1Routes(core: Core): RouteRegistry {
     handler: ({ actor, params }) => core.profiles.effectiveAccess(actor, String(params.id)),
   });
 
+  // ---------------------------------------------------------------- monitoring
+  r.add({
+    method: 'GET',
+    url: '/connections/:id/monitoring/activity',
+    tag: 'Monitoring',
+    access: 'monitor:read',
+    summary: 'Sessions, lock waits and counter rates of the target database, each with its availability',
+    handler: ({ actor, params }) => core.monitoring.activity(actor, String(params.id)),
+  });
+  r.add({
+    method: 'GET',
+    url: '/connections/:id/monitoring/statements',
+    tag: 'Monitoring',
+    access: 'monitor:read',
+    summary: 'Statement statistics by total time (pg_stat_statements or performance_schema digests)',
+    query: z.object({ limit: z.coerce.number().int().min(1).max(100).optional() }),
+    handler: ({ actor, params, query }) => core.monitoring.statements(actor, String(params.id), query.limit),
+  });
+
   // ---------------------------------------------------------------- MCP disclosure approvals
   r.add({
     method: 'GET',

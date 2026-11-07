@@ -23,7 +23,8 @@ export type Permission = (typeof PERMISSIONS)[number];
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   'query:read': ['connections.view', 'sql.read', 'queries.manage', 'disclosure.decide'],
   'query:write': ['sql.write'],
-  'monitor:read': ['monitor.view'],
+  // Monitoring users see connection settings (never secrets) to choose what to watch.
+  'monitor:read': ['monitor.view', 'connections.view'],
   admin: ['connections.view', 'connections.manage', 'profiles.manage', 'settings.manage', 'audit.view'],
 };
 

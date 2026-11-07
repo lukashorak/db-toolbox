@@ -16,6 +16,8 @@ export interface ConnectionTarget {
   password: string;
   tlsMode: TlsMode;
   caPem: string | null;
+  /** Separate account for the fixed monitoring queries; the main account is used otherwise. */
+  monitor?: { username: string; password: string } | null;
 }
 
 /** Where the driver connects. SSH tunnels will return a local forward with the original servername. */
@@ -79,6 +81,8 @@ export interface DbSession {
   execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome>;
   /** The session's state is no longer known to be clean; it is closed instead of reused. */
   markDirty(reason: string): void;
+  /** Labels the session with an execution ID, so monitoring can tell this tool's work apart. */
+  tag(executionId: string): Promise<void>;
 }
 
 export interface DbAdapter {
@@ -92,6 +96,10 @@ export interface DbAdapter {
   tableEngine(table: TableRef): Promise<string | null>;
   /** Sessions currently checked out. */
   activeSessions(): number;
+  /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */
+  monitorQuery(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
+  /** Account the monitoring queries use. */
+  readonly monitorAccount: string;
   close(): Promise<void>;
 }
 
@@ -100,6 +108,8 @@ export interface PoolSizes {
   work: number;
   /** Metadata browsing and connection tests. */
   metadata: number;
-  /** Cancellation (and later monitoring), so it works when all work slots are busy. */
+  /** Cancellation, so it works when all work slots are busy. */
   control: number;
+  /** Monitoring queries (optionally with a separate account). Default 1. */
+  monitor?: number;
 }

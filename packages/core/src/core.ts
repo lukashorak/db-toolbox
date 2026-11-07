@@ -6,6 +6,7 @@ import { AdapterRegistry } from './db/registry.js';
 import { DisclosureService } from './execution/disclosure.js';
 import { ExportService } from './execution/exports.js';
 import { ExecutionService, type ExecutionOptions } from './execution/service.js';
+import { MonitoringService } from './monitoring/service.js';
 import { SecretBox } from './security/secrets.js';
 import { ConnectionService } from './services/connections.js';
 import { DatabaseService } from './services/databases.js';
@@ -46,6 +47,8 @@ export interface Core {
   exports: ExportService;
   /** What MCP clients may receive of results, and human approvals beyond that. */
   disclosure: DisclosureService;
+  /** Database-wide activity, lock waits, counters and statement statistics (read-only). */
+  monitoring: MonitoringService;
   /** Retention: export files first, then captured results and old execution metadata. */
   cleanup(now?: Date): Promise<{
     exportsExpired: number;
@@ -130,6 +133,7 @@ export function createCore(options: CoreOptions): Core {
     executions,
     exports: exportService,
     disclosure: new DisclosureService(ctx, profiles),
+    monitoring: new MonitoringService(databases),
     cleanup: async (now) => {
       const exportsExpired = await exportService.cleanup(now);
       return { exportsExpired, ...executions.cleanup(now) };

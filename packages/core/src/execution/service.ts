@@ -743,6 +743,7 @@ export class ExecutionService {
 
     try {
       await adapter.withSession(async (session: DbSession) => {
+        await session.tag(id);
         if (atomic) await session.begin({ readOnly });
         for (const st of statements) {
           if (signal.aborted) break;

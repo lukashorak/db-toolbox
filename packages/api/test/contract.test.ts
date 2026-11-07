@@ -112,7 +112,11 @@ describe('API contract', () => {
 
   it('connections: readers list, administrators manage', async () => {
     assert.equal((await call('GET', '/connections', 'none')).status, 401);
-    assert.equal((await call('GET', '/connections', 'monitor')).status, 403);
+    assert.equal(
+      (await call('GET', '/connections', 'monitor')).status,
+      200,
+      'monitoring users choose a connection to watch',
+    );
     assert.equal((await call('POST', '/connections', 'reader', connectionBody('X'))).status, 403);
     const created = await call('POST', '/connections', 'admin', connectionBody('Primary'));
     assert.equal(created.status, 201);
@@ -178,6 +182,16 @@ describe('API contract', () => {
     );
     await call('POST', `/connections/${readOnly}/enable`, 'admin');
     assert.equal((await call('GET', `/connections/${connection}/metadata/schemas`, 'monitor')).status, 403);
+  });
+
+  it('monitoring: monitor:read only; database errors are reported, not zeros', async () => {
+    assert.equal((await call('GET', `/connections/${connection}/monitoring/activity`, 'reader')).status, 403);
+    const activity = await call('GET', `/connections/${connection}/monitoring/activity`, 'monitor');
+    assert.deepEqual([activity.status, activity.body.error], [502, 'database_error']);
+    assert.equal(
+      (await call('GET', `/connections/${connection}/monitoring/statements?limit=500`, 'monitor')).status,
+      400,
+    );
   });
 
   it('executions: submit, idempotency, policy rejection, visibility, cancel', async () => {
