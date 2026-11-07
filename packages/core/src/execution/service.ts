@@ -156,6 +156,11 @@ export class ExecutionService {
     return this.#budget.used;
   }
 
+  /** Gives back space freed by deleting results (exports service). */
+  releaseStorage(bytes: number): void {
+    this.#budget.release(bytes);
+  }
+
   // ---------------------------------------------------------------- submission
 
   async submit(actor: Actor, input: SubmitInput): Promise<ExecutionView> {

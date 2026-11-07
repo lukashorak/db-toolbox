@@ -3,6 +3,7 @@ import type { Limits } from './config.js';
 import { AppError } from './domain/errors.js';
 import { systemClock, type Clock } from './domain/types.js';
 import { AdapterRegistry } from './db/registry.js';
+import { ExportService } from './execution/exports.js';
 import { ExecutionService, type ExecutionOptions } from './execution/service.js';
 import { SecretBox } from './security/secrets.js';
 import { ConnectionService } from './services/connections.js';
@@ -24,6 +25,8 @@ export interface CoreOptions {
   limits: Limits;
   clock?: Clock;
   executions?: ExecutionOptions;
+  /** Folder for export files (EXPORT_DIR). Without it, exports are unavailable. */
+  exportDir?: string;
 }
 
 export interface Core {
@@ -38,6 +41,15 @@ export interface Core {
   databases: DatabaseService;
   /** Server-owned executions: queue, runs, captured results. */
   executions: ExecutionService;
+  /** CSV and JSON exports of captured results. */
+  exports: ExportService;
+  /** Retention: export files first, then captured results and old execution metadata. */
+  cleanup(now?: Date): Promise<{
+    exportsExpired: number;
+    resultsExpired: number;
+    bytesFreed: number;
+    executionsDeleted: number;
+  }>;
   /** Closes the application database; open pools close in the background. */
   close(): void;
   /** Closes pools to target databases, then the application database. */
@@ -91,6 +103,7 @@ export function createCore(options: CoreOptions): Core {
     clock,
     limits: options.limits,
     onConnectionChanged: (id) => void registry.invalidate(id),
+    onResultBytesFreed: (bytes) => executions.releaseStorage(bytes),
   };
   const connections = new ConnectionService(ctx);
   const profiles = new ProfileService(ctx);
@@ -101,6 +114,7 @@ export function createCore(options: CoreOptions): Core {
     { databases, connections, profiles, settings },
     options.executions,
   );
+  const exportService = new ExportService(ctx, options.exportDir ?? null);
   return {
     db,
     audit,
@@ -111,6 +125,11 @@ export function createCore(options: CoreOptions): Core {
     settings,
     databases,
     executions,
+    exports: exportService,
+    cleanup: async (now) => {
+      const exportsExpired = await exportService.cleanup(now);
+      return { exportsExpired, ...executions.cleanup(now) };
+    },
     close: () => {
       void executions.stop();
       void registry.closeAll();
@@ -118,6 +137,7 @@ export function createCore(options: CoreOptions): Core {
     },
     shutdown: async () => {
       await executions.stop();
+      await exportService.idle();
       await registry.closeAll();
       db.close();
     },

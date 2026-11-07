@@ -9,6 +9,43 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 5 — Exports and retention
+
+Format reference: [exports.md](exports.md).
+
+### What works
+
+- CSV:
+  - RFC 4180, UTF-8, CRLF, a header row;
+  - NULL is an empty unquoted field and empty text is `""`;
+  - exact numbers, binary as `\x` hex, duplicate column names kept.
+- JSON:
+  - a `columns` array, and rows as arrays;
+  - `null` for NULL, exact numeric strings, binary as `{ "base64": … }`;
+  - completeness, and captured and exported row counts.
+- Full exports only from complete results. "Preview only" is labelled in the file name and in the metadata.
+- Lifecycle:
+  - `generating` → `ready` or `failed` (disk full, write permission, generation error);
+  - a server-controlled path, with the file name published only when complete;
+  - no partial files.
+- Regenerate rebuilds the file from the captured data and never submits SQL. Downloads check access and that the file exists, and never regenerate.
+- Deleting stored results removes rows and export files and revokes disclosure. The execution stays in history.
+- Retention cleanup in order: export files, then captured rows, then metadata after 90 days with its export folder. `core.cleanup()` runs every 10 minutes.
+
+### How it was verified
+
+- `npm run check` passes. New unit tests:
+  - byte-exact CSV and parsed JSON for the fidelity fixture: duplicate `id` columns, NULL versus empty, quotes, CRLF, Unicode, 64-bit limits, `numeric(38,10)`, binary;
+  - preview-only labelling and refusing incomplete results;
+  - repeat exports and regeneration with an unchanged execution count;
+  - a missing file that is not regenerated;
+  - failed generation and error mapping;
+  - access control;
+  - result deletion, and cleanup that keeps metadata.
+- Integration, on both engines:
+  - 1,200-row CSV and JSON exports counted by parsing, with no new execution;
+  - a fidelity row exported exactly as each database returned it. This found that MySQL `CHAR(10)` without `USING` yields a binary string, which is correctly exported as hex.
+
 ## Step 4 — Execution engine, queue and result capture
 
 Details: [executions.md](executions.md).

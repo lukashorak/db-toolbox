@@ -91,3 +91,11 @@ export {
   type StatementView,
   type SubmitInput,
 } from './execution/service.js';
+export {
+  csvField,
+  ExportService,
+  hexToBase64,
+  type CreateExportInput,
+  type ExportFormat,
+  type ExportView,
+} from './execution/exports.js';

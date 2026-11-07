@@ -14,6 +14,8 @@ export interface ServiceContext {
   limits: Limits;
   /** Called after a connection is changed, disabled or deleted, so open pools are replaced. */
   onConnectionChanged?: (id: string) => void;
+  /** Called when stored result data is removed outside the execution service. */
+  onResultBytesFreed?: (bytes: number) => void;
 }
 
 export const isoNow = (ctx: ServiceContext): string => ctx.clock.now().toISOString();

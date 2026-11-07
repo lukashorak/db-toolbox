@@ -41,6 +41,7 @@ function openCore(): Core {
       databaseFile: join(config.dataDir, DATABASE_FILE),
       encryptionKey: config.encryptionKey,
       limits: config.limits,
+      exportDir: config.exportDir,
     });
   } catch (error) {
     if (error instanceof AppError && error.code === 'encryption_key_mismatch') {
@@ -58,12 +59,13 @@ if (reconciled.interrupted)
 core.executions.resume();
 // Retention: expire captured results and old execution metadata.
 const cleanup = setInterval(() => {
-  try {
-    const removed = core.executions.cleanup();
-    if (removed.resultsExpired || removed.executionsDeleted) logger.info(removed, 'retention cleanup');
-  } catch (error) {
-    logger.error({ err: error }, 'retention cleanup failed');
-  }
+  core.cleanup().then(
+    (removed) => {
+      if (removed.exportsExpired || removed.resultsExpired || removed.executionsDeleted)
+        logger.info(removed, 'retention cleanup');
+    },
+    (error: unknown) => logger.error({ err: error }, 'retention cleanup failed'),
+  );
 }, 10 * 60_000);
 cleanup.unref();
 const verifier = new TokenVerifier({

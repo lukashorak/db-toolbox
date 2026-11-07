@@ -5,7 +5,8 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   createCore,
@@ -34,7 +35,12 @@ function makeCore(file: string, overrides: Record<string, string> = {}): Core {
     ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'),
     ...overrides,
   });
-  const core = createCore({ databaseFile: file, encryptionKey: config.encryptionKey, limits: config.limits });
+  const core = createCore({
+    databaseFile: file,
+    encryptionKey: config.encryptionKey,
+    limits: config.limits,
+    exportDir: join(dirname(file), 'exports'),
+  });
   core.users.touch(writer);
   return core;
 }
@@ -135,6 +141,44 @@ for (const { engine, variable, prepare } of engines) {
       assert.equal(page.rows.length, 50);
       assert.equal(page.rows.at(-1)?.[0], '1200');
       assert.ok(all && all.expiresAt && Date.parse(all.expiresAt) > Date.now());
+    });
+
+    it('exports the full 1,200 rows as CSV and JSON without running SQL again', async () => {
+      const full = await run('SELECT n, label FROM wb_rows ORDER BY n', { captureMode: 'full' });
+      const executions = core.executions.list(writer, { limit: 200 }).length;
+      const csv = await core.exports.create(writer, full.id, 0, { format: 'csv' });
+      const json = await core.exports.create(writer, full.id, 0, { format: 'json' });
+      await core.exports.idle();
+      const csvText = await readFile((await core.exports.download(writer, csv.id)).path, 'utf8');
+      const lines = csvText.split('\r\n').filter(Boolean);
+      assert.equal(lines[0], 'n,label');
+      assert.equal(lines.length, 1201);
+      assert.match(lines[1200] ?? '', /^1200,[0-9a-f]{32}$/);
+      const parsed = JSON.parse(await readFile((await core.exports.download(writer, json.id)).path, 'utf8'));
+      assert.deepEqual(
+        [parsed.completeness, parsed.capturedRows, parsed.exportedRows, parsed.rows.length],
+        ['complete', 1200, 1200, 1200],
+      );
+      assert.equal(core.executions.list(writer, { limit: 200 }).length, executions);
+    });
+
+    it('exports values exactly as the database returned them', async () => {
+      const sql =
+        engine === 'postgresql'
+          ? `SELECT 1 AS id, 2 AS id, NULL::text AS a, ''::text AS b, 'say "hi", then' || chr(10) || 'go' AS c, 'žluť 🐎' AS d,
+               9223372036854775807::int8 AS e, (-9223372036854775808)::int8 AS f, 12345678901234567890.1234567890::numeric(38,10) AS g,
+               '\\x00ff'::bytea AS h`
+          : `SELECT 1 AS id, 2 AS id, NULL AS a, '' AS b, CONCAT('say "hi", then', CHAR(10 USING utf8mb4), 'go') AS c, 'žluť 🐎' AS d,
+               9223372036854775807 AS e, -9223372036854775808 AS f, CAST(12345678901234567890.1234567890 AS DECIMAL(38,10)) AS g,
+               X'00ff' AS h`;
+      const view = await run(sql);
+      const exported = await core.exports.create(writer, view.id, 0, { format: 'csv' });
+      await core.exports.idle();
+      const text = await readFile((await core.exports.download(writer, exported.id)).path, 'utf8');
+      assert.equal(
+        text,
+        'id,id,a,b,c,d,e,f,g,h\r\n1,2,,"","say ""hi"", then\ngo",žluť 🐎,9223372036854775807,-9223372036854775808,12345678901234567890.1234567890,\\x00ff\r\n',
+      );
     });
 
     it('keeps duplicate column names and separate result sets per statement', async () => {
