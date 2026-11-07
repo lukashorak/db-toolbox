@@ -52,6 +52,20 @@ function openCore(): Core {
 }
 
 const core = openCore();
+const reconciled = core.executions.reconcile();
+if (reconciled.interrupted)
+  logger.warn(reconciled, 'executions interrupted by the restart were not run again');
+core.executions.resume();
+// Retention: expire captured results and old execution metadata.
+const cleanup = setInterval(() => {
+  try {
+    const removed = core.executions.cleanup();
+    if (removed.resultsExpired || removed.executionsDeleted) logger.info(removed, 'retention cleanup');
+  } catch (error) {
+    logger.error({ err: error }, 'retention cleanup failed');
+  }
+}, 10 * 60_000);
+cleanup.unref();
 const verifier = new TokenVerifier({
   issuer: config.keycloakIssuer,
   guiClientId: config.guiClientId,
@@ -63,6 +77,7 @@ const app = await buildServer(config, { logger, core, authenticator, version });
 
 const shutdown = async (signal: string) => {
   logger.info({ signal }, 'shutting down');
+  clearInterval(cleanup);
   await app.close();
   await core.shutdown();
   process.exit(0);

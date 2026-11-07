@@ -3,6 +3,7 @@ import type { Limits } from './config.js';
 import { AppError } from './domain/errors.js';
 import { systemClock, type Clock } from './domain/types.js';
 import { AdapterRegistry } from './db/registry.js';
+import { ExecutionService, type ExecutionOptions } from './execution/service.js';
 import { SecretBox } from './security/secrets.js';
 import { ConnectionService } from './services/connections.js';
 import { DatabaseService } from './services/databases.js';
@@ -22,6 +23,7 @@ export interface CoreOptions {
   encryptionKey: Buffer;
   limits: Limits;
   clock?: Clock;
+  executions?: ExecutionOptions;
 }
 
 export interface Core {
@@ -34,6 +36,8 @@ export interface Core {
   settings: SettingsService;
   /** Target databases: adapters (pools opened on first use) and connection tests. */
   databases: DatabaseService;
+  /** Server-owned executions: queue, runs, captured results. */
+  executions: ExecutionService;
   /** Closes the application database; open pools close in the background. */
   close(): void;
   /** Closes pools to target databases, then the application database. */
@@ -90,6 +94,13 @@ export function createCore(options: CoreOptions): Core {
   };
   const connections = new ConnectionService(ctx);
   const profiles = new ProfileService(ctx);
+  const settings = new SettingsService(ctx);
+  const databases = new DatabaseService(ctx, registry, connections, profiles);
+  const executions = new ExecutionService(
+    ctx,
+    { databases, connections, profiles, settings },
+    options.executions,
+  );
   return {
     db,
     audit,
@@ -97,13 +108,16 @@ export function createCore(options: CoreOptions): Core {
     connections,
     profiles,
     library: new LibraryService(ctx),
-    settings: new SettingsService(ctx),
-    databases: new DatabaseService(ctx, registry, connections, profiles),
+    settings,
+    databases,
+    executions,
     close: () => {
+      void executions.stop();
       void registry.closeAll();
       db.close();
     },
     shutdown: async () => {
+      await executions.stop();
       await registry.closeAll();
       db.close();
     },

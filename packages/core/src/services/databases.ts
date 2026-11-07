@@ -70,6 +70,11 @@ export class DatabaseService {
     return this.registry.get(this.connections.credentials(connectionId));
   }
 
+  /** Adapter for work that was authorized earlier (a queued execution re-checked at start). */
+  async adapterForConnection(connectionId: string): Promise<DbAdapter> {
+    return this.registry.get(this.connections.credentials(connectionId));
+  }
+
   /** Tests a stored connection and records the result on it. */
   async test(actor: Actor, connectionId: string): Promise<ConnectionTestReport> {
     requirePermission(actor, 'connections.manage');

@@ -83,3 +83,11 @@ export type {
   StatementOutcome,
   Transport,
 } from './db/types.js';
+export {
+  ExecutionService,
+  type ExecutionOptions,
+  type ExecutionView,
+  type ResultSetView,
+  type StatementView,
+  type SubmitInput,
+} from './execution/service.js';

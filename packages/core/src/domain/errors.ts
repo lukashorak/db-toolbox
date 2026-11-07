@@ -23,6 +23,8 @@ export const ERROR_CODES = {
   connection_disabled: 409,
   engine_immutable: 409,
   folder_cycle: 409,
+  request_conflict: 409,
+  result_expired: 410,
   secret_unreadable: 500,
   encryption_key_mismatch: 500,
   internal: 500,

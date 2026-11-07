@@ -1,0 +1,1102 @@
+import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { z } from 'zod';
+import { DbError } from '../db/errors.js';
+import type { Cell, ColumnInfo, DbAdapter, DbSession } from '../db/types.js';
+import { AppError, assert } from '../domain/errors.js';
+import { newId } from '../domain/ids.js';
+import type { Actor, Completeness, ExecutionStatus, Role, TransactionOutcome } from '../domain/types.js';
+import { can, evaluateWritePolicy, requirePermission } from '../security/policy.js';
+import type { ConnectionService } from '../services/connections.js';
+import { isoNow, type ServiceContext } from '../services/context.js';
+import type { DatabaseService } from '../services/databases.js';
+import type { ProfileService } from '../services/profiles.js';
+import type { SettingsService } from '../services/settings.js';
+import { parseInput } from '../services/validation.js';
+import { analyzeScript } from '../sql/analyze.js';
+import { preflight, type PreflightProblem } from '../sql/preflight.js';
+import type { StatementKind } from '../sql/types.js';
+import { bool, int, type Row } from '../store/database.js';
+import { readRows, ResultCapture, StorageBudget } from './capture.js';
+
+const submitSchema = z
+  .object({
+    connectionId: z.string().min(1),
+    sql: z.string().min(1, 'Enter SQL to run.').max(1_000_000, 'The script is too long.'),
+    title: z.string().trim().max(200).optional(),
+    scope: z.string().trim().min(1).max(60).default('Script'),
+    savedQueryId: z.string().nullable().default(null),
+    requestKey: z.string().trim().min(8).max(100).optional(),
+    captureMode: z.enum(['preview', 'full']).default('preview'),
+    transactionMode: z.enum(['per_statement', 'atomic']).default('per_statement'),
+    continueOnError: z.boolean().default(false),
+    timeoutMs: z.number().int().positive().optional(),
+    retention: z.enum(['working', 'retained']).default('working'),
+    retainDays: z.number().int().min(1).max(365).optional(),
+  })
+  .strict();
+
+export type SubmitInput = z.input<typeof submitSchema>;
+
+export interface StatementView {
+  ordinal: number;
+  sql: string;
+  kind: StatementKind;
+  command: string;
+  range: {
+    start: number;
+    end: number;
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  };
+  status: string;
+  transactionOutcome: TransactionOutcome;
+  affectedRows: number | null;
+  error: { code: string | null; message: string; detail: unknown } | null;
+  notices: string[];
+  startedAt: string | null;
+  durationMs: number | null;
+}
+
+export interface ResultSetView {
+  index: number;
+  statement: number;
+  columns: ColumnInfo[];
+  rowCount: number;
+  byteCount: number;
+  moreAvailable: boolean;
+  completeness: Completeness;
+  expiresAt: string | null;
+}
+
+export interface ExecutionView {
+  id: string;
+  title: string;
+  owner: string;
+  actorSubject: string;
+  source: Actor['source'];
+  clientId: string;
+  profile: { id: string | null; name: string } | null;
+  connection: { id: string | null; name: string; engine: string };
+  database: string | null;
+  schema: string | null;
+  savedQueryId: string | null;
+  requestKey: string;
+  sql: string;
+  scope: string;
+  captureMode: 'preview' | 'full';
+  transactionMode: 'per_statement' | 'atomic';
+  continueOnError: boolean;
+  timeoutMs: number;
+  retention: 'working' | 'retained';
+  readOnly: boolean;
+  policySources: string[];
+  status: ExecutionStatus;
+  statusNote: string | null;
+  transactionOutcome: TransactionOutcome;
+  submittedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  cancelRequestedAt: string | null;
+  error: { code: string | null; message: string; detail: unknown } | null;
+  /** While queued: 1-based position on the connection and why it waits. */
+  queue: { position: number; reason: string } | null;
+  statements: StatementView[];
+  resultSets: ResultSetView[];
+  resultExpiresAt: string | null;
+}
+
+export interface ExecutionOptions {
+  /** Executions running at once across all connections. */
+  globalCap?: number;
+}
+
+const parse = (v: unknown, fallback: unknown = null) =>
+  v === null || v === undefined ? fallback : JSON.parse(String(v));
+const TERMINAL =
+  "('succeeded', 'failed', 'rejected', 'preflight_rejected', 'cancelled', 'timed_out', 'interrupted', 'unknown')";
+
+interface Running {
+  controller: AbortController;
+  connectionId: string;
+  done: Promise<void>;
+}
+
+/**
+ * Server-owned executions. A submission is stored (with its SQL snapshot) before it is
+ * acknowledged and then runs in the background, independent of the request that created it.
+ * Status, transaction outcome and result completeness are reported separately and honestly.
+ */
+export class ExecutionService {
+  readonly events = new EventEmitter();
+  readonly #running = new Map<string, Running>();
+  readonly #budget: StorageBudget;
+  readonly #globalCap: number;
+  #stopped = false;
+
+  constructor(
+    private readonly ctx: ServiceContext,
+    private readonly deps: {
+      databases: DatabaseService;
+      connections: ConnectionService;
+      profiles: ProfileService;
+      settings: SettingsService;
+    },
+    options: ExecutionOptions = {},
+  ) {
+    this.#budget = StorageBudget.fromDatabase(ctx.db, ctx.limits.maxTotalBytes);
+    this.#globalCap = options.globalCap ?? 16;
+    this.events.setMaxListeners(0);
+  }
+
+  /** Bytes of captured results currently stored. */
+  get storedBytes(): number {
+    return this.#budget.used;
+  }
+
+  // ---------------------------------------------------------------- submission
+
+  async submit(actor: Actor, input: SubmitInput): Promise<ExecutionView> {
+    requirePermission(actor, 'sql.read');
+    const v = parseInput(submitSchema, input);
+    const connection = this.deps.databases.usable(actor, v.connectionId);
+    const profile = actor.profileId ? this.deps.profiles.findByClientId(actor.clientId) : undefined;
+    const policy = evaluateWritePolicy({
+      actor,
+      connection: { name: connection.name, readOnly: connection.readOnly },
+      ...(profile ? { profile: { name: profile.name, readOnly: profile.readOnly } } : {}),
+    });
+    const defaults = this.deps.settings.defaults();
+    const maxTimeout = Math.min(
+      v.captureMode === 'full' ? defaults.fullTimeoutMaxMs : defaults.ordinaryTimeoutMs,
+      profile ? profile.timeoutMs : Number.MAX_SAFE_INTEGER,
+    );
+    const timeoutMs = Math.min(v.timeoutMs ?? defaults.ordinaryTimeoutMs, maxTimeout);
+    if (v.timeoutMs !== undefined && v.timeoutMs > maxTimeout) {
+      throw new AppError('validation_failed', `The timeout may be at most ${maxTimeout} ms for this run.`, {
+        fields: [{ path: 'timeoutMs', message: `At most ${maxTimeout} ms.` }],
+      });
+    }
+    const retainDays =
+      v.retention === 'retained'
+        ? Math.min(v.retainDays ?? defaults.retainedMaxDays, defaults.retainedMaxDays)
+        : null;
+
+    const requestKey = v.requestKey ?? newId('execution', this.ctx.clock.now());
+    const hash = createHash('sha256')
+      .update(
+        JSON.stringify([
+          v.connectionId,
+          v.sql,
+          v.scope,
+          v.savedQueryId,
+          v.captureMode,
+          v.transactionMode,
+          v.continueOnError,
+          timeoutMs,
+          v.retention,
+          retainDays,
+        ]),
+      )
+      .digest('hex');
+    const existing = this.ctx.db.get(
+      'SELECT id, request_hash FROM executions WHERE owner = :owner AND request_key = :key',
+      {
+        owner: actor.subject,
+        key: requestKey,
+      },
+    );
+    if (existing) {
+      if (existing.request_hash !== hash) {
+        throw new AppError(
+          'request_conflict',
+          'This request key was already used for a different SQL text or different settings.',
+          { executionId: String(existing.id) },
+        );
+      }
+      return this.view(String(existing.id));
+    }
+
+    const statements = await analyzeScript(v.sql, connection.engine);
+    let problems: PreflightProblem[];
+    const adapter =
+      connection.engine === 'mysql' && v.transactionMode === 'atomic'
+        ? await this.#adapter(connection.id)
+        : null;
+    problems = await preflight(statements, {
+      engine: connection.engine,
+      transactionMode: v.transactionMode,
+      readOnly: policy.readOnly,
+      readOnlySources: policy.sources,
+      ...(adapter
+        ? {
+            tableEngine: async (table) => {
+              try {
+                return await adapter.tableEngine(table);
+              } catch {
+                return 'unknown (the storage engine could not be checked)';
+              }
+            },
+          }
+        : {}),
+    });
+    problems = problems.map((p) =>
+      p.message.includes('unknown (the storage engine')
+        ? { ...p, hint: 'Retry, or use per-statement mode.' }
+        : p,
+    );
+
+    const id = newId('execution', this.ctx.clock.now());
+    const now = isoNow(this.ctx);
+    const metadataExpires = new Date(
+      Date.parse(now) + defaults.metadataRetentionDays * 86_400_000,
+    ).toISOString();
+    const rejected = problems.length > 0;
+    this.ctx.db.transaction(() => {
+      this.ctx.db.run(
+        `INSERT INTO executions (id, owner, actor_subject, source, client_id, actor_roles, profile_id, profile_name,
+           connection_id, connection_name, engine, database_name, schema_name, saved_query_id, title, request_key, request_hash,
+           sql, scope, capture_mode, transaction_mode, continue_on_error, timeout_ms, retention, retain_days, read_only,
+           policy_sources, status, transaction_outcome, submitted_at, finished_at, error_code, error_message, error_detail,
+           metadata_expires_at)
+         VALUES (:id, :owner, :owner, :source, :client, :roles, :profileId, :profileName, :connectionId, :connectionName,
+           :engine, :database, :schema, :savedQuery, :title, :key, :hash, :sql, :scope, :capture, :mode, :continue, :timeout,
+           :retention, :retainDays, :readOnly, :sources, :status, 'not_started', :now, :finished, :errorCode, :errorMessage,
+           :errorDetail, :metadataExpires)`,
+        {
+          id,
+          owner: actor.subject,
+          source: actor.source,
+          client: actor.clientId,
+          roles: JSON.stringify(actor.roles),
+          profileId: profile?.id ?? null,
+          profileName: profile?.name ?? null,
+          connectionId: connection.id,
+          connectionName: connection.name,
+          engine: connection.engine,
+          database: connection.database,
+          schema: connection.schema,
+          savedQuery: v.savedQueryId,
+          title: v.title || statements[0]?.text.slice(0, 80).replace(/\s+/g, ' ') || 'SQL',
+          key: requestKey,
+          hash,
+          sql: v.sql,
+          scope: v.scope,
+          capture: v.captureMode,
+          mode: v.transactionMode,
+          continue: int(v.continueOnError),
+          timeout: timeoutMs,
+          retention: v.retention,
+          retainDays,
+          readOnly: int(policy.readOnly),
+          sources: JSON.stringify(policy.sources),
+          status: rejected ? 'preflight_rejected' : 'queued',
+          now,
+          finished: rejected ? now : null,
+          errorCode: rejected ? 'preflight' : null,
+          errorMessage: rejected ? (problems[0]?.message ?? 'The script was rejected before it ran.') : null,
+          errorDetail: rejected ? JSON.stringify({ problems }) : null,
+          metadataExpires,
+        },
+      );
+      for (const s of statements) {
+        this.ctx.db.run(
+          `INSERT INTO statements (execution_id, ordinal, sql, kind, command, offset_start, offset_end, line_start, column_start,
+             line_end, column_end, status, transaction_outcome)
+           VALUES (:id, :ordinal, :sql, :kind, :command, :os, :oe, :ls, :cs, :le, :ce, 'not_run', 'not_started')`,
+          {
+            id,
+            ordinal: s.index,
+            sql: s.text,
+            kind: s.analysis.kind,
+            command: s.analysis.command,
+            os: s.range.start,
+            oe: s.range.end,
+            ls: s.range.startLine,
+            cs: s.range.startColumn,
+            le: s.range.endLine,
+            ce: s.range.endColumn,
+          },
+        );
+      }
+      this.ctx.audit.record({
+        actor,
+        action: 'execution.submit',
+        target: { type: 'execution', id, label: connection.name },
+        outcome: rejected ? 'denied' : 'accepted',
+        details: {
+          connection: connection.name,
+          statements: statements.length,
+          readOnly: policy.readOnly,
+          captureMode: v.captureMode,
+          transactionMode: v.transactionMode,
+          ...(rejected ? { problems: problems.map((p) => p.code) } : {}),
+        },
+      });
+    });
+    this.#changed(id);
+    if (!rejected) this.#pump();
+    return this.view(id);
+  }
+
+  // ---------------------------------------------------------------- reading
+
+  get(actor: Actor, id: string): ExecutionView {
+    this.#assertVisible(actor, this.#row(id));
+    return this.view(id);
+  }
+
+  list(
+    actor: Actor,
+    query: { status?: ExecutionStatus; connectionId?: string; limit?: number; before?: string } = {},
+  ) {
+    requirePermission(actor, 'sql.read');
+    const where = ['owner = :owner'];
+    const params: Record<string, string | number> = {
+      owner: actor.subject,
+      limit: Math.min(query.limit ?? 50, 200),
+    };
+    if (query.status) {
+      where.push('status = :status');
+      params.status = query.status;
+    }
+    if (query.connectionId) {
+      where.push('connection_id = :connection');
+      params.connection = query.connectionId;
+    }
+    if (query.before) {
+      where.push('submitted_at < :before');
+      params.before = query.before;
+    }
+    return this.ctx.db
+      .all(
+        `SELECT id FROM executions WHERE ${where.join(' AND ')} ORDER BY submitted_at DESC, id DESC LIMIT :limit`,
+        params,
+      )
+      .map((r) => this.view(String(r.id)));
+  }
+
+  /** A page of captured rows of one result set. */
+  rows(actor: Actor, id: string, resultIndex: number, page: { offset?: number; limit?: number } = {}) {
+    this.#assertVisible(actor, this.#row(id));
+    const set = this.ctx.db.get(
+      'SELECT * FROM result_sets WHERE execution_id = :id AND result_index = :index',
+      {
+        id,
+        index: resultIndex,
+      },
+    );
+    assert(set, 'not_found', 'Result set not found.', { resultIndex });
+    const completeness = String(set.completeness) as Completeness;
+    if (completeness === 'expired' || completeness === 'deleted') {
+      throw new AppError('result_expired', 'The captured result is no longer stored. Run the query again.');
+    }
+    const offset = Math.max(0, page.offset ?? 0);
+    const limit = Math.min(Math.max(1, page.limit ?? 100), 1000);
+    return {
+      columns: parse(set.columns, []) as ColumnInfo[],
+      rows: readRows(this.ctx.db, id, resultIndex, offset, limit),
+      offset,
+      rowCount: Number(set.row_count),
+      moreAvailable: bool(set.more_available),
+      completeness,
+    };
+  }
+
+  view(id: string): ExecutionView {
+    const r = this.#row(id);
+    const statements = this.ctx.db
+      .all('SELECT * FROM statements WHERE execution_id = :id ORDER BY ordinal', { id })
+      .map((s): StatementView => ({
+        ordinal: Number(s.ordinal),
+        sql: String(s.sql),
+        kind: String(s.kind) as StatementKind,
+        command: String(s.command),
+        range: {
+          start: Number(s.offset_start),
+          end: Number(s.offset_end),
+          startLine: Number(s.line_start),
+          startColumn: Number(s.column_start),
+          endLine: Number(s.line_end),
+          endColumn: Number(s.column_end),
+        },
+        status: String(s.status),
+        transactionOutcome: String(s.transaction_outcome) as TransactionOutcome,
+        affectedRows: s.affected_rows === null ? null : Number(s.affected_rows),
+        error: s.error_message
+          ? {
+              code: (s.error_code as string | null) ?? null,
+              message: String(s.error_message),
+              detail: parse(s.error_detail),
+            }
+          : null,
+        notices: parse(s.notices, []) as string[],
+        startedAt: (s.started_at as string | null) ?? null,
+        durationMs: s.duration_ms === null ? null : Number(s.duration_ms),
+      }));
+    const resultSets = this.ctx.db
+      .all('SELECT * FROM result_sets WHERE execution_id = :id ORDER BY result_index', { id })
+      .map((s): ResultSetView => ({
+        index: Number(s.result_index),
+        statement: Number(s.statement),
+        columns: parse(s.columns, []) as ColumnInfo[],
+        rowCount: Number(s.row_count),
+        byteCount: Number(s.byte_count),
+        moreAvailable: bool(s.more_available),
+        completeness: String(s.completeness) as Completeness,
+        expiresAt: (s.expires_at as string | null) ?? null,
+      }));
+    const status = String(r.status) as ExecutionStatus;
+    return {
+      id,
+      title: String(r.title),
+      owner: String(r.owner),
+      actorSubject: String(r.actor_subject),
+      source: r.source as Actor['source'],
+      clientId: String(r.client_id),
+      profile: r.profile_name
+        ? { id: (r.profile_id as string | null) ?? null, name: String(r.profile_name) }
+        : null,
+      connection: {
+        id: (r.connection_id as string | null) ?? null,
+        name: String(r.connection_name),
+        engine: String(r.engine),
+      },
+      database: (r.database_name as string | null) ?? null,
+      schema: (r.schema_name as string | null) ?? null,
+      savedQueryId: (r.saved_query_id as string | null) ?? null,
+      requestKey: String(r.request_key),
+      sql: String(r.sql),
+      scope: String(r.scope),
+      captureMode: r.capture_mode as ExecutionView['captureMode'],
+      transactionMode: r.transaction_mode as ExecutionView['transactionMode'],
+      continueOnError: bool(r.continue_on_error),
+      timeoutMs: Number(r.timeout_ms),
+      retention: r.retention as ExecutionView['retention'],
+      readOnly: bool(r.read_only),
+      policySources: parse(r.policy_sources, []) as string[],
+      status,
+      statusNote: (r.status_note as string | null) ?? null,
+      transactionOutcome: String(r.transaction_outcome) as TransactionOutcome,
+      submittedAt: String(r.submitted_at),
+      startedAt: (r.started_at as string | null) ?? null,
+      finishedAt: (r.finished_at as string | null) ?? null,
+      cancelRequestedAt: (r.cancel_requested_at as string | null) ?? null,
+      error: r.error_message
+        ? {
+            code: (r.error_code as string | null) ?? null,
+            message: String(r.error_message),
+            detail: parse(r.error_detail),
+          }
+        : null,
+      queue: status === 'queued' ? this.#queuePosition(r) : null,
+      statements,
+      resultSets,
+      resultExpiresAt: (r.result_expires_at as string | null) ?? null,
+    };
+  }
+
+  #queuePosition(r: Row): { position: number; reason: string } {
+    const ahead = this.ctx.db.get(
+      `SELECT count(*) AS n FROM executions WHERE connection_id = :connection AND status = 'queued'
+         AND (submitted_at < :at OR (submitted_at = :at AND id < :id))`,
+      { connection: r.connection_id as string, at: String(r.submitted_at), id: String(r.id) },
+    );
+    const running = [...this.#running.values()].filter((x) => x.connectionId === r.connection_id).length;
+    const slots = this.deps.settings.defaults().concurrencyPerConnection;
+    const reason =
+      this.#running.size >= this.#globalCap
+        ? `The server is running its maximum of ${this.#globalCap} executions.`
+        : running >= slots
+          ? `Waiting for a free slot on ${String(r.connection_name)} (${running} of ${slots} in use).`
+          : 'Starting.';
+    return { position: Number(ahead?.n ?? 0) + 1, reason };
+  }
+
+  #row(id: string): Row {
+    const row = this.ctx.db.get('SELECT * FROM executions WHERE id = :id', { id });
+    assert(row, 'not_found', 'Execution not found.', { id });
+    return row;
+  }
+
+  /** Owners see their executions; administrators see all. */
+  #assertVisible(actor: Actor, row: Row): void {
+    if (row.owner === actor.subject) return;
+    if (actor.source !== 'mcp' && can(actor, 'connections.manage')) return;
+    throw new AppError('not_found', 'Execution not found.', { id: String(row.id) });
+  }
+
+  #changed(id: string): void {
+    const row = this.ctx.db.get('SELECT status, connection_id FROM executions WHERE id = :id', { id });
+    this.events.emit('change', { id, status: row?.status, connectionId: row?.connection_id ?? null });
+  }
+
+  // ---------------------------------------------------------------- cancellation
+
+  cancel(actor: Actor, id: string): ExecutionView {
+    const row = this.#row(id);
+    this.#assertVisible(actor, row);
+    const now = isoNow(this.ctx);
+    const queued = this.ctx.db.run(
+      `UPDATE executions SET status = 'cancelled', finished_at = :now, cancel_requested_at = :now,
+         status_note = 'Cancelled before it started.' WHERE id = :id AND status = 'queued'`,
+      { id, now },
+    );
+    if (Number(queued.changes) > 0) {
+      this.#finishAudit(actor, id, 'cancel', 'succeeded');
+      this.#changed(id);
+      return this.view(id);
+    }
+    const running = this.#running.get(id);
+    if (running && row.status === 'running') {
+      this.ctx.db.run(
+        `UPDATE executions SET status = 'cancel_requested', cancel_requested_at = :now WHERE id = :id AND status = 'running'`,
+        { id, now },
+      );
+      this.#finishAudit(actor, id, 'cancel', 'accepted');
+      running.controller.abort();
+      this.#changed(id);
+    }
+    return this.view(id);
+  }
+
+  #finishAudit(
+    actor: Actor | 'system',
+    id: string,
+    what: string,
+    outcome: 'succeeded' | 'accepted' | 'failed',
+  ) {
+    this.ctx.audit.record({ actor, action: `execution.${what}`, target: { type: 'execution', id }, outcome });
+  }
+
+  // ---------------------------------------------------------------- scheduling
+
+  /** Starts queued executions in FIFO order while slots are free. */
+  #pump(): void {
+    if (this.#stopped) return;
+    const slots = this.deps.settings.defaults().concurrencyPerConnection;
+    const queued = this.ctx.db.all(
+      "SELECT id, connection_id FROM executions WHERE status = 'queued' ORDER BY submitted_at, id",
+    );
+    for (const q of queued) {
+      if (this.#running.size >= this.#globalCap) return;
+      const connectionId = String(q.connection_id ?? '');
+      const busy = [...this.#running.values()].filter((r) => r.connectionId === connectionId).length;
+      if (busy >= slots) continue;
+      this.#start(String(q.id), connectionId);
+    }
+  }
+
+  /** Re-authorizes a queued execution and starts it, or rejects it if it may no longer run. */
+  #start(id: string, connectionId: string): void {
+    const row = this.#row(id);
+    const refusal = this.#reauthorize(row);
+    const now = isoNow(this.ctx);
+    if (refusal) {
+      this.ctx.db.run(
+        `UPDATE executions SET status = 'rejected', finished_at = :now, error_code = :code, error_message = :message
+          WHERE id = :id AND status = 'queued'`,
+        { id, now, code: refusal.code, message: refusal.message },
+      );
+      this.#finishAudit('system', id, 'reject', 'succeeded');
+      this.#changed(id);
+      return;
+    }
+    const started = this.ctx.db.run(
+      "UPDATE executions SET status = 'running', started_at = :now WHERE id = :id AND status = 'queued'",
+      { id, now },
+    );
+    if (Number(started.changes) === 0) return;
+    const controller = new AbortController();
+    const entry: Running = { controller, connectionId, done: Promise.resolve() };
+    this.#running.set(id, entry);
+    this.#changed(id);
+    entry.done = this.#run(id, controller.signal)
+      .catch((error: unknown) => {
+        try {
+          this.#finalize(id, 'failed', 'unknown', {
+            code: 'internal',
+            message: 'The execution failed unexpectedly.',
+          });
+          this.ctx.audit.record({
+            actor: 'system',
+            action: 'execution.error',
+            target: { type: 'execution', id },
+            outcome: 'failed',
+            details: { error: error instanceof Error ? error.message : String(error) },
+          });
+        } catch {
+          // The application database is gone (shutdown); reconcile() reports it after the restart.
+        }
+      })
+      .finally(() => {
+        this.#running.delete(id);
+        try {
+          this.#changed(id);
+          this.#pump();
+        } catch {
+          // As above.
+        }
+      });
+  }
+
+  #reauthorize(row: Row): AppError | null {
+    const connectionId = row.connection_id as string | null;
+    if (!connectionId)
+      return new AppError('not_found', 'The connection was deleted before the execution started.');
+    const connection = this.ctx.db.get('SELECT name, read_only, enabled FROM connections WHERE id = :id', {
+      id: connectionId,
+    });
+    if (!connection)
+      return new AppError('not_found', 'The connection was deleted before the execution started.');
+    if (!bool(connection.enabled))
+      return new AppError('connection_disabled', `Connection “${String(connection.name)}” is disabled.`);
+    const actor: Actor = {
+      subject: String(row.actor_subject),
+      username: String(row.actor_subject),
+      displayName: String(row.actor_subject),
+      roles: parse(row.actor_roles, []) as Role[],
+      source: row.source as Actor['source'],
+      clientId: String(row.client_id),
+      ...(row.profile_id ? { profileId: String(row.profile_id) } : {}),
+    };
+    let profile: { name: string; readOnly: boolean } | undefined;
+    if (actor.source === 'mcp') {
+      const p = row.profile_id ? this.deps.profiles.findByClientId(actor.clientId) : undefined;
+      if (!p || p.id !== row.profile_id || !p.enabled || !p.connectionIds.includes(connectionId)) {
+        return new AppError('forbidden', 'The MCP profile no longer allows this connection.');
+      }
+      profile = { name: p.name, readOnly: p.readOnly };
+    }
+    const policy = evaluateWritePolicy({
+      actor,
+      connection: { name: String(connection.name), readOnly: bool(connection.read_only) },
+      ...(profile ? { profile } : {}),
+    });
+    if (policy.readOnly) {
+      const unsafe = this.ctx.db.get(
+        "SELECT count(*) AS n FROM statements WHERE execution_id = :id AND kind NOT IN ('read', 'session', 'transaction')",
+        { id: String(row.id) },
+      );
+      if (!bool(row.read_only) && Number(unsafe?.n ?? 0) > 0) {
+        return new AppError(
+          'forbidden',
+          `The policy became read-only (${policy.sources.join(', ')}) before the execution started; it contains writes.`,
+        );
+      }
+      if (!bool(row.read_only)) {
+        this.ctx.db.run('UPDATE executions SET read_only = 1, policy_sources = :sources WHERE id = :id', {
+          id: String(row.id),
+          sources: JSON.stringify(policy.sources),
+        });
+      }
+    }
+    return null;
+  }
+
+  async #adapter(connectionId: string): Promise<DbAdapter> {
+    return this.deps.databases.adapterForConnection(connectionId);
+  }
+
+  // ---------------------------------------------------------------- running
+
+  async #run(id: string, signal: AbortSignal): Promise<void> {
+    const row = this.#row(id);
+    const readOnly = bool(row.read_only);
+    const atomic = row.transaction_mode === 'atomic';
+    const continueOnError = bool(row.continue_on_error);
+    const deadline = Date.now() + Number(row.timeout_ms);
+    const defaults = this.deps.settings.defaults();
+    const statements = this.ctx.db.all('SELECT * FROM statements WHERE execution_id = :id ORDER BY ordinal', {
+      id,
+    });
+    const capture = { limit: this.ctx.limits.maxResultBytes, used: 0 };
+
+    let adapter: DbAdapter;
+    try {
+      adapter = await this.#adapter(String(row.connection_id));
+    } catch (error) {
+      this.#finalize(id, 'failed', 'not_started', describe(error));
+      return;
+    }
+
+    let resultIndex = 0;
+    let committedWrites = 0;
+    let unknownOutcome = false;
+    let failure: { status: ExecutionStatus; error: ReturnType<typeof describe> } | null = null;
+    let atomicOutcome: TransactionOutcome = 'not_started';
+
+    const expiresAt = () => {
+      const hours =
+        row.retention === 'retained'
+          ? Number(row.retain_days ?? defaults.retainedMaxDays) * 24
+          : defaults.workingRetentionHours;
+      return new Date(Date.now() + hours * 3_600_000).toISOString();
+    };
+
+    try {
+      await adapter.withSession(async (session: DbSession) => {
+        if (atomic) await session.begin({ readOnly });
+        for (const st of statements) {
+          if (signal.aborted) break;
+          const ordinal = Number(st.ordinal);
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            failure = {
+              status: 'timed_out',
+              error: { code: 'timeout', message: 'The execution reached its time limit.' },
+            };
+            break;
+          }
+          const writes = !(st.kind === 'read' || (readOnly && st.kind === 'session'));
+          const startedAt = isoNow(this.ctx);
+          const t0 = performance.now();
+          this.ctx.db.run(
+            "UPDATE statements SET status = 'running', started_at = :at WHERE execution_id = :id AND ordinal = :ordinal",
+            { id, ordinal, at: startedAt },
+          );
+          this.#changed(id);
+          const sink = new ResultCapture(this.ctx.db, id, ordinal, resultIndex, {
+            mode: row.capture_mode === 'full' ? 'full' : 'preview',
+            previewRows: this.ctx.limits.previewRows,
+            executionBytes: capture,
+            budget: this.#budget,
+            now: () => isoNow(this.ctx),
+          });
+          try {
+            if (!atomic && readOnly) await session.begin({ readOnly: true });
+            const outcome = await session.execute(String(st.sql), sink, {
+              timeoutMs: remaining,
+              signal,
+              batchSize: sink.batchSize,
+            });
+            if (!atomic && readOnly) await session.commit();
+            sink.finish('complete', expiresAt());
+            resultIndex += sink.count;
+            if (st.kind === 'session' || st.kind === 'unknown')
+              session.markDirty('session state may have changed');
+            const txOutcome: TransactionOutcome = atomic
+              ? 'not_started'
+              : writes && !readOnly
+                ? 'committed'
+                : 'none';
+            if (txOutcome === 'committed') committedWrites++;
+            this.ctx.db.run(
+              `UPDATE statements SET status = 'succeeded', transaction_outcome = :tx, affected_rows = :affected, notices = :notices,
+                 duration_ms = :ms WHERE execution_id = :id AND ordinal = :ordinal`,
+              {
+                id,
+                ordinal,
+                tx: txOutcome,
+                affected: outcome.affectedRows,
+                notices: outcome.notices.length ? JSON.stringify(outcome.notices) : null,
+                ms: Math.round(performance.now() - t0),
+              },
+            );
+          } catch (error) {
+            sink.finish('interrupted', expiresAt());
+            resultIndex += sink.count;
+            const e = describe(error);
+            const category = error instanceof DbError ? error.category : 'other';
+            const lost = category === 'connectivity';
+            const status: ExecutionStatus =
+              category === 'cancelled'
+                ? 'cancelled'
+                : category === 'timeout'
+                  ? 'timed_out'
+                  : lost && writes && !readOnly
+                    ? 'unknown'
+                    : 'failed';
+            if (!atomic && readOnly)
+              await session.rollback().catch(() => session.markDirty('rollback failed'));
+            const txOutcome: TransactionOutcome = atomic
+              ? 'not_started'
+              : lost && writes && !readOnly
+                ? 'unknown'
+                : writes && !readOnly
+                  ? 'rolled_back'
+                  : 'none';
+            if (txOutcome === 'unknown') unknownOutcome = true;
+            this.ctx.db.run(
+              `UPDATE statements SET status = :status, transaction_outcome = :tx, error_code = :code, error_message = :message,
+                 error_detail = :detail, duration_ms = :ms WHERE execution_id = :id AND ordinal = :ordinal`,
+              {
+                id,
+                ordinal,
+                status: status === 'unknown' ? 'failed' : status,
+                tx: txOutcome,
+                code: e.code,
+                message: e.message,
+                detail: e.detail ? JSON.stringify(e.detail) : null,
+                ms: Math.round(performance.now() - t0),
+              },
+            );
+            if (lost) session.markDirty('connection lost');
+            failure ??= { status, error: { ...e, message: `Statement ${ordinal + 1}: ${e.message}` } };
+            const stop =
+              atomic || !continueOnError || category === 'cancelled' || category === 'timeout' || lost;
+            if (stop) break;
+          }
+        }
+
+        if (atomic) {
+          if (failure || signal.aborted) {
+            try {
+              await session.rollback();
+            } catch {
+              session.markDirty('rollback failed');
+            }
+            // An open transaction is rolled back by the server when the connection drops, too.
+            atomicOutcome = 'rolled_back';
+          } else {
+            this.ctx.db.run("UPDATE executions SET transaction_outcome = 'unknown' WHERE id = :id", { id });
+            try {
+              await session.commit();
+              atomicOutcome = 'committed';
+            } catch (error) {
+              const e = describe(error);
+              const lost = error instanceof DbError && error.category === 'connectivity';
+              atomicOutcome = lost ? 'unknown' : 'rolled_back';
+              failure = {
+                status: lost ? 'unknown' : 'failed',
+                error: {
+                  ...e,
+                  message: lost
+                    ? `The connection was lost during COMMIT: ${e.message}`
+                    : `COMMIT failed: ${e.message}`,
+                },
+              };
+              session.markDirty('commit did not complete');
+            }
+          }
+          this.ctx.db.run(
+            `UPDATE statements SET transaction_outcome = :tx WHERE execution_id = :id AND status IN ('succeeded', 'failed')
+               AND kind NOT IN ('read')`,
+            { id, tx: readOnly ? 'none' : atomicOutcome },
+          );
+        }
+      });
+    } catch (error) {
+      // Could not get a session (connection failure) or the session failed outside a statement.
+      failure ??= { status: 'failed', error: describe(error) };
+      if (atomic && atomicOutcome === 'not_started') atomicOutcome = 'rolled_back';
+    }
+
+    const cancelRequested = Boolean(
+      this.ctx.db.get('SELECT cancel_requested_at FROM executions WHERE id = :id', { id })
+        ?.cancel_requested_at,
+    );
+    let status: ExecutionStatus = failure ? (failure as { status: ExecutionStatus }).status : 'succeeded';
+    let note: string | null = null;
+    if (signal.aborted && !failure) {
+      // Cancelled between statements: what ran stays as it is.
+      status = 'cancelled';
+    }
+    if (status === 'succeeded' && cancelRequested) note = 'Completed before the cancellation took effect.';
+
+    let outcome: TransactionOutcome;
+    if (readOnly) outcome = 'none';
+    else if (atomic) outcome = atomicOutcome;
+    else if (unknownOutcome) outcome = 'unknown';
+    else if (committedWrites === 0) outcome = 'none';
+    else outcome = status === 'succeeded' ? 'committed' : 'partial_commit';
+
+    this.#finalize(
+      id,
+      status,
+      outcome,
+      failure ? (failure as { error: ReturnType<typeof describe> }).error : null,
+      note,
+      expiresAt(),
+    );
+  }
+
+  #finalize(
+    id: string,
+    status: ExecutionStatus,
+    outcome: TransactionOutcome,
+    error: { code: string | null; message: string; detail?: unknown } | null,
+    note: string | null = null,
+    resultExpiresAt: string | null = null,
+  ): void {
+    this.ctx.db.run(
+      `UPDATE executions SET status = :status, transaction_outcome = :outcome, finished_at = :now, error_code = :code,
+         error_message = :message, error_detail = :detail, status_note = coalesce(:note, status_note), result_expires_at = :expires
+       WHERE id = :id`,
+      {
+        id,
+        status,
+        outcome,
+        now: isoNow(this.ctx),
+        code: error?.code ?? null,
+        message: error?.message ?? null,
+        detail: error?.detail ? JSON.stringify(error.detail) : null,
+        note,
+        expires: resultExpiresAt,
+      },
+    );
+    this.ctx.audit.record({
+      actor: 'system',
+      action: 'execution.finish',
+      target: { type: 'execution', id },
+      outcome: status === 'succeeded' ? 'succeeded' : 'failed',
+      details: { status, transactionOutcome: outcome },
+    });
+  }
+
+  // ---------------------------------------------------------------- lifecycle
+
+  /**
+   * After a restart: work that was running is marked interrupted and never replayed. Queued work
+   * stays queued and is authorized again when it starts.
+   */
+  reconcile(): { interrupted: number; queued: number } {
+    const now = isoNow(this.ctx);
+    const inFlight = this.ctx.db.all(
+      "SELECT id, transaction_mode, transaction_outcome, read_only FROM executions WHERE status IN ('running', 'cancel_requested')",
+    );
+    this.ctx.db.transaction(() => {
+      for (const e of inFlight) {
+        const id = String(e.id);
+        const running = this.ctx.db.get(
+          "SELECT kind FROM statements WHERE execution_id = :id AND status = 'running'",
+          { id },
+        );
+        const committed = Number(
+          this.ctx.db.get(
+            "SELECT count(*) AS n FROM statements WHERE execution_id = :id AND transaction_outcome = 'committed'",
+            { id },
+          )?.n ?? 0,
+        );
+        let outcome: TransactionOutcome;
+        if (bool(e.read_only)) outcome = 'none';
+        else if (e.transaction_mode === 'atomic') {
+          // 'unknown' was written just before COMMIT; otherwise the server rolled the transaction back.
+          outcome = e.transaction_outcome === 'unknown' ? 'unknown' : 'rolled_back';
+        } else if (running && running.kind !== 'read') outcome = 'unknown';
+        else outcome = committed > 0 ? 'partial_commit' : 'none';
+        this.ctx.db.run(
+          `UPDATE statements SET status = 'interrupted', transaction_outcome = CASE WHEN kind = 'read' THEN 'none' ELSE 'unknown' END
+            WHERE execution_id = :id AND status = 'running'`,
+          { id },
+        );
+        this.ctx.db.run(
+          "UPDATE result_sets SET completeness = 'interrupted' WHERE execution_id = :id AND completeness = 'capturing'",
+          { id },
+        );
+        this.ctx.db.run(
+          `UPDATE executions SET status = 'interrupted', transaction_outcome = :outcome, finished_at = :now,
+             status_note = 'The server restarted while this execution was running. It was not run again.' WHERE id = :id`,
+          { id, outcome, now },
+        );
+        this.ctx.audit.record({
+          actor: 'system',
+          action: 'execution.interrupt',
+          target: { type: 'execution', id },
+          outcome: 'succeeded',
+        });
+      }
+    });
+    const queued = Number(
+      this.ctx.db.get("SELECT count(*) AS n FROM executions WHERE status = 'queued'")?.n ?? 0,
+    );
+    return { interrupted: inFlight.length, queued };
+  }
+
+  /** Starts queued work (after reconcile at startup). */
+  resume(): void {
+    this.#stopped = false;
+    this.#pump();
+  }
+
+  /**
+   * Expires captured results past their retention and deletes execution metadata past its
+   * retention. Returns what it removed.
+   */
+  cleanup(now = this.ctx.clock.now()): {
+    resultsExpired: number;
+    bytesFreed: number;
+    executionsDeleted: number;
+  } {
+    const at = now.toISOString();
+    const expired = this.ctx.db.all(
+      `SELECT r.execution_id, r.result_index, r.byte_count FROM result_sets r
+         JOIN executions e ON e.id = r.execution_id
+        WHERE r.completeness NOT IN ('expired', 'deleted', 'capturing') AND r.expires_at IS NOT NULL AND r.expires_at <= :at
+          AND e.status IN ${TERMINAL}`,
+      { at },
+    );
+    let bytes = 0;
+    this.ctx.db.transaction(() => {
+      for (const r of expired) {
+        this.ctx.db.run('DELETE FROM result_chunks WHERE execution_id = :id AND result_index = :index', {
+          id: String(r.execution_id),
+          index: Number(r.result_index),
+        });
+        this.ctx.db.run(
+          "UPDATE result_sets SET completeness = 'expired' WHERE execution_id = :id AND result_index = :index",
+          { id: String(r.execution_id), index: Number(r.result_index) },
+        );
+        bytes += Number(r.byte_count);
+      }
+    });
+    this.#budget.release(bytes);
+    const old = this.ctx.db.all(
+      `SELECT id FROM executions WHERE metadata_expires_at <= :at AND status IN ${TERMINAL}`,
+      { at },
+    );
+    this.ctx.db.transaction(() => {
+      for (const e of old) {
+        const sets = this.ctx.db.get(
+          "SELECT coalesce(sum(byte_count), 0) AS b FROM result_sets WHERE execution_id = :id AND completeness NOT IN ('expired', 'deleted')",
+          { id: String(e.id) },
+        );
+        this.#budget.release(Number(sets?.b ?? 0));
+        this.ctx.db.run('DELETE FROM executions WHERE id = :id', { id: String(e.id) });
+      }
+    });
+    if (expired.length || old.length) {
+      this.ctx.audit.record({
+        actor: 'system',
+        action: 'retention.cleanup',
+        outcome: 'succeeded',
+        details: { resultsExpired: expired.length, bytesFreed: bytes, executionsDeleted: old.length },
+      });
+    }
+    return { resultsExpired: expired.length, bytesFreed: bytes, executionsDeleted: old.length };
+  }
+
+  /** Waits until nothing is running (tests and shutdown). */
+  async idle(): Promise<void> {
+    while (this.#running.size) await Promise.allSettled([...this.#running.values()].map((r) => r.done));
+  }
+
+  /** Stops starting new work and cancels running work (shutdown). */
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    for (const r of this.#running.values()) r.controller.abort();
+    await this.idle();
+  }
+}
+
+function describe(error: unknown): { code: string | null; message: string; detail?: unknown } {
+  if (error instanceof DbError) {
+    return {
+      code: error.code ?? error.category,
+      message: error.message,
+      detail: {
+        category: error.category,
+        sqlState: error.sqlState,
+        detail: error.detail,
+        hint: error.hint,
+        position: error.position,
+      },
+    };
+  }
+  if (error instanceof AppError) return { code: error.code, message: error.message };
+  return { code: 'internal', message: 'Unexpected error.' };
+}
+
+export type { Cell };

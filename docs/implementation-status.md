@@ -9,6 +9,66 @@ Tracks progress against the [implementation plan](implementation-plan.md). Each 
 | 2    | Identity with Keycloak                      | Done (in review); manual Claude Code check pending inputs |
 | 3–14 | See the plan                                | Not started                                               |
 
+## Step 4 — Execution engine, queue and result capture
+
+Details: [executions.md](executions.md).
+
+### What works
+
+- Submission:
+  - the execution, its SQL snapshot and its statements are stored before the call returns;
+  - request-key idempotency, with `request_conflict` for a changed payload;
+  - timeout bounds per capture mode and MCP profile;
+  - preflight rejections are stored with their problems.
+- Scheduling:
+  - FIFO per connection with 2 slots shared by GUI and MCP, and a global cap;
+  - queue position and reason are visible;
+  - authorization is checked again at start: connection, MCP profile, policy with the submitter's roles.
+- Per-statement mode (stop at the first error, or continue after errors) and single-transaction mode, on one pinned session.
+- Statement and execution outcomes: committed, partial commit, rolled back, or unknown when the connection is lost during a write or COMMIT.
+- Cancellation:
+  - queued work is cancelled at once;
+  - running work goes through `cancel_requested` until the database confirms;
+  - work that finished first says so.
+- An execution-wide time limit, ending as `timed_out`.
+- Capture:
+  - preview of 1,000 rows plus detection of more rows without COUNT;
+  - full capture into chunks within 100 MiB per execution and a shared 1 GiB total, `quota_limited` when cut;
+  - duplicate column names and several result sets are kept;
+  - row paging.
+- Restart reconciliation (interrupted, never replayed; queued work stays queued) and retention cleanup every 10 minutes (results 24 h, or up to 7 days when retained; metadata 90 days).
+- `main.ts` reconciles at startup, resumes the queue and schedules the cleanup.
+- Schema (migration 1, not yet deployed anywhere) gained:
+  - on executions: the submitter's roles, the policy and a status note;
+  - on statements: command, offsets and columns, notices and more statuses.
+
+### How it was verified
+
+- `npm run check` passes: 133 tests, 132 passing and 1 skipped when running as root. The 10 new execution tests cover:
+  - storing before acknowledging, and idempotency per owner;
+  - preflight rejections, including the user layer;
+  - timeout bounds, and MCP limits for connection, timeout and read-only;
+  - visibility, queue position, and cancelling queued work;
+  - reconciliation outcomes and retention cleanup.
+- `npm run test:integration` passes: 79 tests against Keycloak 26.4, PostgreSQL 16 and MySQL 8.4. The 29 new execution tests run on both engines:
+  - the 1,200-row fixture: the preview shows 1,000 and "more available", and a full run captures exactly 1,200;
+  - the three-statement script with statement 2 failing: partial commit per statement, continue after error, and rolled back as a single transaction;
+  - single-transaction preflight (MySQL implicit commit and MyISAM, PostgreSQL `CREATE INDEX CONCURRENTLY`);
+  - a read-only connection;
+  - duplicate request keys;
+  - FIFO queueing with its reason;
+  - cancelling running and queued work, with the session still usable;
+  - time limits;
+  - MySQL procedure result sets;
+  - `quota_limited` capture;
+  - a simulated crash during a run: the execution is interrupted and the write is not replayed.
+
+### Deferred
+
+- Export files and the retention UI arrive in step 5.
+- API endpoints and live status (server-sent events) arrive in step 6. The service already emits change events.
+- The MCP disclosure budget arrives in step 7.
+
 ## Step 3 — Database adapters, SQL analysis and read-only enforcement
 
 Details: [databases.md](databases.md). Decisions: [0022](decisions/0022-read-only-layers.md) (read-only layers and their limits) and [0023](decisions/0023-values-as-text.md) (values as text).
