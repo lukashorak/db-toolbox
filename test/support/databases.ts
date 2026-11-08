@@ -82,6 +82,14 @@ CREATE PROCEDURE wb_proc() LANGUAGE sql AS 'SELECT 1';
 -- Writes when a SELECT calls it.
 CREATE TABLE wb_audit_log (id int);
 CREATE FUNCTION wb_fn_inno() RETURNS int LANGUAGE sql VOLATILE AS 'INSERT INTO wb_audit_log VALUES (7); SELECT 7';
+-- A writing lower(text) that wins over pg_catalog's once a search path puts its schema first.
+CREATE SCHEMA wb_shadow;
+CREATE FUNCTION wb_shadow.lower(t text) RETURNS text LANGUAGE sql VOLATILE AS
+  'INSERT INTO public.wb_audit_log VALUES (9); SELECT pg_catalog.lower(t)';
+-- A writing twin of wb_item_count() in a schema off the search path: calls never reach it.
+CREATE SCHEMA wb_elsewhere;
+CREATE FUNCTION wb_elsewhere.wb_item_count() RETURNS bigint LANGUAGE sql VOLATILE AS
+  'INSERT INTO public.wb_audit_log VALUES (10); SELECT 0::bigint';
 -- Leaves a session setting and an advisory lock behind, out of sight of the statement analysis.
 CREATE FUNCTION wb_fn_leave_state() RETURNS int LANGUAGE sql AS
   'SELECT set_config(''wb.leak'', ''42'', false); SELECT pg_advisory_lock(4242); SELECT 1';

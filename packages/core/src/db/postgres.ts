@@ -3,7 +3,7 @@ import Cursor from 'pg-cursor';
 import { DbError, mapPostgresError } from './errors.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
-import { UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
+import type { TableRef } from '../sql/types.js';
 import type {
   Cell,
   ColumnInfo,
@@ -178,18 +178,8 @@ export class PostgresAdapter implements DbAdapter {
   async tableEngine(): Promise<string | null> {
     return null;
   }
-  /**
-   * UNRESOLVED_VIEW when a user-defined VOLATILE function of that name exists, which may write;
-   * else null. PostgreSQL refuses data changes in STABLE and IMMUTABLE functions.
-   */
-  async functionEngine(fn: TableRef): Promise<string | null> {
-    const [row] = await this.#metaQuery(
-      `SELECT count(*) AS volatile FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE p.proname = $2 AND p.prokind IN ('f', 'w') AND p.provolatile = 'v'
-          AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND ($1::text IS NULL OR n.nspname = $1)`,
-      [fn.schema, fn.name],
-    );
-    return Number(row?.volatile ?? 0) > 0 ? UNRESOLVED_VIEW : null;
+  async functionEngine(): Promise<string | null> {
+    return null;
   }
 
   async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
@@ -250,6 +240,46 @@ class PostgresSession implements DbSession {
 
   markDirty(reason: string): void {
     this.dirty ??= reason;
+  }
+
+  /**
+   * Looked up on this session, so its search path decides which schemas an unqualified name can
+   * reach, including a path that puts a user schema before pg_catalog. Every overload counts: which
+   * one a call picks is not resolved here. Catalog names are qualified so nothing on the path can
+   * stand in for them. An abort cancels the lookup on the server.
+   */
+  async functionsMayWrite(
+    calls: TableRef[],
+    _database: string | null,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (!calls.length) return false;
+    if (this.#stuck)
+      throw new DbError('connectivity', 'The connection was left unusable by an earlier error.');
+    signal?.throwIfAborted();
+    const qualified = calls.filter((c) => c.schema !== null);
+    const onAbort = () => void this.adapter.cancel(this.backendId);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const result = await this.client.query({
+        text: `SELECT pg_catalog.count(*) AS n FROM pg_catalog.pg_proc p
+                 JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
+                WHERE p.prokind IN ('f', 'w') AND p.provolatile = 'v'
+                  AND s.nspname NOT IN ('pg_catalog', 'information_schema')
+                  AND ((p.proname = ANY ($1::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
+                    OR (s.nspname, p.proname) IN (SELECT q.s, q.f FROM ROWS FROM (pg_catalog.unnest($2::text[]), pg_catalog.unnest($3::text[])) AS q (s, f)))`,
+        values: [
+          calls.filter((c) => c.schema === null).map((c) => c.name),
+          qualified.map((c) => c.schema),
+          qualified.map((c) => c.name),
+        ],
+      });
+      return Number((result.rows[0] as { n?: unknown } | undefined)?.n ?? 0) > 0;
+    } catch (error) {
+      throw mapPostgresError(error);
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   async #run(sql: string): Promise<void> {

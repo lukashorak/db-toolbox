@@ -89,6 +89,13 @@ export interface DbSession {
   markDirty(reason: string): void;
   /** Labels the session with an execution ID, so monitoring can tell this tool's work apart. */
   tag(executionId: string): Promise<void>;
+  /**
+   * Whether any of these called functions may write: MySQL, a stored function that writes or cannot
+   * be checked (unqualified names are looked up in `database`); PostgreSQL, a VOLATILE function
+   * outside pg_catalog that this session's search path reaches (or the named schema holds). Stops
+   * when `signal` aborts.
+   */
+  functionsMayWrite(calls: TableRef[], database: string | null, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface DbAdapter {
@@ -102,9 +109,8 @@ export interface DbAdapter {
   /** `signal`: stop looking (no further query starts) once it aborts. */
   tableEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
   /**
-   * Where a call to a possibly user-defined function writes: null when it is not one or writes
-   * nothing, UNRESOLVED_VIEW when that cannot be told (PostgreSQL: any VOLATILE user function), else
-   * the storage engine it writes (MySQL, for single-transaction preflight).
+   * MySQL: where a call to a possibly stored function writes, for single-transaction preflight: null
+   * when it is not a stored function or writes nothing, UNRESOLVED_VIEW when that cannot be told.
    */
   functionEngine(fn: TableRef, signal?: AbortSignal): Promise<string | null>;
   /** Sessions currently checked out. */

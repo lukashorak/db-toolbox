@@ -336,15 +336,14 @@ describe('preflight', () => {
 
   it('lists the PostgreSQL functions a statement calls that may be user-defined', async () => {
     const calls = async (sql: string) => (await analyzeStatement(sql, 'postgresql')).callsFunctions ?? [];
-    assert.deepEqual(
-      await calls('select lower(name), app.f(1), g(2), pg_catalog.h(3), count(*) from t where k(x)'),
-      [
-        { schema: 'app', name: 'f' },
-        { schema: null, name: 'g' },
-        { schema: null, name: 'k' },
-      ],
-    );
-    assert.deepEqual(await calls('select extract(year from now())'), []);
+    // Built-in names are kept: a search path can put a user schema before pg_catalog. Calls the
+    // parser writes as pg_catalog.extract(…) and the like cannot be shadowed.
+    assert.deepEqual(await calls('select lower(name), app.f(1), pg_catalog.h(3) from t where k(x)'), [
+      { schema: null, name: 'lower' },
+      { schema: 'app', name: 'f' },
+      { schema: null, name: 'k' },
+    ]);
+    assert.deepEqual(await calls('select extract(year from d) from t'), []);
   });
 
   it('checks what called stored functions write in single-transaction mode', async () => {

@@ -601,6 +601,43 @@ for (const { engine, variable, prepare } of engines) {
           } finally {
             adapter.tableEngine = lookup;
           }
+
+          // So does the check whether a SELECT's functions write, which runs as the statement starts.
+          const functionLookup = adapter.functionEngine.bind(adapter);
+          const before = await single.executions.submit(writer, { connectionId: id, sql: 'SELECT SLEEP(1)' });
+          const fnCancelled = await single.executions.submit(writer, {
+            connectionId: id,
+            sql: 'SELECT wb_fn_inno()',
+          });
+          const fnLimited = await single.executions.submit(writer, {
+            connectionId: id,
+            sql: 'SELECT wb_fn_inno()',
+            timeoutMs: 1500,
+          });
+          const fnToldToStop: string[] = [];
+          adapter.functionEngine = (fn, signal) =>
+            new Promise((_, reject) =>
+              signal?.addEventListener('abort', () => {
+                fnToldToStop.push(fn.name);
+                reject(new Error('stopped'));
+              }),
+            );
+          try {
+            await settle(single, before.id);
+            await until(() => single.executions.view(fnCancelled.id).status === 'running');
+            single.executions.cancel(writer, fnCancelled.id);
+            const stopped = await settle(single, fnCancelled.id);
+            assert.deepEqual(
+              [stopped.status, stopped.statements[0]?.status],
+              ['cancelled', 'not_run'],
+              'the statement never started',
+            );
+            const timedOut = await settle(single, fnLimited.id);
+            assert.deepEqual([timedOut.status, timedOut.statements[0]?.status], ['timed_out', 'not_run']);
+            assert.deepEqual(fnToldToStop, ['wb_fn_inno', 'wb_fn_inno'], 'both lookups were told to stop');
+          } finally {
+            adapter.functionEngine = functionLookup;
+          }
         } finally {
           await single.shutdown();
         }
@@ -742,6 +779,26 @@ for (const { engine, variable, prepare } of engines) {
       const many = await run('SELECT wb_fn_inno() FROM wb_numbers');
       assert.deepEqual([many.status, many.resultSets[0]?.completeness], ['succeeded', 'preview_limited']);
       assert.equal(await logged(), before + 1 + 5000);
+      // Recorded as a write before it starts: one transaction reports its outcome too.
+      const atomic = await run('SELECT wb_fn_inno()', { transactionMode: 'atomic' });
+      assert.deepEqual(
+        [
+          atomic.status,
+          atomic.transactionOutcome,
+          atomic.statements[0]?.kind,
+          atomic.statements[0]?.transactionOutcome,
+        ],
+        ['succeeded', 'committed', 'write', 'committed'],
+      );
+      assert.equal(await logged(), before + 2 + 5000);
+      if (engine === 'postgresql') {
+        // A search path that puts a user schema before pg_catalog lets its lower() stand in.
+        const shadowed = await run("SET search_path = wb_shadow, public, pg_catalog; SELECT lower('X')");
+        assert.deepEqual(
+          [shadowed.status, shadowed.statements[1]?.kind, shadowed.statements[1]?.transactionOutcome],
+          ['succeeded', 'write', 'committed'],
+        );
+      }
     });
 
     it('reports quota_limited, never complete, when the per-execution limit is reached', async () => {

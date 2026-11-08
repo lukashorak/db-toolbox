@@ -974,7 +974,8 @@ export class ExecutionService {
     let resultIndex = 0;
     let committedWrites = 0;
     let unknownOutcome = false;
-    let failure: { status: ExecutionStatus; error: ReturnType<typeof describe> } | null = null;
+    type Failure = { status: ExecutionStatus; error: ReturnType<typeof describe> };
+    let failure: Failure | null = null;
     let atomicOutcome: TransactionOutcome = 'not_started';
 
     const expiresAt = () => {
@@ -1001,19 +1002,42 @@ export class ExecutionService {
             break;
           }
           const ordinal = Number(st.ordinal);
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) {
-            failure = {
-              status: 'timed_out',
-              error: { code: 'timeout', message: 'The execution reached its time limit.' },
-            };
+          const timedOut = (): Failure => ({
+            status: 'timed_out',
+            error: { code: 'timeout', message: 'The execution reached its time limit.' },
+          });
+          if (deadline - Date.now() <= 0) {
+            failure = timedOut();
             break;
           }
-          // A read can still write through the functions it calls, unless the transaction is read-only.
-          const writesThroughFunctions =
-            st.kind === 'read' &&
-            !readOnly &&
-            (await this.#readMayWrite(adapter, String(st.sql), row.engine as Engine, database));
+          // A read can still write through the functions it calls, unless the transaction is
+          // read-only. The lookup gives way to a cancel and to the time limit.
+          let writesThroughFunctions = false;
+          if (st.kind === 'read' && !readOnly) {
+            const calls = (await analyzeStatement(String(st.sql), row.engine as Engine)).callsFunctions ?? [];
+            if (calls.length) {
+              const lookups = new AbortController();
+              const found = await untilDone(
+                session.functionsMayWrite(calls, database, lookups.signal).catch(() => true),
+                signal,
+                deadline,
+              );
+              if (found === 'cancelled' || found === 'timeout') {
+                lookups.abort();
+                // The lookup may still be running on this session: it is not reused.
+                session.markDirty('a function lookup did not finish');
+                if (found === 'cancelled') skippedForCancel = true;
+                else failure = timedOut();
+                break;
+              }
+              writesThroughFunctions = found;
+            }
+          }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            failure = timedOut();
+            break;
+          }
           const writes =
             writesThroughFunctions || !(st.kind === 'read' || (readOnly && st.kind === 'session'));
           // A procedure (or, in MySQL, a prepared statement, which may itself be a CALL or DDL) can
@@ -1026,9 +1050,12 @@ export class ExecutionService {
             (row.engine === 'postgresql' && command === 'DO');
           const startedAt = isoNow(this.ctx);
           const t0 = performance.now();
+          // A read that writes through functions is recorded as a write before it starts, so the
+          // transaction outcome, restart recovery and "run for the full result" treat it as one.
           this.ctx.db.run(
-            "UPDATE statements SET status = 'running', started_at = :at WHERE execution_id = :id AND ordinal = :ordinal",
-            { id, ordinal, at: startedAt },
+            `UPDATE statements SET status = 'running', started_at = :at,
+               kind = CASE WHEN :promote = 1 THEN 'write' ELSE kind END WHERE execution_id = :id AND ordinal = :ordinal`,
+            { id, ordinal, at: startedAt, promote: int(writesThroughFunctions) },
           );
           this.#changed(id);
           const sink = new ResultCapture(this.ctx.db, id, ordinal, resultIndex, {
@@ -1283,22 +1310,6 @@ export class ExecutionService {
     return problems.filter(
       (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
     );
-  }
-
-  /**
-   * A read calls a function that may write: MySQL, a stored function that writes or cannot be
-   * checked; PostgreSQL, a user-defined VOLATILE function. A lookup that fails counts as may-write.
-   */
-  async #readMayWrite(adapter: DbAdapter, sql: string, engine: Engine, database: string | null) {
-    for (const called of (await analyzeStatement(sql, engine)).callsFunctions ?? []) {
-      try {
-        const fn = engine === 'mysql' ? { ...called, schema: called.schema ?? database } : called;
-        if ((await adapter.functionEngine(fn)) !== null) return true;
-      } catch {
-        return true;
-      }
-    }
-    return false;
   }
 
   /**

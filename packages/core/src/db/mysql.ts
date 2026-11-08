@@ -527,6 +527,18 @@ class MysqlSession implements DbSession {
     this.dirty ??= reason;
   }
 
+  async functionsMayWrite(
+    calls: TableRef[],
+    database: string | null,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    for (const called of calls) {
+      const fn = { ...called, schema: called.schema ?? database };
+      if ((await this.adapter.functionEngine(fn, signal)) !== null) return true;
+    }
+    return false;
+  }
+
   #run(sql: string): Promise<Record<string, unknown>[]> {
     return new Promise((resolve, reject) =>
       this.connection.query({ sql }, (error, rows) =>

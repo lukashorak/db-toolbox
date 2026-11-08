@@ -141,29 +141,6 @@ function commandName(type: string, body: Node): string {
   }
 }
 
-/**
- * Common built-in functions, never looked up as possibly user-defined: an unqualified call finds
- * pg_catalog first. Anything else is looked up; a name missing here only costs that lookup.
- */
-const COMMON_BUILT_INS = new Set(
-  `
-  count sum min max avg array_agg string_agg json_agg jsonb_agg json_object_agg jsonb_object_agg
-  bool_and bool_or every row_number rank dense_rank percent_rank cume_dist ntile lag lead
-  first_value last_value nth_value now current_setting coalesce nullif greatest least lower upper
-  length char_length octet_length concat concat_ws substr substring left right trim btrim ltrim
-  rtrim replace split_part position strpos lpad rpad repeat reverse initcap format md5 encode
-  decode to_char to_date to_timestamp to_number date_trunc date_part extract age make_date
-  make_timestamp make_interval abs ceil ceiling floor round trunc mod power sqrt exp ln log sign
-  random generate_series unnest array_length cardinality array_position array_remove array_append
-  array_cat jsonb_build_object json_build_object jsonb_build_array json_build_array to_json
-  to_jsonb jsonb_set jsonb_extract_path jsonb_extract_path_text jsonb_array_elements
-  jsonb_array_length jsonb_typeof row_to_json gen_random_uuid regexp_replace regexp_matches
-  regexp_split_to_table regexp_split_to_array regexp_like pg_typeof version
-  `
-    .trim()
-    .split(/\s+/),
-);
-
 function checkTree(analysis: StatementAnalysis, tree: unknown): void {
   const calls = new Map<string, TableRef>();
   walk(tree, (type, body) => {
@@ -187,10 +164,12 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       if (FILE_FUNCTIONS.has(name)) analysis.irreversible = `${name}() changes files on the database server`;
       // Session-level advisory locks outlive the transaction: the connection must not be reused.
       if (/^pg_(try_)?advisory_lock(_shared)?$/.test(name)) analysis.changesSession = true;
-      // A user-defined function may write, even when called from a SELECT.
+      // A user-defined function may write, even when called from a SELECT. Built-in names are kept
+      // too: a search path that puts a user schema before pg_catalog lets that schema's function
+      // stand in for one.
       const parts = strings(body.funcname);
       const schema = parts.length > 1 ? (parts.at(-2) ?? null) : null;
-      if (schema !== 'pg_catalog' && !(schema === null && COMMON_BUILT_INS.has(name)))
+      if (schema !== 'pg_catalog')
         calls.set(`${schema ?? ''}.${name}`, { schema, name: parts.at(-1) ?? name });
     }
   });
