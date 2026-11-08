@@ -22,6 +22,7 @@
    */
   let {
     value,
+    documentId,
     engine,
     schema = {},
     marks = [],
@@ -30,6 +31,8 @@
     onRun,
   }: {
     value: string;
+    /** Which document the text belongs to (a tab): each one has its own undo history. */
+    documentId?: string;
     engine: 'postgresql' | 'mysql';
     schema?: Record<string, string[]>;
     marks?: { from: number; to: number; kind: 'target' | 'error'; title?: string }[];
@@ -108,13 +111,19 @@
     return () => view?.destroy();
   });
 
-  // Text changed outside the editor (another tab, a saved query): another document, with its own
-  // undo history. Undo must never bring back the previous document's text.
+  // Another document (another tab), or text changed outside the editor (a saved query): it starts
+  // with its own undo history, even when two tabs hold the same text. Undo must never bring back
+  // another document's text.
+  let shownDocument: string | undefined;
   $effect(() => {
-    if (view && value !== view.state.doc.toString()) {
+    if (!view) return;
+    const otherDocument = documentId !== shownDocument;
+    shownDocument = documentId;
+    const otherText = value !== view.state.doc.toString();
+    if (otherDocument || otherText) {
       // Three steps: a history added in the same transaction as the change would record it.
       view.dispatch({ effects: undoHistory.reconfigure([]) });
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+      if (otherText) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
       view.dispatch({ effects: undoHistory.reconfigure(history()) });
     }
   });

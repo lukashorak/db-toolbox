@@ -6,6 +6,7 @@ import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
+import { compareCells } from '../src/lib/compare';
 import { selectSql } from '../src/lib/sql';
 import { loadTabs, read, saveTabs, write } from '../src/lib/storage';
 import { toast } from '../src/lib/toasts.svelte';
@@ -234,6 +235,19 @@ describe('results panel', () => {
     expect(screen.getByText('first')).toBeTruthy();
   });
 
+  it('shows a notice repeated by the database as often as it came', async () => {
+    const repeated = {
+      ...execution,
+      id: 'exe_notices',
+      status: 'succeeded',
+      statements: [{ ...statement(0, 'DO', 'succeeded'), notices: ['NOTICE: again', 'NOTICE: again'] }],
+      resultSets: [],
+    } as unknown as ExecutionView;
+    render(ResultsPanel, { execution: repeated, onRunFull: () => undefined });
+    await settle();
+    expect(screen.getAllByText('NOTICE: again')).toHaveLength(2);
+  });
+
   it('keeps the selected result set’s rows when an older answer arrives late', async () => {
     render(ResultsPanel, { execution, onRunFull: () => undefined });
     await settle();
@@ -267,5 +281,28 @@ describe('results panel', () => {
     expect(screen.getByText('second')).toBeTruthy();
     expect(sets[1]?.getAttribute('aria-selected')).toBe('true');
     expect(api).toHaveBeenCalledWith('GET', '/executions/exe_1/results/1/rows?limit=1000');
+  });
+});
+
+describe('result sorting', () => {
+  const sorted = (values: string[]) => [...values].sort(compareCells);
+  it('orders integers and decimals by value without losing precision', () => {
+    expect(sorted(['9007199254740993', '9007199254740992', '-9007199254740993', '10', '9'])).toEqual([
+      '-9007199254740993',
+      '9',
+      '10',
+      '9007199254740992',
+      '9007199254740993',
+    ]);
+    expect(
+      sorted(['0.30000000000000004', '0.3', '-0.1', '-0.10000000000000001', '1.50', '1.5', '007']),
+    ).toEqual(['-0.10000000000000001', '-0.1', '0.3', '0.30000000000000004', '1.50', '1.5', '007']);
+    expect(compareCells('1.50', '1.5')).toBe(0);
+    expect(compareCells('-0', '0')).toBe(0);
+  });
+
+  it('orders other numbers by value and text as text', () => {
+    expect(sorted(['1e+20', '5', '2.5e3'])).toEqual(['5', '2.5e3', '1e+20']);
+    expect(sorted(['beta', 'alpha', '10'])).toEqual(['10', 'alpha', 'beta']);
   });
 });

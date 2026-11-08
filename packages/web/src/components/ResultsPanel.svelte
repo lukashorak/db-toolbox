@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from '../lib/api';
+  import { compareCells } from '../lib/compare';
   import { download } from '../lib/download';
   import type { ExecutionView, ExportView } from '../lib/execution';
   import { toast } from '../lib/toasts.svelte';
@@ -46,20 +47,13 @@
       );
     if (sortBy) {
       const { column, dir } = sortBy;
-      const num = (v: string | null) => (v === null ? null : Number(v));
       list = [...list].sort((a, b) => {
         const x = a.r[column] ?? null;
         const y = b.r[column] ?? null;
         if (x === y) return 0;
         if (x === null) return 1;
         if (y === null) return -1;
-        const nx = num(x);
-        const ny = num(y);
-        return (
-          (nx !== null && ny !== null && !Number.isNaN(nx) && !Number.isNaN(ny)
-            ? nx - ny
-            : x.localeCompare(y)) * dir
-        );
+        return compareCells(x, y) * dir;
       });
     }
     return list;
@@ -261,7 +255,7 @@
         >
       </Banner>
     {/if}
-    {#each statement.notices as notice (notice)}<p class="note">{notice}</p>{/each}
+    {#each statement.notices as notice, n (n)}<p class="note">{notice}</p>{/each}
   {/if}
 
   {#if sets.length > 1}

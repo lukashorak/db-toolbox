@@ -444,6 +444,7 @@
   <div class="editor-wrap">
     <SqlEditor
       value={tab.sql}
+      documentId={tab.id}
       engine={connection?.engine ?? 'postgresql'}
       schema={completion}
       {marks}

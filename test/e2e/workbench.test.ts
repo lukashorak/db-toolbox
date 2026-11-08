@@ -279,6 +279,35 @@ describe(
       await page.getByRole('tablist', { name: 'Query tabs' }).getByRole('tab').first().click();
     });
 
+    it('keeps undo history per tab, even when two tabs hold the same text', async () => {
+      const tabs = () => page.getByRole('tablist', { name: 'Query tabs' }).getByRole('tab');
+      const pause = () => new Promise((r) => setTimeout(r, 700));
+      // Only the text matters here: a new tab has no connection, so no statement check to wait for.
+      const type = (sql: string) => page.getByTestId('sql-editor').fill(sql);
+      await page.getByRole('button', { name: 'New tab' }).click();
+      const second = (await tabs().count()) - 1;
+      await type('SELECT 2 AS shared_text');
+      await pause();
+      // The first tab is edited from other text into the second tab's text…
+      await tabs().first().click();
+      await type('DELETE FROM only_in_the_first_tab');
+      await pause();
+      await type('SELECT 2 AS shared_text');
+      await pause();
+      // …so switching changes no text, yet the second tab must not undo into the first tab's edits.
+      await tabs().nth(second).click();
+      await page.getByTestId('sql-editor').click();
+      for (let press = 1; press <= 3; press++) {
+        await page.keyboard.press('Control+z');
+        assert.doesNotMatch(
+          String(await page.getByTestId('sql-editor').textContent()),
+          /only_in_the_first_tab/,
+          `after undo ${press}`,
+        );
+      }
+      await tabs().first().click();
+    });
+
     it('never runs a statement range of an earlier text', async () => {
       // A long first text: its statement range would cover both statements of the shorter next one.
       await setSql('SELECT 1 AS a_first_text_that_is_longer_than_the_next_one');
