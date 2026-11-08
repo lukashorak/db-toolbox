@@ -297,6 +297,37 @@ for (const { engine, variable, prepare } of engines) {
         });
       });
 
+      it('recovers when storing captured rows fails mid-stream, in and out of a transaction', async () => {
+        for (const inTransaction of [false, true]) {
+          const started = Date.now();
+          const next = await adapter.withSession(async (s) => {
+            if (inTransaction) await s.begin({ readOnly: true });
+            let batches = 0;
+            const failing: ResultSink = {
+              start: () => undefined,
+              rows: () => {
+                // The second batch cannot be stored (for example, the application database is full).
+                if (++batches === 2) throw new Error('capture failed');
+              },
+            };
+            await assert.rejects(
+              s.execute('SELECT n FROM wb_numbers ORDER BY n', failing, {
+                timeoutMs: 10_000,
+                batchSize: 100,
+              }),
+              /capture failed/,
+            );
+            if (inTransaction) await s.rollback();
+            const after = collect();
+            await s.execute('SELECT 7', after.sink, { timeoutMs: 5000 });
+            return after.sets[0]?.rows[0]?.[0];
+          });
+          assert.equal(next, '7', `the session works afterwards (transaction: ${inTransaction})`);
+          assert.ok(Date.now() - started < 5000, 'nothing waited behind an open cursor');
+        }
+        assert.equal((await run('SELECT 1')).sets[0]?.rows[0]?.[0], '1');
+      });
+
       it('reports affected rows of writes', async () => {
         const { outcome } = await run("UPDATE wb_items SET name = name WHERE name = 'alpha'", {
           readOnly: false,

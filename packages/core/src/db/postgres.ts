@@ -201,6 +201,12 @@ class PostgresSession implements DbSession {
   #inTransaction = false;
   #sessionTimeoutSet = false;
   #tagged = false;
+  /**
+   * A cursor could not be closed, so the connection still has a query in progress and anything
+   * sent now would wait behind it. Nothing more is sent; the connection is closed on release, which
+   * also rolls back an open transaction on the server.
+   */
+  #stuck = false;
   readonly #onError = (error: Error) => this.markDirty(`connection error: ${error.message}`);
 
   constructor(
@@ -216,6 +222,9 @@ class PostgresSession implements DbSession {
   }
 
   async #run(sql: string): Promise<void> {
+    if (this.#stuck) {
+      throw new DbError('connectivity', 'The connection was left unusable by an earlier error.');
+    }
     try {
       await this.client.query(sql);
     } catch (error) {
@@ -241,7 +250,33 @@ class PostgresSession implements DbSession {
 
   async rollback(): Promise<void> {
     this.#inTransaction = false;
+    // Closing the connection (on release) rolls the transaction back on the server.
+    if (this.#stuck) return;
     await this.#run('ROLLBACK');
+  }
+
+  /**
+   * Closes a cursor that an error left open (its portal still holds the connection), within 2 s.
+   * A cursor that finished or failed on its own needs nothing.
+   */
+  async #closeCursor(cursor: Cursor<Cell[]>): Promise<void> {
+    const state = (cursor as unknown as { state?: string }).state;
+    if (state === 'done' || state === 'error') return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const closed = await Promise.race([
+      cursor.close().then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), 2000);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!closed) {
+      this.#stuck = true;
+      this.markDirty('a cursor could not be closed');
+    }
   }
 
   async execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome> {
@@ -330,6 +365,9 @@ class PostgresSession implements DbSession {
       }
       return outcome;
     } catch (error) {
+      // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
+      // and every later query on this connection would wait behind it.
+      await this.#closeCursor(cursor);
       const mapped = mapPostgresError(error);
       if (interrupted === 'cancelled' && mapped.category !== 'connectivity') {
         throw new DbError('cancelled', 'The statement was cancelled.', {
@@ -356,6 +394,7 @@ class PostgresSession implements DbSession {
   /** Leaves the connection as it was found, or marks it to be closed. */
   async finish(): Promise<void> {
     try {
+      if (this.#stuck) return;
       if (this.#inTransaction) {
         this.#inTransaction = false;
         await this.client.query('ROLLBACK');
