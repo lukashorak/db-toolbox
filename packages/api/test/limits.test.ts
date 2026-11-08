@@ -53,18 +53,31 @@ describe('rate limiter', () => {
     let now = 0;
     const limiter = new RateLimiter(60, () => now);
     const started = performance.now();
-    // Each key spends one request, so no bucket is full again within the second the flood lasts.
     for (let i = 0; i < 3 * MAX_KEYS; i++) {
       now = i / 100;
-      limiter.take(`10.0.${i >> 8}.${i & 255}`, 'requests');
+      try {
+        limiter.take(`10.0.${i >> 8}.${i & 255}`, 'requests');
+      } catch {
+        // Overflow keys are limited as a group; that is expected here.
+      }
     }
     const ms = performance.now() - started;
     assert.ok(limiter.size <= MAX_KEYS, `${limiter.size} keys`);
     assert.ok(ms < 1000, `${ms.toFixed(0)} ms for ${3 * MAX_KEYS} new keys`);
-    // A key in use stays (least recently used goes first).
-    limiter.take('alice', 'requests');
-    for (let i = 0; i < MAX_KEYS - 1; i++) limiter.take(`k${i}`, 'requests');
-    assert.equal(limiter.wait('alice'), 0);
+  });
+
+  it('never forgets a key that is still limited, however many other keys arrive', () => {
+    const limiter = new RateLimiter(3, () => 0);
+    for (let i = 0; i < 3; i++) limiter.take('attacker', 'requests');
+    assert.throws(() => limiter.take('attacker', 'requests'), code('rate_limited'));
+    // Fill the table with other limited keys (no time passes, so none is full again).
+    for (let i = 0; i < MAX_KEYS - 1; i++) limiter.take(`other-${i}`, 'requests');
+    assert.equal(limiter.size, MAX_KEYS);
+    // New keys now share one overflow bucket: three requests, then limited as a group.
+    for (let i = 0; i < 3; i++) limiter.take(`new-${i}`, 'requests');
+    assert.throws(() => limiter.take('new-3', 'requests'), code('rate_limited'));
+    assert.equal(limiter.size, MAX_KEYS);
+    assert.ok(limiter.wait('attacker') > 0, 'the limited key is still limited');
   });
 
   it('is off at 0', () => {

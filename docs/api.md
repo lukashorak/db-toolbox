@@ -54,7 +54,7 @@ Clients branch on `error`; `message` is for people and may change. The full list
 
 ## Rate limits and headers
 
-- Requests are limited per signed-in user (`RATE_LIMIT_PER_MINUTE`, 600), per user and MCP client (`MCP_RATE_LIMIT_PER_MINUTE`, 300), and per address for rejected tokens (`AUTH_FAILURES_PER_MINUTE`, 60). A limit allows bursts of its own size; 0 turns it off.
+- Requests are limited per signed-in user (`RATE_LIMIT_PER_MINUTE`, 600), per user and MCP client (`MCP_RATE_LIMIT_PER_MINUTE`, 300), and per address for rejected tokens (`AUTH_FAILURES_PER_MINUTE`, 60). A limit allows bursts of its own size; 0 turns it off. Each limit remembers at most 10,000 keys. A key that is still limited is never forgotten; while the table is full, new keys share one bucket.
 - Every response carries a content security policy and other security headers ([security.md](security.md#security-headers)).
 
 ## Server-sent events
