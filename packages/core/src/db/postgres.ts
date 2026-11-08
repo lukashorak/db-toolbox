@@ -1,7 +1,6 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
-import { AppError } from '../domain/errors.js';
-import { afterInterruption, DbError, mapPostgresError } from './errors.js';
+import { afterInterruption, DbError, mapPostgresError, SessionUnusableError } from './errors.js';
 import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
@@ -525,7 +524,7 @@ class PostgresSession implements DbSession {
     const connection = (this.client as unknown as { connection: NodeJS.EventEmitter }).connection;
     connection.on('parameterStatus', onParameter);
     /** Not the database's error: the statement finished (and may have committed) before it. */
-    let encodingChanged: AppError | null = null;
+    let encodingChanged: SessionUnusableError | null = null;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       await guard.wait(
@@ -621,8 +620,7 @@ class PostgresSession implements DbSession {
       }
       // The server reports a change before it says it is ready, which the last read waits for.
       if (encoding) {
-        throw (encodingChanged = new AppError(
-          'database_error',
+        throw (encodingChanged = new SessionUnusableError(
           `The statement changed client_encoding to ${encoding}, but the workbench reads text as UTF-8 only: its result may be garbled. The script stops here.`,
         ));
       }

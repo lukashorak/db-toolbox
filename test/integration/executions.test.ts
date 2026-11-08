@@ -447,6 +447,16 @@ for (const { engine, variable, prepare } of engines) {
             /changed client_encoding to (LATIN1|WIN1252)/,
           );
         }
+        // Also with continueOnError: nothing more runs on that connection.
+        const continued = await run(
+          "SELECT wb_set_encoding('LATIN1'); INSERT INTO wb_items (name) VALUES ('run-é-after-encoding')",
+          { continueOnError: true },
+        );
+        assert.deepEqual(
+          [continued.status, continued.statements[0]?.status, continued.statements[1]?.status],
+          ['failed', 'failed', 'not_run'],
+        );
+        assert.equal(await count("name LIKE 'run-%after-encoding'"), 0);
         // The connection that changed was closed: the next run reads UTF-8 again.
         const next = await run("SELECT 'é' AS e, current_setting('client_encoding')");
         assert.deepEqual(core.executions.rows(writer, next.id, 0).rows, [['é', 'UTF8']]);

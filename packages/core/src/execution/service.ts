@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { z } from 'zod';
-import { DbError } from '../db/errors.js';
+import { DbError, SessionUnusableError } from '../db/errors.js';
 import { STALL_GRACE_MS } from '../db/stall.js';
 import type { Cell, ColumnInfo, DbAdapter, DbSession } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
@@ -1289,8 +1289,14 @@ export class ExecutionService {
             );
             if (lost) session.markDirty('connection lost');
             failure ??= { status, error: { ...e, message: `Statement ${ordinal + 1}: ${e.message}` } };
+            // A connection left unfit for later statements (a changed client encoding) ends the script.
             const stop =
-              atomic || !continueOnError || category === 'cancelled' || category === 'timeout' || lost;
+              atomic ||
+              !continueOnError ||
+              category === 'cancelled' ||
+              category === 'timeout' ||
+              lost ||
+              error instanceof SessionUnusableError;
             if (stop) break;
           }
         }

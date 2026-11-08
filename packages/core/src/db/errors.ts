@@ -1,4 +1,17 @@
+import { AppError } from '../domain/errors.js';
 import type { Engine } from '../domain/types.js';
+
+/**
+ * The statement finished, but left its connection unfit for the rest of the script (it changed the
+ * client encoding). Not the database's error: the statement may have committed. The script stops
+ * here whatever continueOnError says, and the connection is closed.
+ */
+export class SessionUnusableError extends AppError {
+  constructor(message: string) {
+    super('database_error', message);
+    this.name = 'SessionUnusableError';
+  }
+}
 
 export type DbErrorCategory =
   | 'connectivity'
