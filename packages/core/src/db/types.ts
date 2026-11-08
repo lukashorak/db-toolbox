@@ -90,12 +90,17 @@ export interface DbSession {
   /** Labels the session with an execution ID, so monitoring can tell this tool's work apart. */
   tag(executionId: string): Promise<void>;
   /**
-   * Whether any of these called functions may write: MySQL, a stored function that writes or cannot
-   * be checked (unqualified names are looked up in `database`); PostgreSQL, a VOLATILE function
-   * outside pg_catalog that this session's search path reaches (or the named schema holds). Stops
-   * when `signal` aborts.
+   * Whether a statement may write through the functions it calls, directly or through the views it
+   * names: MySQL, a stored function that writes or cannot be checked, or a view whose definition
+   * cannot be read (unqualified names are looked up in `database`); PostgreSQL, a VOLATILE function
+   * outside pg_catalog that this session's search path reaches (or the named schema holds), or that
+   * a named view calls. Stops when `signal` aborts.
    */
-  functionsMayWrite(calls: TableRef[], database: string | null, signal?: AbortSignal): Promise<boolean>;
+  mayWriteThrough(
+    refs: { functions: TableRef[]; relations: TableRef[] },
+    database: string | null,
+    signal?: AbortSignal,
+  ): Promise<boolean>;
 }
 
 export interface DbAdapter {
@@ -113,6 +118,12 @@ export interface DbAdapter {
    * when it is not a stored function or writes nothing, UNRESOLVED_VIEW when that cannot be told.
    */
   functionEngine(fn: TableRef, signal?: AbortSignal): Promise<string | null>;
+  /**
+   * MySQL: where reading this relation writes, through the stored functions a view (or a view
+   * beneath it) calls: null for a base table or a view that calls none that write, UNRESOLVED_VIEW
+   * when a definition cannot be read.
+   */
+  viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
   /** Sessions currently checked out. */
   activeSessions(): number;
   /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */

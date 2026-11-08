@@ -288,6 +288,13 @@ export class ExecutionService {
                 return 'unknown (the storage engine could not be checked)';
               }
             },
+            viewEngine: async (table) => {
+              try {
+                return await adapter.viewEngine(table);
+              } catch {
+                return 'unknown (the storage engine could not be checked)';
+              }
+            },
           }
         : {}),
     });
@@ -1010,15 +1017,20 @@ export class ExecutionService {
             failure = timedOut();
             break;
           }
-          // A read can still write through the functions it calls, unless the transaction is
-          // read-only. The lookup gives way to a cancel and to the time limit.
+          // A read can still write through the functions it calls, directly or through the views it
+          // names, unless the transaction is read-only. The lookup gives way to a cancel and to the
+          // time limit.
           let writesThroughFunctions = false;
           if (st.kind === 'read' && !readOnly) {
-            const calls = (await analyzeStatement(String(st.sql), row.engine as Engine)).callsFunctions ?? [];
-            if (calls.length) {
+            const analysis = await analyzeStatement(String(st.sql), row.engine as Engine);
+            const refs = {
+              functions: analysis.callsFunctions ?? [],
+              relations: analysis.referencesTables ?? [],
+            };
+            if (refs.functions.length || refs.relations.length) {
               const lookups = new AbortController();
               const found = await untilDone(
-                session.functionsMayWrite(calls, database, lookups.signal).catch(() => true),
+                session.mayWriteThrough(refs, database, lookups.signal).catch(() => true),
                 signal,
                 deadline,
               );
@@ -1306,6 +1318,14 @@ export class ExecutionService {
           return 'unknown (the storage engine could not be checked)';
         }
       },
+      viewEngine: async (table) => {
+        signal.throwIfAborted();
+        try {
+          return await adapter.viewEngine(table, signal);
+        } catch {
+          return 'unknown (the storage engine could not be checked)';
+        }
+      },
     });
     return problems.filter(
       (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
@@ -1334,11 +1354,20 @@ export class ExecutionService {
       if (!engine || engine === UNRESOLVED_VIEW || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase()))
         return false;
     }
-    // A stored function may have written a non-transactional table before the statement failed.
-    for (const called of analysis.callsFunctions ?? []) {
+    // A stored function, called directly or by a view, may have written a non-transactional table
+    // before the statement failed.
+    const reached = [
+      ...(analysis.callsFunctions ?? []).map(
+        (fn) => () => adapter.functionEngine({ ...fn, schema: fn.schema ?? database }),
+      ),
+      ...(analysis.referencesTables ?? []).map(
+        (t) => () => adapter.viewEngine({ ...t, schema: t.schema ?? database }),
+      ),
+    ];
+    for (const lookup of reached) {
       let engine: string | null;
       try {
-        engine = await adapter.functionEngine({ ...called, schema: called.schema ?? database });
+        engine = await lookup();
       } catch {
         return false;
       }

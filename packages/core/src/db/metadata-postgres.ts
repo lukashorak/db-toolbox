@@ -41,8 +41,8 @@ function textArray(v: unknown): string[] {
   return Array.isArray(parsed) ? parsed.map(String) : [];
 }
 
-const quoteIdent = (name: string) =>
-  /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+/** Always quoted, as the GUI's generated SQL is: lowercase reserved words (`order`) need it too. */
+const quoteIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
 
 /** Extension members (for example pg_stat_statements views) are left out of object lists. */
 const NOT_EXTENSION_MEMBER = (oid: string, classid: string) =>

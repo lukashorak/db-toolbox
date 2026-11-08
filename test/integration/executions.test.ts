@@ -293,6 +293,16 @@ for (const { engine, variable, prepare } of engines) {
           /calls wb_fn_nested\(\), which writes to a MyISAM table/,
         );
         assert.equal(await count("name = 'run-fn'"), 0);
+        // So does one a view calls, even a view beneath the one the script names.
+        const throughViewFn = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-view-fn'); SELECT * FROM wb_v_fn_legacy_nested",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(throughViewFn.status, 'preflight_rejected');
+        assert.match(
+          String(throughViewFn.error?.message),
+          /uses the view wb_v_fn_legacy_nested, which calls a stored function that writes to a MyISAM table/,
+        );
         // A view over InnoDB tables is fine.
         const innoView = await settle(
           core,
@@ -779,6 +789,15 @@ for (const { engine, variable, prepare } of engines) {
       const many = await run('SELECT wb_fn_inno() FROM wb_numbers');
       assert.deepEqual([many.status, many.resultSets[0]?.completeness], ['succeeded', 'preview_limited']);
       assert.equal(await logged(), before + 1 + 5000);
+      // A view that calls the function, here through another view, writes just the same.
+      const throughView = await run('SELECT * FROM wb_v_fn_inno_nested');
+      assert.deepEqual(
+        [throughView.status, throughView.statements[0]?.kind, throughView.statements[0]?.transactionOutcome],
+        ['succeeded', 'write', 'committed'],
+      );
+      const plainView = await run('SELECT * FROM wb_item_names');
+      assert.equal(plainView.statements[0]?.transactionOutcome, 'none');
+      assert.equal(await logged(), before + 2 + 5000);
       // Recorded as a write before it starts: one transaction reports its outcome too.
       const atomic = await run('SELECT wb_fn_inno()', { transactionMode: 'atomic' });
       assert.deepEqual(
@@ -790,7 +809,7 @@ for (const { engine, variable, prepare } of engines) {
         ],
         ['succeeded', 'committed', 'write', 'committed'],
       );
-      assert.equal(await logged(), before + 2 + 5000);
+      assert.equal(await logged(), before + 3 + 5000);
       if (engine === 'postgresql') {
         // A search path that puts a user schema before pg_catalog lets its lower() stand in.
         const shadowed = await run("SET search_path = wb_shadow, public, pg_catalog; SELECT lower('X')");

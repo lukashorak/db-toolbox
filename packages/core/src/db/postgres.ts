@@ -182,6 +182,10 @@ export class PostgresAdapter implements DbAdapter {
     return null;
   }
 
+  async viewEngine(): Promise<string | null> {
+    return null;
+  }
+
   async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
     try {
       return (await this.#monitor.query({ text: sql, values: params })).rows as Record<string, unknown>[];
@@ -244,34 +248,59 @@ class PostgresSession implements DbSession {
 
   /**
    * Looked up on this session, so its search path decides which schemas an unqualified name can
-   * reach, including a path that puts a user schema before pg_catalog. Every overload counts: which
-   * one a call picks is not resolved here. Catalog names are qualified so nothing on the path can
-   * stand in for them. An abort cancels the lookup on the server.
+   * reach, including a path that puts a user schema before pg_catalog. For a called name every
+   * overload counts (which one a call picks is not resolved here); for a named view, the functions
+   * its definition depends on, through the views beneath it too. Catalog names are qualified so
+   * nothing on the path can stand in for them. An abort cancels the lookup on the server.
    */
-  async functionsMayWrite(
-    calls: TableRef[],
+  async mayWriteThrough(
+    refs: { functions: TableRef[]; relations: TableRef[] },
     _database: string | null,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    if (!calls.length) return false;
+    if (!refs.functions.length && !refs.relations.length) return false;
     if (this.#stuck)
       throw new DbError('connectivity', 'The connection was left unusable by an earlier error.');
     signal?.throwIfAborted();
-    const qualified = calls.filter((c) => c.schema !== null);
+    const bare = (list: TableRef[]) => list.filter((r) => r.schema === null).map((r) => r.name);
+    const qualified = (list: TableRef[]) => list.filter((r) => r.schema !== null);
     const onAbort = () => void this.adapter.cancel(this.backendId);
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const result = await this.client.query({
-        text: `SELECT pg_catalog.count(*) AS n FROM pg_catalog.pg_proc p
+        text: `WITH RECURSIVE views (oid, depth) AS (
+                 SELECT c.oid, 0 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid = c.relnamespace
+                  WHERE c.relkind = 'v'
+                    AND ((c.relname = ANY ($4::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
+                      OR (s.nspname, c.relname) IN (SELECT q.s, q.r FROM ROWS FROM (pg_catalog.unnest($5::text[]), pg_catalog.unnest($6::text[])) AS q (s, r)))
+                 UNION
+                 SELECT d.refobjid, views.depth + 1 FROM views
+                   JOIN pg_catalog.pg_rewrite w ON w.ev_class = views.oid
+                   JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
+                    AND d.objid = w.oid AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+                   JOIN pg_catalog.pg_class c ON c.oid = d.refobjid AND c.relkind = 'v'
+                  WHERE views.depth < 16
+               ), procs AS (
+                 SELECT p.oid FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
+                  WHERE (p.proname = ANY ($1::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
+                     OR (s.nspname, p.proname) IN (SELECT q.s, q.f FROM ROWS FROM (pg_catalog.unnest($2::text[]), pg_catalog.unnest($3::text[])) AS q (s, f))
+                 UNION
+                 SELECT d.refobjid FROM views
+                   JOIN pg_catalog.pg_rewrite w ON w.ev_class = views.oid
+                   JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
+                    AND d.objid = w.oid AND d.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+               )
+               SELECT pg_catalog.count(*) AS n FROM procs JOIN pg_catalog.pg_proc p ON p.oid = procs.oid
                  JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
                 WHERE p.prokind IN ('f', 'w') AND p.provolatile = 'v'
-                  AND s.nspname NOT IN ('pg_catalog', 'information_schema')
-                  AND ((p.proname = ANY ($1::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
-                    OR (s.nspname, p.proname) IN (SELECT q.s, q.f FROM ROWS FROM (pg_catalog.unnest($2::text[]), pg_catalog.unnest($3::text[])) AS q (s, f)))`,
+                  AND s.nspname NOT IN ('pg_catalog', 'information_schema')`,
         values: [
-          calls.filter((c) => c.schema === null).map((c) => c.name),
-          qualified.map((c) => c.schema),
-          qualified.map((c) => c.name),
+          bare(refs.functions),
+          qualified(refs.functions).map((r) => r.schema),
+          qualified(refs.functions).map((r) => r.name),
+          bare(refs.relations),
+          qualified(refs.relations).map((r) => r.schema),
+          qualified(refs.relations).map((r) => r.name),
         ],
       });
       return Number((result.rows[0] as { n?: unknown } | undefined)?.n ?? 0) > 0;

@@ -43,6 +43,8 @@ export interface PreflightOptions {
    * scripts that may write.
    */
   functionEngine?: (fn: TableRef) => Promise<string | null>;
+  /** MySQL atomic mode: what reading a named relation writes (see DbAdapter.viewEngine). */
+  viewEngine?: (table: TableRef) => Promise<string | null>;
 }
 
 const label = (s: AnalyzedStatement) => `Statement ${s.index + 1} (line ${s.range.startLine})`;
@@ -209,6 +211,30 @@ export async function preflight(
             code: 'non_transactional_engine',
             statement: s.index,
             message: `${label(s)} calls ${name}, which writes to a ${base} table. Those changes cannot be rolled back.`,
+            hint: 'Use per-statement mode, which reports each statement’s outcome honestly.',
+          });
+        }
+      }
+      // A view's definition can call stored functions too, whichever statement names it.
+      for (const named of options.viewEngine ? (s.analysis.referencesTables ?? []) : []) {
+        const view: TableRef = { schema: named.schema ?? database, name: named.name };
+        const name = `${view.schema ? `${view.schema}.` : ''}${view.name}`;
+        const key = `\u0000view ${view.schema ?? ''}.${view.name}`;
+        if (!seen.has(key)) seen.set(key, await options.viewEngine!(view));
+        const engine = seen.get(key);
+        const base = engine?.split(' ')[0];
+        if (engine === UNRESOLVED_VIEW) {
+          problems.push({
+            code: 'unchecked_write_target',
+            statement: s.index,
+            message: `${label(s)} uses the view ${name}, whose definition or the stored functions it calls could not be checked, so whether the script can roll back cannot be checked.`,
+            hint: 'Use per-statement mode. On MySQL, an account sees a view’s definition only with SHOW VIEW, and a function’s body only with SHOW_ROUTINE.',
+          });
+        } else if (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())) {
+          problems.push({
+            code: 'non_transactional_engine',
+            statement: s.index,
+            message: `${label(s)} uses the view ${name}, which calls a stored function that writes to a ${base} table. Those changes cannot be rolled back.`,
             hint: 'Use per-statement mode, which reports each statement’s outcome honestly.',
           });
         }

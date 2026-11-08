@@ -65,6 +65,11 @@ export interface StatementAnalysis {
    * checks what they write like the statement's own writes.
    */
   callsFunctions?: TableRef[];
+  /**
+   * Tables and views the statement names, as written. A view can call functions that write, so
+   * those checks follow views too.
+   */
+  referencesTables?: TableRef[];
   /** MySQL `USE`: the database that later unqualified names in the session refer to. */
   usesDatabase?: string;
   /** `ENGINE=` given in a MySQL CREATE or ALTER TABLE. */

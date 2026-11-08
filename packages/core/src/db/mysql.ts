@@ -461,6 +461,65 @@ export class MysqlAdapter implements DbAdapter {
     return engine;
   }
 
+  async viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {
+    return this.#viewEngineOf(table.schema, table.name, [], new Map(), signal);
+  }
+
+  /**
+   * A view's stored functions are found in its definition (MySQL shows it only to accounts with
+   * SHOW VIEW, or its definer); the views beneath it come from VIEW_TABLE_USAGE.
+   */
+  async #viewEngineOf(
+    schema: string | null,
+    name: string,
+    ancestors: string[],
+    known: Map<string, string | null>,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const asked = `\u0000view ${schema ?? ''}.${name}`;
+    if (known.has(asked)) return known.get(asked) ?? null;
+    const [row] = await this.#metaQuery(
+      `SELECT TABLE_SCHEMA AS db, VIEW_DEFINITION AS body FROM information_schema.VIEWS
+        WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
+      [schema, name],
+      signal,
+    );
+    const bad = (e: string | null) =>
+      e === UNRESOLVED_VIEW || (e !== null && !TRANSACTIONAL_ENGINES.has(e.toLowerCase()));
+    let engine: string | null = null;
+    // No row: a base table (or none), and reading it calls nothing.
+    if (row && !row.body) engine = UNRESOLVED_VIEW;
+    else if (row) {
+      const db = String(row.db);
+      const key = `${db}.${name}`;
+      if (ancestors.includes(key) || ancestors.length >= 16) engine = UNRESOLVED_VIEW;
+      else {
+        const path = [...ancestors, key];
+        const calls = analyzeMysql(String(row.body)).callsFunctions ?? [];
+        engine = await this.#effectsEngine({ tables: [], functions: calls }, db, path, known, signal);
+        if (!bad(engine)) {
+          const nested = await this.#metaQuery(
+            `SELECT u.TABLE_SCHEMA AS db, u.TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE u
+               JOIN information_schema.VIEWS v ON v.TABLE_SCHEMA = u.TABLE_SCHEMA AND v.TABLE_NAME = u.TABLE_NAME
+              WHERE u.VIEW_SCHEMA = ? AND u.VIEW_NAME = ?`,
+            [db, name],
+            signal,
+          );
+          for (const view of nested) {
+            const below = await this.#viewEngineOf(String(view.db), String(view.name), path, known, signal);
+            if (bad(below)) {
+              engine = below;
+              break;
+            }
+            engine ??= below;
+          }
+        }
+      }
+    }
+    known.set(asked, engine);
+    return engine;
+  }
+
   /**
    * The session holds TRIGGER on the table (globally, on its schema or on the table), directly or
    * through its active roles. SHOW GRANTS … USING expands what those roles grant.
@@ -527,14 +586,18 @@ class MysqlSession implements DbSession {
     this.dirty ??= reason;
   }
 
-  async functionsMayWrite(
-    calls: TableRef[],
+  async mayWriteThrough(
+    refs: { functions: TableRef[]; relations: TableRef[] },
     database: string | null,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    for (const called of calls) {
+    for (const called of refs.functions) {
       const fn = { ...called, schema: called.schema ?? database };
       if ((await this.adapter.functionEngine(fn, signal)) !== null) return true;
+    }
+    for (const named of refs.relations) {
+      const table = { ...named, schema: named.schema ?? database };
+      if ((await this.adapter.viewEngine(table, signal)) !== null) return true;
     }
     return false;
   }

@@ -143,7 +143,13 @@ function commandName(type: string, body: Node): string {
 
 function checkTree(analysis: StatementAnalysis, tree: unknown): void {
   const calls = new Map<string, TableRef>();
+  const relations = new Map<string, TableRef>();
   walk(tree, (type, body) => {
+    // Views among them can call functions that write.
+    if (type === 'RangeVar' && typeof body.relname === 'string') {
+      const schema = typeof body.schemaname === 'string' && body.schemaname ? body.schemaname : null;
+      relations.set(`${schema ?? ''}.${body.relname}`, { schema, name: body.relname });
+    }
     if (WRITE_NODES.has(type)) {
       analysis.kind = 'write';
       unsafe(analysis, 'contains a data-modifying statement');
@@ -174,6 +180,8 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
     }
   });
   if (calls.size) analysis.callsFunctions = [...(analysis.callsFunctions ?? []), ...calls.values()];
+  if (relations.size)
+    analysis.referencesTables = [...(analysis.referencesTables ?? []), ...relations.values()];
 }
 
 function analyzeNode(type: string, body: Node): StatementAnalysis {

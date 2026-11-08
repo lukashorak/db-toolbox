@@ -228,6 +228,17 @@ function tablesWritten(tableList: string[], text: string): TableRef[] {
     .filter((t) => t.name && t.name !== 'null');
 }
 
+/** Every table or view the parser saw the statement name, once each. */
+function tablesReferenced(tableList: string[]): TableRef[] {
+  const seen = new Map<string, TableRef>();
+  for (const [, schema, name] of tableList.map((entry) => entry.split('::'))) {
+    if (!name || name === 'null') continue;
+    const ref = { schema: schema && schema !== 'null' ? schema : null, name };
+    seen.set(`${ref.schema ?? ''}.${name}`, ref);
+  }
+  return [...seen.values()];
+}
+
 function walk(value: unknown, visit: (node: Node) => void): void {
   if (Array.isArray(value)) value.forEach((v) => walk(v, visit));
   else if (value && typeof value === 'object') {
@@ -260,14 +271,17 @@ function analyzeQuery(text: string): StatementAnalysis {
   const asts = Array.isArray(parsed.ast) ? parsed.ast : [parsed.ast];
   const root = asts[0] ?? {};
   const type = String(root.type ?? '').toLowerCase();
+  const referenced = tablesReferenced(parsed.tableList);
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
     a.writesTables = tablesWritten(parsed.tableList, text);
     if (!a.writesTables.length) a.writeTargetsUnknown = true;
+    if (referenced.length) a.referencesTables = referenced;
     return a;
   }
   const a = baseAnalysis('read', 'SELECT');
   a.returnsRows = true;
+  if (referenced.length) a.referencesTables = referenced;
   walk(asts, (node) => {
     const into = node.into as Node | undefined;
     const keyword = String(into?.keyword ?? '').toUpperCase();
@@ -471,6 +485,8 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       try {
         const { tableList } = parser.parse(text, OPTIONS);
         a.writesTables = tablesWritten(tableList, text);
+        const referenced = tablesReferenced(tableList);
+        if (referenced.length) a.referencesTables = referenced;
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');
       }

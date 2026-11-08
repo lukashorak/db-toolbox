@@ -308,6 +308,13 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(await fn('wb_item_count'), null);
           assert.equal(await fn('wb_fn_branch'), 'unresolved view');
           assert.equal(await fn('now'), null);
+          // Views: what the functions in their definitions write, through nested views too.
+          const view = (name: string) => adapter.viewEngine({ schema: null, name });
+          assert.equal(await view('wb_v_fn_legacy'), 'MyISAM');
+          assert.equal(await view('wb_v_fn_legacy_nested'), 'MyISAM');
+          assert.equal(await view('wb_v_fn_inno_nested'), 'InnoDB');
+          assert.equal(await view('wb_item_names'), null);
+          assert.equal(await view('wb_items'), null);
           // A trigger that only assigns NEW.v = wb_fn_legacy() still writes MyISAM.
           assert.equal(
             await adapter.tableEngine({ schema: null, name: 'wb_fn_trig', events: ['INSERT'] }),
@@ -694,6 +701,15 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(items.definition.reconstructed, true);
         }
         assert.match(String(items.definition.text), /CREATE TABLE/);
+        if (engine === 'postgresql') {
+          // Reserved words stay quoted: the reconstructed definition recreates the table.
+          const reserved = await adapter.metadata.table(schema, 'wb_reserved');
+          const ddl = String(reserved?.definition.text);
+          assert.match(ddl, /"order" text/);
+          const copy = ddl.replace('"wb_reserved"', '"wb_reserved_copy"');
+          assert.equal((await run(copy)).outcome.resultSets, 0);
+          await run('DROP TABLE wb_reserved_copy');
+        }
 
         const orders = await adapter.metadata.table(schema, 'wb_orders');
         const fk = orders?.keys.items.find((k) => k.type === 'foreign');

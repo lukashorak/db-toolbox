@@ -81,7 +81,12 @@ CREATE FUNCTION wb_add(a int, b int) RETURNS int LANGUAGE sql IMMUTABLE AS 'SELE
 CREATE PROCEDURE wb_proc() LANGUAGE sql AS 'SELECT 1';
 -- Writes when a SELECT calls it.
 CREATE TABLE wb_audit_log (id int);
+-- Reserved words as column names: a reconstructed definition must quote them.
+CREATE TABLE wb_reserved ("order" text, "user" int NOT NULL);
 CREATE FUNCTION wb_fn_inno() RETURNS int LANGUAGE sql VOLATILE AS 'INSERT INTO wb_audit_log VALUES (7); SELECT 7';
+-- Views that call a writing function, directly and through another view.
+CREATE VIEW wb_v_fn_inno AS SELECT wb_fn_inno() AS v;
+CREATE VIEW wb_v_fn_inno_nested AS SELECT v FROM wb_v_fn_inno;
 -- A writing lower(text) that wins over pg_catalog's once a search path puts its schema first.
 CREATE SCHEMA wb_shadow;
 CREATE FUNCTION wb_shadow.lower(t text) RETURNS text LANGUAGE sql VOLATILE AS
@@ -236,6 +241,11 @@ export async function prepareMysql(url: string): Promise<void> {
         SET @wb_leak = 42;
         RETURN GET_LOCK('wb_leak', 0);
       END;
+      -- Views that call writing functions, directly and through another view.
+      CREATE VIEW wb_v_fn_inno AS SELECT wb_fn_inno() AS v;
+      CREATE VIEW wb_v_fn_inno_nested AS SELECT v FROM wb_v_fn_inno;
+      CREATE VIEW wb_v_fn_legacy AS SELECT wb_fn_legacy() AS v;
+      CREATE VIEW wb_v_fn_legacy_nested AS SELECT v FROM wb_v_fn_legacy;
       -- An InnoDB table whose trigger reaches MyISAM only through a function in an expression.
       CREATE TABLE wb_fn_trig (id int PRIMARY KEY, v int) ENGINE=InnoDB;
       CREATE TRIGGER wb_fn_trig_set BEFORE INSERT ON wb_fn_trig FOR EACH ROW SET NEW.v = wb_fn_legacy();
