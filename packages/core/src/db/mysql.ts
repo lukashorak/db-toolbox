@@ -4,7 +4,7 @@ import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
 import { afterInterruption, DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
-import { CONTROL_TIMEOUT_MS, settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
+import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
 import type {
   Cell,
@@ -17,6 +17,7 @@ import type {
   PoolSizes,
   ResultSink,
   StatementOutcome,
+  WaitBounds,
 } from './types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
@@ -676,19 +677,28 @@ class MysqlSession implements DbSession {
     this.#label = `/* database-workbench ${executionId.replace(/[^\w-]/g, '')} */ `;
   }
 
-  async begin(options: { readOnly: boolean }): Promise<void> {
-    await this.#run(options.readOnly ? 'START TRANSACTION READ ONLY' : 'START TRANSACTION READ WRITE');
+  /** Waits for one command on this connection, within `bounds` (see `bounded`). */
+  #bounded<T>(work: Promise<T>, bounds: WaitBounds): Promise<T> {
+    return bounded(work, () => this.#abandon(), bounds);
+  }
+
+  async begin(options: { readOnly: boolean } & WaitBounds): Promise<void> {
+    await this.#bounded(
+      this.#run(options.readOnly ? 'START TRANSACTION READ ONLY' : 'START TRANSACTION READ WRITE'),
+      options,
+    );
     this.#inTransaction = true;
   }
 
-  async commit(): Promise<void> {
+  async commit(bounds: WaitBounds = {}): Promise<void> {
     this.#inTransaction = false;
-    await this.#run('COMMIT');
+    await this.#bounded(this.#run('COMMIT'), bounds);
   }
 
   async rollback(): Promise<void> {
     this.#inTransaction = false;
-    await this.#run('ROLLBACK');
+    // Closing the connection rolls the transaction back on the server, too.
+    await this.#bounded(this.#run('ROLLBACK'), { deadline: Date.now() });
   }
 
   async execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome> {
@@ -864,7 +874,10 @@ class MysqlSession implements DbSession {
     // Result sets carry their warning count in the EOF packet, which mysql2 does not surface, so ask.
     if (!this.dirty) {
       try {
-        const rows = warnings > 0 || outcome.resultSets > 0 ? await this.#run('SHOW WARNINGS LIMIT 20') : [];
+        const rows =
+          warnings > 0 || outcome.resultSets > 0
+            ? await this.#bounded(this.#run('SHOW WARNINGS LIMIT 20'), { deadline: Date.now() })
+            : [];
         outcome.notices = rows.map((r) => `${String(r.Level)} ${String(r.Code)}: ${String(r.Message)}`);
       } catch {
         // Warnings are informative only.
@@ -910,7 +923,7 @@ class MysqlSession implements DbSession {
     try {
       if (this.#inTransaction && !this.dirty) {
         this.#inTransaction = false;
-        await this.#run('ROLLBACK');
+        await this.#bounded(this.#run('ROLLBACK'), { deadline: Date.now() });
       }
     } catch {
       this.markDirty('could not roll back');
@@ -921,10 +934,15 @@ class MysqlSession implements DbSession {
     // analysis cannot see. A reset also restores the server's default collation: set ours again.
     try {
       if (!this.dirty) {
-        await new Promise<void>((resolve, reject) =>
-          this.connection.reset((error) => (error ? reject(mapMysqlError(error)) : resolve())),
+        await this.#bounded(
+          new Promise<void>((resolve, reject) =>
+            this.connection.reset((error) => (error ? reject(mapMysqlError(error)) : resolve())),
+          ),
+          { deadline: Date.now() },
         );
-        await this.#run(`SET NAMES utf8mb4 COLLATE ${CONNECTION_COLLATION.toLowerCase()}`);
+        await this.#bounded(this.#run(`SET NAMES utf8mb4 COLLATE ${CONNECTION_COLLATION.toLowerCase()}`), {
+          deadline: Date.now(),
+        });
       }
     } catch {
       this.markDirty('could not reset the session');

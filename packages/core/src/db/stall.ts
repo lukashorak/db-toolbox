@@ -1,4 +1,5 @@
 import { DbError } from './errors.js';
+import type { WaitBounds } from './types.js';
 
 /** How long a statement's connection may stay silent after a cancel or the time limit. */
 export const STALL_GRACE_MS = 5000;
@@ -73,7 +74,7 @@ export class StallGuard {
   error(): DbError {
     return new DbError(
       'connectivity',
-      `The database server stopped answering after the statement was interrupted; the connection was closed after ${this.graceMs} ms. Whether the statement took effect is unknown.`,
+      `The database server stopped answering after a cancel or the time limit; the connection was closed after ${this.graceMs} ms. Whether the statement took effect is unknown.`,
     );
   }
 
@@ -83,5 +84,28 @@ export class StallGuard {
       this.abandoned = true;
       this.abandon();
     }, this.graceMs);
+  }
+}
+
+/**
+ * Waits for one command on a connection (BEGIN, COMMIT, ROLLBACK, a lookup): once `signal` aborts
+ * or `deadline` passes, the command has the grace period, then `abandon` closes the connection and
+ * the wait fails as a lost connection. `{ deadline: Date.now() }` gives just the grace period.
+ */
+export async function bounded<T>(work: Promise<T>, abandon: () => void, bounds: WaitBounds = {}): Promise<T> {
+  const guard = new StallGuard(abandon);
+  const interrupt = () => guard.interrupted();
+  const { signal, deadline } = bounds;
+  signal?.addEventListener('abort', interrupt, { once: true });
+  if (signal?.aborted) interrupt();
+  const timer =
+    deadline === undefined ? undefined : setTimeout(interrupt, Math.max(0, deadline - Date.now()));
+  try {
+    return await guard.wait(work);
+  } catch (error) {
+    throw guard.abandoned ? guard.error() : error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', interrupt);
   }
 }

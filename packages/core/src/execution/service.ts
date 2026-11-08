@@ -1001,8 +1001,11 @@ export class ExecutionService {
     let database: string | null = null;
     try {
       await adapter.withSession(async (session: DbSession) => {
-        await session.tag(id);
-        if (atomic) await session.begin({ readOnly });
+        // Commands outside a statement are bounded too: a cancel or the time limit gives a connection
+        // that stopped answering a grace period, then closes it.
+        const bounds = { signal, deadline };
+        await session.tag(id, bounds);
+        if (atomic) await session.begin({ readOnly, ...bounds });
         for (const st of statements) {
           if (signal.aborted) {
             skippedForCancel = true;
@@ -1080,7 +1083,7 @@ export class ExecutionService {
             now: () => isoNow(this.ctx),
           });
           try {
-            if (!atomic && readOnly) await session.begin({ readOnly: true });
+            if (!atomic && readOnly) await session.begin({ readOnly: true, ...bounds });
             let outcome;
             try {
               outcome = await session.execute(String(st.sql), sink, {
@@ -1097,7 +1100,7 @@ export class ExecutionService {
               // it after this execution, so the next one (perhaps another user's) starts clean.
               if (bool(st.changes_session)) session.markDirty('session state may have changed');
             }
-            if (!atomic && readOnly) await session.commit();
+            if (!atomic && readOnly) await session.commit(bounds);
             if (row.engine === 'mysql' && String(st.command).toUpperCase() === 'USE') {
               database = (await analyzeStatement(String(st.sql), 'mysql')).usesDatabase ?? database;
             }
@@ -1194,7 +1197,9 @@ export class ExecutionService {
           } else {
             this.ctx.db.run("UPDATE executions SET transaction_outcome = 'unknown' WHERE id = :id", { id });
             try {
-              await session.commit();
+              // A COMMIT whose answer is lost (the connection closed after it stopped answering) has
+              // an unknown outcome.
+              await session.commit(bounds);
               atomicOutcome = 'committed';
             } catch (error) {
               const e = describe(error);
@@ -1231,9 +1236,15 @@ export class ExecutionService {
     );
     let status: ExecutionStatus = failure ? (failure as { status: ExecutionStatus }).status : 'succeeded';
     let note: string | null = null;
-    if (signal.aborted && !failure && (atomic || skippedForCancel)) {
+    if (
+      signal.aborted &&
+      !failure &&
+      (atomic ? (atomicOutcome as TransactionOutcome) !== 'committed' : skippedForCancel)
+    ) {
       // Cancelled between statements (what ran stays as it is), or before COMMIT (rolled back).
-      // When the last statement finished anyway, the execution succeeded and says so in its note.
+      // When the last statement finished anyway, or a COMMIT already under way completed, the
+      // execution succeeded and says so in its note. (atomicOutcome is set inside the session
+      // callback, which the type checker does not follow: hence the cast.)
       status = 'cancelled';
     }
     if (status === 'succeeded' && cancelRequested) note = 'Completed before the cancellation took effect.';

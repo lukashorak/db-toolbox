@@ -19,6 +19,7 @@ import {
   type ColumnInfo,
   type ConnectionTarget,
   type DbAdapter,
+  type DbSession,
   type Engine,
   type ResultSink,
 } from '@workbench/core';
@@ -59,6 +60,17 @@ async function silentServer(): Promise<{ server: Server; port: number }> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   return { server, port: typeof address === 'object' && address ? address.port : 0 };
+}
+
+/** The socket of a session's own connection (both drivers keep it as `stream`). */
+function sessionSocket(session: unknown): Socket {
+  const internals = session as {
+    connection?: { stream?: Socket };
+    client?: { connection?: { stream?: Socket } };
+  };
+  const socket = internals.connection?.stream ?? internals.client?.connection?.stream;
+  assert.ok(socket, 'found the session socket');
+  return socket;
 }
 
 /** A TCP proxy whose connections so far can be frozen: they stay open, but nothing more arrives. */
@@ -224,13 +236,7 @@ for (const { engine, variable, prepare } of engines) {
           );
         await new Promise((r) => setTimeout(r, 300));
         // What Node reports when the kernel gives up on a connection that stopped answering.
-        const internals = s as unknown as {
-          connection?: { stream?: Socket };
-          client?: { connection?: { stream?: Socket } };
-        };
-        const socket = internals.connection?.stream ?? internals.client?.connection?.stream;
-        assert.ok(socket, 'found the session socket');
-        socket.destroy(
+        sessionSocket(s).destroy(
           Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT', errno: -110, syscall: 'read' }),
         );
         return running;
@@ -260,13 +266,7 @@ for (const { engine, variable, prepare } of engines) {
           await new Promise((r) => setTimeout(r, 300));
           // The connection stays open, but nothing more arrives from it: the cancel goes through
           // another connection and stops the statement, whose answer is never read.
-          const internals = s as unknown as {
-            connection?: { stream?: Socket };
-            client?: { connection?: { stream?: Socket } };
-          };
-          const socket = internals.connection?.stream ?? internals.client?.connection?.stream;
-          assert.ok(socket, 'found the session socket');
-          socket.pause();
+          sessionSocket(s).pause();
           started = Date.now();
           controller.abort();
           return running;
@@ -276,6 +276,46 @@ for (const { engine, variable, prepare } of engines) {
         assert.match((error as Error).message, /stopped answering/);
         assert.ok(waited >= 4000 && waited < 10_000, `closed after ${waited} ms`);
         // The closed connection is not reused.
+        const next = await adapter.withSession(async (s) => {
+          const { sink, sets } = collect();
+          await s.execute('SELECT 1', sink, { timeoutMs: 5000 });
+          return sets[0]?.rows;
+        });
+        assert.deepEqual(next, [['1']]);
+      },
+    );
+
+    it(
+      'closes a connection that stops answering during COMMIT or ROLLBACK, so neither waits forever',
+      { timeout: 40_000 },
+      async () => {
+        const silentAfter = async (finish: (s: DbSession, signal: AbortSignal) => Promise<void>) => {
+          const controller = new AbortController();
+          let started = 0;
+          const error = await adapter.withSession(async (s) => {
+            await s.begin({ readOnly: false });
+            await s.execute('SELECT 1', collect().sink, { timeoutMs: 5000 });
+            sessionSocket(s).pause();
+            const finishing = finish(s, controller.signal).then(
+              () => null,
+              (e: unknown) => e,
+            );
+            await new Promise((r) => setTimeout(r, 300));
+            started = Date.now();
+            controller.abort();
+            return finishing;
+          });
+          return { error: error as (Error & { category?: string }) | null, waited: Date.now() - started };
+        };
+        // A COMMIT whose answer never comes: after the cancel, the grace period, then a lost
+        // connection (whether it committed is unknown).
+        const commit = await silentAfter((s, signal) => s.commit({ signal }));
+        assert.equal(commit.error?.category, 'connectivity');
+        assert.ok(commit.waited >= 4000 && commit.waited < 10_000, `closed after ${commit.waited} ms`);
+        // A ROLLBACK gets the grace period on its own; closing the connection rolls back too.
+        const rollback = await silentAfter((s) => s.rollback());
+        assert.equal(rollback.error?.category, 'connectivity');
+        assert.ok(rollback.waited < 10_000, `closed after ${rollback.waited} ms`);
         const next = await adapter.withSession(async (s) => {
           const { sink, sets } = collect();
           await s.execute('SELECT 1', sink, { timeoutMs: 5000 });

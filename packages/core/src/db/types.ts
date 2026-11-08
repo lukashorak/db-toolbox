@@ -78,17 +78,29 @@ export interface ExecuteOptions {
   onStop?: 'cancel' | 'drain';
 }
 
+/**
+ * Bounds a wait on a session's connection: once `signal` aborts or `deadline` (epoch ms) passes,
+ * the connection has a grace period to answer, then it is closed and the wait fails as a lost
+ * connection (whether the command took effect is unknown).
+ */
+export interface WaitBounds {
+  signal?: AbortSignal;
+  deadline?: number;
+}
+
 export interface DbSession {
   /** Server process (PostgreSQL) or thread (MySQL) ID, for cancellation and monitoring. */
   readonly backendId: number;
-  begin(options: { readOnly: boolean }): Promise<void>;
-  commit(): Promise<void>;
+  begin(options: { readOnly: boolean } & WaitBounds): Promise<void>;
+  /** A COMMIT on a connection that stops answering fails as a lost connection: its outcome is unknown. */
+  commit(bounds?: WaitBounds): Promise<void>;
+  /** Bounded by the grace period: a connection that does not answer is closed, which rolls back too. */
   rollback(): Promise<void>;
   execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome>;
   /** The session's state is no longer known to be clean; it is closed instead of reused. */
   markDirty(reason: string): void;
   /** Labels the session with an execution ID, so monitoring can tell this tool's work apart. */
-  tag(executionId: string): Promise<void>;
+  tag(executionId: string, bounds?: WaitBounds): Promise<void>;
   /**
    * Whether a statement may write through the functions it calls, directly or through the views it
    * names: MySQL, a stored function that writes or cannot be checked, or a view whose definition

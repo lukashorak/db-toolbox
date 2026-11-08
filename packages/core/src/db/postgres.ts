@@ -1,7 +1,7 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import { afterInterruption, DbError, mapPostgresError } from './errors.js';
-import { CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
+import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
 import { analyzeStatement } from '../sql/analyze.js';
@@ -17,6 +17,7 @@ import type {
   PoolSizes,
   ResultSink,
   StatementOutcome,
+  WaitBounds,
 } from './types.js';
 
 /** Metadata lookups end on the server after this long. */
@@ -266,8 +267,10 @@ class PostgresSession implements DbSession {
     const onAbort = () => void this.adapter.cancel(this.backendId);
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const result = await this.client.query({
-        text: `WITH RECURSIVE views (oid) AS (
+      // A cancel stops the lookup on the server; a connection that does not answer then is closed.
+      const result = await this.#bounded(
+        this.client.query({
+          text: `WITH RECURSIVE views (oid) AS (
                  SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid = c.relnamespace
                   WHERE c.relkind = 'v'
                     AND ((c.relname = ANY ($4::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
@@ -296,15 +299,17 @@ class PostgresSession implements DbSession {
                       -- definitions are read for the ones that change data.
                       (SELECT pg_catalog.array_to_json(pg_catalog.array_agg(pg_catalog.pg_get_viewdef(views.oid)))::text
                          FROM views) AS definitions`,
-        values: [
-          bare(refs.functions),
-          qualified(refs.functions).map((r) => r.schema),
-          qualified(refs.functions).map((r) => r.name),
-          bare(refs.relations),
-          qualified(refs.relations).map((r) => r.schema),
-          qualified(refs.relations).map((r) => r.name),
-        ],
-      });
+          values: [
+            bare(refs.functions),
+            qualified(refs.functions).map((r) => r.schema),
+            qualified(refs.functions).map((r) => r.name),
+            bare(refs.relations),
+            qualified(refs.relations).map((r) => r.schema),
+            qualified(refs.relations).map((r) => r.name),
+          ],
+        }),
+        { signal },
+      );
       const row = result.rows[0] as { n?: unknown; definitions?: unknown } | undefined;
       if (Number(row?.n ?? 0) > 0) return true;
       const definitions = row?.definitions ? (JSON.parse(String(row.definitions)) as string[]) : [];
@@ -330,26 +335,31 @@ class PostgresSession implements DbSession {
     }
   }
 
-  async tag(executionId: string): Promise<void> {
-    const label = `database-workbench ${executionId}`.replace(/[^\w .:-]/g, '');
-    await this.#run(`SET application_name = '${label}'`);
+  /** Waits for one command on this connection, within `bounds` (see `bounded`). */
+  #bounded<T>(work: Promise<T>, bounds: WaitBounds): Promise<T> {
+    return bounded(work, () => this.#abandon(), bounds);
   }
 
-  async begin(options: { readOnly: boolean }): Promise<void> {
-    await this.#run(options.readOnly ? 'BEGIN TRANSACTION READ ONLY' : 'BEGIN');
+  async tag(executionId: string, bounds: WaitBounds = {}): Promise<void> {
+    const label = `database-workbench ${executionId}`.replace(/[^\w .:-]/g, '');
+    await this.#bounded(this.#run(`SET application_name = '${label}'`), bounds);
+  }
+
+  async begin(options: { readOnly: boolean } & WaitBounds): Promise<void> {
+    await this.#bounded(this.#run(options.readOnly ? 'BEGIN TRANSACTION READ ONLY' : 'BEGIN'), options);
     this.#inTransaction = true;
   }
 
-  async commit(): Promise<void> {
+  async commit(bounds: WaitBounds = {}): Promise<void> {
     this.#inTransaction = false;
-    await this.#run('COMMIT');
+    await this.#bounded(this.#run('COMMIT'), bounds);
   }
 
   async rollback(): Promise<void> {
     this.#inTransaction = false;
     // Closing the connection (on release) rolls the transaction back on the server.
     if (this.#stuck) return;
-    await this.#run('ROLLBACK');
+    await this.#bounded(this.#run('ROLLBACK'), { deadline: Date.now() });
   }
 
   /**
@@ -550,13 +560,13 @@ class PostgresSession implements DbSession {
       if (this.#stuck) return;
       if (this.#inTransaction) {
         this.#inTransaction = false;
-        await this.client.query('ROLLBACK');
+        await this.#bounded(this.client.query('ROLLBACK'), { deadline: Date.now() });
       }
       // Whatever the run left on the connection is cleared before another execution, perhaps
       // another user's, gets it: settings (set_config, statement_timeout, application_name),
       // temporary tables, advisory locks, prepared statements, LISTEN, also when a function set
       // them, which the statement analysis cannot see.
-      if (!this.dirty) await this.client.query('DISCARD ALL');
+      if (!this.dirty) await this.#bounded(this.client.query('DISCARD ALL'), { deadline: Date.now() });
     } catch {
       this.markDirty('could not restore the session');
     } finally {

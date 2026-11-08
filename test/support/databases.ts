@@ -107,6 +107,12 @@ CREATE FUNCTION wb_elsewhere.wb_item_count() RETURNS bigint LANGUAGE sql VOLATIL
 CREATE FUNCTION wb_fn_leave_state() RETURNS int LANGUAGE sql AS
   'SELECT set_config(''wb.leak'', ''42'', false); SELECT pg_advisory_lock(4242); SELECT 1';
 CREATE TABLE wb_numbers AS SELECT generate_series(1, 5000) AS n;
+-- COMMIT takes 1.5 s: a deferred constraint trigger sleeps when the transaction commits.
+CREATE TABLE wb_slow_commit (id int);
+CREATE FUNCTION wb_sleep_at_commit() RETURNS trigger LANGUAGE plpgsql AS
+  'BEGIN PERFORM pg_sleep(1.5); RETURN NULL; END';
+CREATE CONSTRAINT TRIGGER wb_slow_commit_tr AFTER INSERT ON wb_slow_commit
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION wb_sleep_at_commit();
 -- A view that creates a large object for every row it returns.
 CREATE VIEW wb_v_lo AS SELECT lo_create(0) AS v FROM wb_numbers;
 INSERT INTO wb_items (name, price, payload, raw, big, tags) VALUES

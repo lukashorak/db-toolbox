@@ -384,6 +384,24 @@ for (const { engine, variable, prepare } of engines) {
       assert.equal((await run('SELECT 1')).status, 'succeeded');
     });
 
+    it(
+      'a COMMIT already under way when a cancel arrives completes and is reported as committed',
+      { skip: engine !== 'postgresql' },
+      async () => {
+        // The deferred trigger makes COMMIT take 1.5 s, well inside the grace period.
+        const view = await submit('INSERT INTO wb_slow_commit VALUES (1)', { transactionMode: 'atomic' });
+        await until(() => core.executions.view(view.id).statements[0]?.status === 'succeeded');
+        await new Promise((r) => setTimeout(r, 300));
+        core.executions.cancel(writer, view.id);
+        const done = await settle(core, view.id);
+        assert.deepEqual(
+          [done.status, done.transactionOutcome, done.statusNote],
+          ['succeeded', 'committed', 'Completed before the cancellation took effect.'],
+        );
+        assert.equal((await run('SELECT count(*) FROM wb_slow_commit')).status, 'succeeded');
+      },
+    );
+
     /** Ends the database session that runs an execution, from a client outside the workbench. */
     async function killSession(executionId: string) {
       const t = targetFrom(url, engine);
