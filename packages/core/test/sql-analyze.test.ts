@@ -455,6 +455,15 @@ describe('preflight', () => {
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
     }
     assert.deepEqual(await run("select * from a into outfile '/tmp/a.csv'", 'mysql'), []);
+    // TABLE and VALUES write files the same way.
+    for (const sql of ["table a into outfile '/tmp/a.csv'", "values row(1) into dumpfile '/tmp/b.bin'"]) {
+      const problems = await run(`${sql}; select 1 from missing`, 'mysql', { transactionMode: 'atomic' });
+      assert.deepEqual(
+        problems.map((p) => [p.code, p.statement]),
+        [['irreversible_effect', 0]],
+        sql,
+      );
+    }
     // Server configuration is not transactional; PERSIST also writes it to disk.
     for (const sql of [
       'set global max_connections = 250',

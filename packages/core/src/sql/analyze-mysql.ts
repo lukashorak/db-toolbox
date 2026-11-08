@@ -452,7 +452,13 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       return analyzeQuery(text);
     case 'TABLE':
     case 'VALUES': {
-      if (words.includes('INTO')) return write(first, 'INTO writes a file or sets variables');
+      if (words.includes('INTO')) {
+        const w = write(first, 'INTO writes a file or sets variables');
+        // A file on the server, like SELECT … INTO OUTFILE: no rollback removes it.
+        if (words.includes('OUTFILE') || words.includes('DUMPFILE'))
+          w.irreversible = 'writes a file on the database server';
+        return w;
+      }
       const a = baseAnalysis('read', first);
       a.returnsRows = true;
       return a;
