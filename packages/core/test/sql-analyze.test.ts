@@ -349,6 +349,9 @@ describe('preflight', () => {
     assert.equal(await builtin('select pg_catalog.lo_create(0)'), 'lo_create() creates a large object');
     assert.equal(await builtin("select lo_put(1, 0, 'x')"), 'lo_put() changes a large object');
     assert.equal(await builtin("select nextval('s')"), undefined);
+    // Another function of that name, or a quoted spelling the catalog does not use, is not it.
+    assert.equal(await builtin("select public.lo_put(1, 0, 'x')"), undefined);
+    assert.equal(await builtin('select "LO_CREATE"(0)'), undefined);
   });
 
   it('lists the tables and views a statement names, without WITH query names', async () => {

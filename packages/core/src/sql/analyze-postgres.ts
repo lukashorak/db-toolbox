@@ -59,7 +59,7 @@ const WRITE_NODES = new Set(['InsertStmt', 'UpdateStmt', 'DeleteStmt', 'MergeStm
  * pg_largeobject and roll back with the transaction. Sequences (nextval, setval) are left out:
  * PostgreSQL never rolls them back, and they hold no table data.
  */
-const WRITING_BUILT_INS: Record<string, string> = {
+export const WRITING_BUILT_INS: Record<string, string> = {
   lo_create: 'creates a large object',
   lo_creat: 'creates a large object',
   lo_from_bytea: 'creates a large object',
@@ -218,7 +218,13 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       if (reason) unsafe(analysis, `${name}() ${reason}`);
       // set_config(…, false) keeps the setting for the rest of the session.
       if (name === 'set_config') analysis.changesSession = true;
-      if (WRITING_BUILT_INS[name]) analysis.builtinWrite ??= `${name}() ${WRITING_BUILT_INS[name]}`;
+      // The catalog's own function only: unqualified or pg_catalog.…, spelled as the catalog names
+      // it (a quoted "LO_PUT" or public.lo_put is another function, looked up like any other).
+      const called = strings(body.funcname);
+      const exact = called.at(-1) ?? '';
+      const inCatalog = called.length === 1 || called.at(-2) === 'pg_catalog';
+      if (inCatalog && Object.hasOwn(WRITING_BUILT_INS, exact))
+        analysis.builtinWrite ??= `${exact}() ${WRITING_BUILT_INS[exact]}`;
       // Files on the server outlive any rollback.
       if (FILE_FUNCTIONS.has(name)) analysis.irreversible = `${name}() changes files on the database server`;
       // Session-level advisory locks outlive the transaction: the connection must not be reused.

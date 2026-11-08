@@ -3,6 +3,7 @@ import Cursor from 'pg-cursor';
 import { DbError, mapPostgresError } from './errors.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
+import { analyzeStatement } from '../sql/analyze.js';
 import type { TableRef } from '../sql/types.js';
 import type {
   Cell,
@@ -289,10 +290,14 @@ class PostgresSession implements DbSession {
                    JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
                     AND d.objid = w.oid AND d.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass
                )
-               SELECT pg_catalog.count(*) AS n FROM procs JOIN pg_catalog.pg_proc p ON p.oid = procs.oid
-                 JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
-                WHERE p.prokind IN ('f', 'w') AND p.provolatile = 'v'
-                  AND s.nspname NOT IN ('pg_catalog', 'information_schema')`,
+               SELECT (SELECT pg_catalog.count(*) FROM procs JOIN pg_catalog.pg_proc p ON p.oid = procs.oid
+                         JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
+                        WHERE p.prokind IN ('f', 'w') AND p.provolatile = 'v'
+                          AND s.nspname NOT IN ('pg_catalog', 'information_schema')) AS n,
+                      -- Built-ins are pinned: no dependency is recorded on them, so the views'
+                      -- definitions are read for the ones that change data.
+                      (SELECT pg_catalog.array_to_json(pg_catalog.array_agg(pg_catalog.pg_get_viewdef(views.oid)))::text
+                         FROM views) AS definitions`,
         values: [
           bare(refs.functions),
           qualified(refs.functions).map((r) => r.schema),
@@ -302,7 +307,13 @@ class PostgresSession implements DbSession {
           qualified(refs.relations).map((r) => r.name),
         ],
       });
-      return Number((result.rows[0] as { n?: unknown } | undefined)?.n ?? 0) > 0;
+      const row = result.rows[0] as { n?: unknown; definitions?: unknown } | undefined;
+      if (Number(row?.n ?? 0) > 0) return true;
+      const definitions = row?.definitions ? (JSON.parse(String(row.definitions)) as string[]) : [];
+      for (const definition of definitions) {
+        if ((await analyzeStatement(definition, 'postgresql')).builtinWrite) return true;
+      }
+      return false;
     } catch (error) {
       throw mapPostgresError(error);
     } finally {

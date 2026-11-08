@@ -835,6 +835,22 @@ for (const { engine, variable, prepare } of engines) {
             sql,
           );
         }
+        // Through a view too, past the preview limit: every row's large object is created.
+        const objects = async () => {
+          const view = await run('SELECT count(*) FROM pg_largeobject_metadata');
+          return Number(core.executions.rows(writer, view.id, 0).rows[0]?.[0]);
+        };
+        const loBefore = await objects();
+        const loView = await run('SELECT * FROM wb_v_lo');
+        assert.deepEqual(
+          [
+            loView.statements[0]?.kind,
+            loView.statements[0]?.transactionOutcome,
+            loView.resultSets[0]?.completeness,
+          ],
+          ['write', 'committed', 'preview_limited'],
+        );
+        assert.equal(await objects(), loBefore + 5000);
         // However deep the views go.
         const deep = await run('SELECT * FROM wb_v_deep_18');
         assert.deepEqual(

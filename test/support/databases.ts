@@ -107,6 +107,8 @@ CREATE FUNCTION wb_elsewhere.wb_item_count() RETURNS bigint LANGUAGE sql VOLATIL
 CREATE FUNCTION wb_fn_leave_state() RETURNS int LANGUAGE sql AS
   'SELECT set_config(''wb.leak'', ''42'', false); SELECT pg_advisory_lock(4242); SELECT 1';
 CREATE TABLE wb_numbers AS SELECT generate_series(1, 5000) AS n;
+-- A view that creates a large object for every row it returns.
+CREATE VIEW wb_v_lo AS SELECT lo_create(0) AS v FROM wb_numbers;
 INSERT INTO wb_items (name, price, payload, raw, big, tags) VALUES
   ('alpha', 12.50, '{"a": [1, 2]}', '\\x00ff10', 9007199254740993, '{x,"y z"}'),
   ('beta', NULL, NULL, NULL, NULL, NULL);

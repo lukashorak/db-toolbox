@@ -158,6 +158,20 @@ describe('export rules', () => {
     core.close();
   });
 
+  it('never revives an export removed while it was being regenerated', async () => {
+    const { core, id } = await fixture();
+    const made = await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    core.db.run("UPDATE exports SET status = 'failed' WHERE id = :id", { id: made.id });
+    const regenerating = core.exports.regenerate(writer, made.id);
+    // Removed with its result while the old file is being deleted.
+    core.db.run("UPDATE exports SET status = 'deleted' WHERE id = :id", { id: made.id });
+    await assert.rejects(regenerating, code('result_expired'));
+    await core.exports.idle();
+    assert.equal(core.exports.get(writer, made.id).status, 'deleted');
+    core.close();
+  });
+
   it('gives a regenerated export the result’s current deadline', async () => {
     const { core, id } = await fixture();
     const made = await core.exports.create(writer, id, 0, { format: 'csv' });
