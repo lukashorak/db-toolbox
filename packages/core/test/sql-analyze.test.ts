@@ -346,6 +346,20 @@ describe('preflight', () => {
     assert.deepEqual(await calls('select extract(year from d) from t'), []);
   });
 
+  it('lists the tables and views a statement names, without WITH query names', async () => {
+    const named = async (sql: string, engine: 'mysql' | 'postgresql') =>
+      ((await analyzeStatement(sql, engine)).referencesTables ?? [])
+        .map((t) => `${t.schema ?? ''}.${t.name}`)
+        .sort();
+    for (const engine of ['mysql', 'postgresql'] as const) {
+      assert.deepEqual(
+        await named('with v as (select a from t) select * from v join app.w on true join u on true', engine),
+        ['.t', '.u', 'app.w'],
+        engine,
+      );
+    }
+  });
+
   it('checks what called stored functions write in single-transaction mode', async () => {
     const tableEngine = async () => 'InnoDB';
     const asked: string[] = [];

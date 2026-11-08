@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../lib/api';
-  import { compareCells } from '../lib/compare';
+  import { columnComparator } from '../lib/compare';
   import { download } from '../lib/download';
   import type { ExecutionView, ExportView } from '../lib/execution';
   import { toast } from '../lib/toasts.svelte';
@@ -47,13 +47,16 @@
       );
     if (sortBy) {
       const { column, dir } = sortBy;
+      const compare = columnComparator(
+        list.map(({ r }) => r[column]).filter((v): v is string => v !== null && v !== undefined),
+      );
       list = [...list].sort((a, b) => {
         const x = a.r[column] ?? null;
         const y = b.r[column] ?? null;
         if (x === y) return 0;
         if (x === null) return 1;
         if (y === null) return -1;
-        return compareCells(x, y) * dir;
+        return compare(x, y) * dir;
       });
     }
     return list;

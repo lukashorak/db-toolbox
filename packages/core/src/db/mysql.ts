@@ -472,12 +472,16 @@ export class MysqlAdapter implements DbAdapter {
   }
 
   async viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {
-    return this.#viewEngineOf(table.schema, table.name, [], new Map(), signal);
+    return this.#viewEngineOf(table.schema, table.name, [], new Map(), signal, false);
   }
 
   /**
-   * A view's stored functions are found in its definition (MySQL shows it only to accounts with
-   * SHOW VIEW, or its definer); the views beneath it come from VIEW_TABLE_USAGE.
+   * TABLES says whether a name is a base table or a view (it lists every relation the account can
+   * use). A view's stored functions are found in its definition, which MySQL shows only with
+   * SHOW VIEW (or to its definer): a view whose definition is hidden is unresolved. The views
+   * beneath it come from VIEW_TABLE_USAGE and from the definition itself, so one hidden from either
+   * is still followed. `beneath`: the name was reached through a view or routine, which runs with
+   * its definer's rights: one the account cannot see there may be a view that writes.
    */
   async #viewEngineOf(
     schema: string | null,
@@ -485,49 +489,68 @@ export class MysqlAdapter implements DbAdapter {
     ancestors: string[],
     known: Map<string, string | null>,
     signal?: AbortSignal,
+    beneath = true,
   ): Promise<string | null> {
-    const asked = `\u0000view ${schema ?? ''}.${name}`;
+    const asked = `\u0000view${beneath ? ' beneath' : ''} ${schema ?? ''}.${name}`;
     if (known.has(asked)) return known.get(asked) ?? null;
-    const [row] = await this.#metaQuery(
-      `SELECT TABLE_SCHEMA AS db, VIEW_DEFINITION AS body FROM information_schema.VIEWS
+    const bad = (e: string | null) =>
+      e === UNRESOLVED_VIEW || (e !== null && !TRANSACTIONAL_ENGINES.has(e.toLowerCase()));
+    const [relation] = await this.#metaQuery(
+      `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
       [schema, name],
       signal,
     );
-    const bad = (e: string | null) =>
-      e === UNRESOLVED_VIEW || (e !== null && !TRANSACTIONAL_ENGINES.has(e.toLowerCase()));
     let engine: string | null = null;
-    // No row: a base table (or none), and reading it calls nothing.
-    if (row && !row.body) engine = UNRESOLVED_VIEW;
-    else if (row) {
-      const db = String(row.db);
+    // Not listed where the account itself names it: nothing it can read (a CTE name, a temporary
+    // table, or none at all), so no view runs. Not listed beneath a view or routine: unknown. A base
+    // table calls nothing either.
+    if (!relation) engine = beneath ? UNRESOLVED_VIEW : null;
+    else if (relation.type === 'VIEW') {
+      const db = String(relation.db);
       const key = `${db}.${name}`;
-      if (ancestors.includes(key) || ancestors.length >= 16) engine = UNRESOLVED_VIEW;
+      const [view] = await this.#metaQuery(
+        'SELECT VIEW_DEFINITION AS body FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+        [db, name],
+        signal,
+      );
+      if (!view?.body || ancestors.includes(key) || ancestors.length >= 16) engine = UNRESOLVED_VIEW;
       else {
         const path = [...ancestors, key];
-        const calls = analyzeMysql(String(row.body)).callsFunctions ?? [];
+        const definition = analyzeMysql(String(view.body));
         engine = await this.#effectsEngine(
-          { tables: [], functions: calls, relations: [] },
+          { tables: [], functions: definition.callsFunctions ?? [], relations: [] },
           db,
           path,
           known,
           signal,
         );
         if (!bad(engine)) {
-          const nested = await this.#metaQuery(
-            `SELECT u.TABLE_SCHEMA AS db, u.TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE u
-               JOIN information_schema.VIEWS v ON v.TABLE_SCHEMA = u.TABLE_SCHEMA AND v.TABLE_NAME = u.TABLE_NAME
-              WHERE u.VIEW_SCHEMA = ? AND u.VIEW_NAME = ?`,
+          const used = await this.#metaQuery(
+            `SELECT TABLE_SCHEMA AS db, TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE
+              WHERE VIEW_SCHEMA = ? AND VIEW_NAME = ?`,
             [db, name],
             signal,
           );
-          for (const view of nested) {
-            const below = await this.#viewEngineOf(String(view.db), String(view.name), path, known, signal);
-            if (bad(below)) {
-              engine = below;
+          const below = new Map<string, TableRef>();
+          for (const r of [
+            ...used.map((u) => ({ schema: String(u.db), name: String(u.name) })),
+            ...(definition.referencesTables ?? []).map((r) => ({ schema: r.schema ?? db, name: r.name })),
+          ])
+            below.set(`${r.schema}.${r.name}`, r);
+          for (const relationBelow of below.values()) {
+            const reached = await this.#viewEngineOf(
+              relationBelow.schema,
+              relationBelow.name,
+              path,
+              known,
+              signal,
+            );
+            if (bad(reached)) {
+              engine = reached;
               break;
             }
-            engine ??= below;
+            engine ??= reached;
           }
         }
       }

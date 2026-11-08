@@ -797,6 +797,9 @@ for (const { engine, variable, prepare } of engines) {
       );
       const plainView = await run('SELECT * FROM wb_item_names');
       assert.equal(plainView.statements[0]?.transactionOutcome, 'none');
+      // A WITH query of the same name stands in for the view: nothing is written.
+      const cte = await run('WITH wb_v_fn_inno AS (SELECT 1 AS v) SELECT * FROM wb_v_fn_inno');
+      assert.deepEqual([cte.statements[0]?.kind, cte.statements[0]?.transactionOutcome], ['read', 'none']);
       assert.equal(await logged(), before + 2 + 5000);
       // Recorded as a write before it starts: one transaction reports its outcome too.
       const atomic = await run('SELECT wb_fn_inno()', { transactionMode: 'atomic' });
@@ -811,6 +814,12 @@ for (const { engine, variable, prepare } of engines) {
       );
       assert.equal(await logged(), before + 3 + 5000);
       if (engine === 'postgresql') {
+        // However deep the views go.
+        const deep = await run('SELECT * FROM wb_v_deep_18');
+        assert.deepEqual(
+          [deep.statements[0]?.kind, deep.statements[0]?.transactionOutcome],
+          ['write', 'committed'],
+        );
         // A search path that puts a user schema before pg_catalog lets its lower() stand in.
         const shadowed = await run("SET search_path = wb_shadow, public, pg_catalog; SELECT lower('X')");
         assert.deepEqual(

@@ -15,6 +15,11 @@ export const READER = { username: 'wb_reader', password: 'reader-pw' };
  * without seeing its body.
  */
 export const WRITER = { username: 'wb_writer', password: 'writer-pw' };
+/**
+ * MySQL: may read wb_v_fn_legacy_nested (and see its definition), but nothing beneath it: that view
+ * runs with its definer's rights.
+ */
+export const VIEW_ONLY = { username: 'wb_view_only', password: 'view-only-pw' };
 /** MySQL: may change data, and sees triggers through a default role that grants TRIGGER. */
 export const ROLE_WRITER = { username: 'wb_role_writer', password: 'role-writer-pw' };
 /**
@@ -87,6 +92,9 @@ CREATE FUNCTION wb_fn_inno() RETURNS int LANGUAGE sql VOLATILE AS 'INSERT INTO w
 -- Views that call a writing function, directly and through another view.
 CREATE VIEW wb_v_fn_inno AS SELECT wb_fn_inno() AS v;
 CREATE VIEW wb_v_fn_inno_nested AS SELECT v FROM wb_v_fn_inno;
+-- Eighteen views deep, the writing function at the bottom.
+CREATE VIEW wb_v_deep_1 AS SELECT v FROM wb_v_fn_inno;
+${Array.from({ length: 17 }, (_, i) => `CREATE VIEW wb_v_deep_${i + 2} AS SELECT v FROM wb_v_deep_${i + 1};`).join('\n')}
 -- A writing lower(text) that wins over pg_catalog's once a search path puts its schema first.
 CREATE SCHEMA wb_shadow;
 CREATE FUNCTION wb_shadow.lower(t text) RETURNS text LANGUAGE sql VOLATILE AS
@@ -282,6 +290,9 @@ export async function prepareMysql(url: string): Promise<void> {
       GRANT TRIGGER ON *.* TO '${PARTIAL_WRITER.username}'@'%';
       REVOKE TRIGGER ON ${DATABASE}.* FROM '${PARTIAL_WRITER.username}'@'%';
       GRANT TRIGGER ON ${DATABASE}.wb_items TO '${PARTIAL_WRITER.username}'@'%';
+      DROP USER IF EXISTS '${VIEW_ONLY.username}'@'%';
+      CREATE USER '${VIEW_ONLY.username}'@'%' IDENTIFIED BY '${VIEW_ONLY.password}';
+      GRANT SELECT, SHOW VIEW ON ${DATABASE}.wb_v_fn_legacy_nested TO '${VIEW_ONLY.username}'@'%';
       DROP USER IF EXISTS '${WRITER.username}'@'%';
       CREATE USER '${WRITER.username}'@'%' IDENTIFIED BY '${WRITER.password}';
       GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${WRITER.username}'@'%';

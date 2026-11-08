@@ -228,11 +228,19 @@ function tablesWritten(tableList: string[], text: string): TableRef[] {
     .filter((t) => t.name && t.name !== 'null');
 }
 
-/** Every table or view the parser saw the statement name, once each. */
-function tablesReferenced(tableList: string[]): TableRef[] {
+/** Every table or view the parser saw the statement name, once each; CTE names are not ones. */
+function tablesReferenced(tableList: string[], asts: unknown): TableRef[] {
+  const ctes = new Set<string>();
+  walk(asts, (node) => {
+    if (!Array.isArray(node.with)) return;
+    for (const w of node.with as { name?: { value?: unknown } }[]) {
+      if (typeof w?.name?.value === 'string') ctes.add(w.name.value.toLowerCase());
+    }
+  });
   const seen = new Map<string, TableRef>();
   for (const [, schema, name] of tableList.map((entry) => entry.split('::'))) {
     if (!name || name === 'null') continue;
+    if ((!schema || schema === 'null') && ctes.has(name.toLowerCase())) continue;
     const ref = { schema: schema && schema !== 'null' ? schema : null, name };
     seen.set(`${ref.schema ?? ''}.${name}`, ref);
   }
@@ -271,7 +279,7 @@ function analyzeQuery(text: string): StatementAnalysis {
   const asts = Array.isArray(parsed.ast) ? parsed.ast : [parsed.ast];
   const root = asts[0] ?? {};
   const type = String(root.type ?? '').toLowerCase();
-  const referenced = tablesReferenced(parsed.tableList);
+  const referenced = tablesReferenced(parsed.tableList, asts);
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
     a.writesTables = tablesWritten(parsed.tableList, text);
@@ -483,9 +491,9 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
     case 'REPLACE': {
       const a = write(first, 'modifies data');
       try {
-        const { tableList } = parser.parse(text, OPTIONS);
+        const { tableList, ast } = parser.parse(text, OPTIONS);
         a.writesTables = tablesWritten(tableList, text);
-        const referenced = tablesReferenced(tableList);
+        const referenced = tablesReferenced(tableList, ast);
         if (referenced.length) a.referencesTables = referenced;
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');

@@ -30,6 +30,7 @@ import {
   preparePostgres,
   PARTIAL_WRITER,
   READER,
+  VIEW_ONLY,
   ROLE_WRITER,
   targetFrom,
   WRITER,
@@ -317,6 +318,19 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(await view('wb_v_fn_inno_nested'), 'InnoDB');
           assert.equal(await view('wb_item_names'), null);
           assert.equal(await view('wb_items'), null);
+          // A definer view over a view the account cannot see: what lies beneath is unknown.
+          const viewOnly = await registry.get({
+            ...target({
+              id: 'cn_view_only_mysql',
+              username: VIEW_ONLY.username,
+              password: VIEW_ONLY.password,
+            }),
+            updatedAt: 'v1',
+          });
+          assert.equal(
+            await viewOnly.viewEngine({ schema: null, name: 'wb_v_fn_legacy_nested' }),
+            'unresolved view',
+          );
           // A trigger that only assigns NEW.v = wb_fn_legacy() still writes MyISAM.
           assert.equal(
             await adapter.tableEngine({ schema: null, name: 'wb_fn_trig', events: ['INSERT'] }),

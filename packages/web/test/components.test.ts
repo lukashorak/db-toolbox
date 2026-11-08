@@ -6,7 +6,7 @@ import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
-import { compareCells } from '../src/lib/compare';
+import { columnComparator } from '../src/lib/compare';
 import { selectSql } from '../src/lib/sql';
 import { loadTabs, read, saveTabs, write } from '../src/lib/storage';
 import { toast } from '../src/lib/toasts.svelte';
@@ -285,7 +285,7 @@ describe('results panel', () => {
 });
 
 describe('result sorting', () => {
-  const sorted = (values: string[]) => [...values].sort(compareCells);
+  const sorted = (values: string[]) => [...values].sort(columnComparator(values));
   it('orders integers and decimals by value without losing precision', () => {
     expect(sorted(['9007199254740993', '9007199254740992', '-9007199254740993', '10', '9'])).toEqual([
       '-9007199254740993',
@@ -297,12 +297,15 @@ describe('result sorting', () => {
     expect(
       sorted(['0.30000000000000004', '0.3', '-0.1', '-0.10000000000000001', '1.50', '1.5', '007']),
     ).toEqual(['-0.10000000000000001', '-0.1', '0.3', '0.30000000000000004', '1.50', '1.5', '007']);
-    expect(compareCells('1.50', '1.5')).toBe(0);
-    expect(compareCells('-0', '0')).toBe(0);
+    const numeric = columnComparator(['1']);
+    expect(numeric('1.50', '1.5')).toBe(0);
+    expect(numeric('-0', '0')).toBe(0);
+    expect(sorted(['1e+20', '5', '2.5e3'])).toEqual(['5', '2.5e3', '1e+20']);
   });
 
-  it('orders other numbers by value and text as text', () => {
-    expect(sorted(['1e+20', '5', '2.5e3'])).toEqual(['5', '2.5e3', '1e+20']);
+  it('orders a column with any non-numeric cell as text throughout', () => {
+    expect(sorted(['2', '10', '1A'])).toEqual(['10', '1A', '2']);
+    expect(sorted(['1A', '2', '10'])).toEqual(['10', '1A', '2']);
     expect(sorted(['beta', 'alpha', '10'])).toEqual(['10', 'alpha', 'beta']);
   });
 });

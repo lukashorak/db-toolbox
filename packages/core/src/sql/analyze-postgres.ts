@@ -144,7 +144,9 @@ function commandName(type: string, body: Node): string {
 function checkTree(analysis: StatementAnalysis, tree: unknown): void {
   const calls = new Map<string, TableRef>();
   const relations = new Map<string, TableRef>();
+  const ctes = new Set<string>();
   walk(tree, (type, body) => {
+    if (type === 'CommonTableExpr' && typeof body.ctename === 'string') ctes.add(body.ctename);
     // Views among them can call functions that write.
     if (type === 'RangeVar' && typeof body.relname === 'string') {
       const schema = typeof body.schemaname === 'string' && body.schemaname ? body.schemaname : null;
@@ -180,8 +182,9 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
     }
   });
   if (calls.size) analysis.callsFunctions = [...(analysis.callsFunctions ?? []), ...calls.values()];
-  if (relations.size)
-    analysis.referencesTables = [...(analysis.referencesTables ?? []), ...relations.values()];
+  // A name a WITH clause defines refers to that query, not to a view of the same name.
+  const named = [...relations.values()].filter((r) => r.schema !== null || !ctes.has(r.name));
+  if (named.length) analysis.referencesTables = [...(analysis.referencesTables ?? []), ...named];
 }
 
 function analyzeNode(type: string, body: Node): StatementAnalysis {

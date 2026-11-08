@@ -250,7 +250,7 @@ class PostgresSession implements DbSession {
    * Looked up on this session, so its search path decides which schemas an unqualified name can
    * reach, including a path that puts a user schema before pg_catalog. For a called name every
    * overload counts (which one a call picks is not resolved here); for a named view, the functions
-   * its definition depends on, through the views beneath it too. Catalog names are qualified so
+   * its definition depends on, through every view beneath it (UNION stops at views already seen). Catalog names are qualified so
    * nothing on the path can stand in for them. An abort cancels the lookup on the server.
    */
   async mayWriteThrough(
@@ -268,18 +268,17 @@ class PostgresSession implements DbSession {
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const result = await this.client.query({
-        text: `WITH RECURSIVE views (oid, depth) AS (
-                 SELECT c.oid, 0 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid = c.relnamespace
+        text: `WITH RECURSIVE views (oid) AS (
+                 SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid = c.relnamespace
                   WHERE c.relkind = 'v'
                     AND ((c.relname = ANY ($4::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
                       OR (s.nspname, c.relname) IN (SELECT q.s, q.r FROM ROWS FROM (pg_catalog.unnest($5::text[]), pg_catalog.unnest($6::text[])) AS q (s, r)))
                  UNION
-                 SELECT d.refobjid, views.depth + 1 FROM views
+                 SELECT d.refobjid FROM views
                    JOIN pg_catalog.pg_rewrite w ON w.ev_class = views.oid
                    JOIN pg_catalog.pg_depend d ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass
                     AND d.objid = w.oid AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
                    JOIN pg_catalog.pg_class c ON c.oid = d.refobjid AND c.relkind = 'v'
-                  WHERE views.depth < 16
                ), procs AS (
                  SELECT p.oid FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace s ON s.oid = p.pronamespace
                   WHERE (p.proname = ANY ($1::text[]) AND s.nspname = ANY (pg_catalog.current_schemas(true)))
