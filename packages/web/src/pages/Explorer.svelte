@@ -75,9 +75,12 @@
       schemas = next;
       for (const name of Object.keys(expanded)) {
         if (!expanded[name]) continue;
+        const load = ++objectLoad;
+        objectLoads[name] = load;
         const loaded = await fetchObjects(id, name);
         if (!current()) return;
-        objects[name] = loaded;
+        // A newer load of this schema (expanded again meanwhile) keeps its answer.
+        if (objectLoads[name] === load) objects[name] = loaded;
       }
       loadedAt = new Date();
       failure = null;
@@ -96,26 +99,44 @@
     );
   }
 
+  /** The latest object load of each schema: an older answer (or failure) is dropped. */
+  let objectLoads: Record<string, number> = {};
+  let objectLoad = 0;
   async function loadObjects(schema: string) {
     const id = connectionId;
     if (!id) return;
-    const loaded = await fetchObjects(id, schema);
-    if (connectionId === id) objects[schema] = loaded;
+    const mine = ++objectLoad;
+    objectLoads[schema] = mine;
+    const current = () => connectionId === id && objectLoads[schema] === mine;
+    let loaded: MetadataResult<ObjectInfo>;
+    try {
+      loaded = await fetchObjects(id, schema);
+    } catch (e) {
+      loaded = { status: 'unavailable', items: [], reason: e instanceof Error ? e.message : String(e) };
+    }
+    if (current()) objects[schema] = loaded;
   }
 
   async function toggle(schema: string) {
     expanded[schema] = !expanded[schema];
-    if (expanded[schema] && !objects[schema]) {
-      try {
-        await loadObjects(schema);
-      } catch (e) {
-        objects[schema] = {
-          status: 'unavailable',
-          items: [],
-          reason: e instanceof Error ? e.message : String(e),
-        };
-      }
-    }
+    if (expanded[schema] && !objects[schema]) await loadObjects(schema);
+  }
+
+  /**
+   * Another connection: nothing of the previous one stays on screen, not while the new one loads
+   * and not if it fails. Stale data is kept only when a refresh of the same connection fails.
+   */
+  function switchConnection() {
+    selection++;
+    objectLoads = {};
+    objects = {};
+    expanded = {};
+    selected = null;
+    preview = null;
+    schemas = null;
+    loadedAt = null;
+    failure = null;
+    void refresh();
   }
 
   async function select(o: ObjectInfo) {
@@ -205,17 +226,7 @@
     <div class="controls">
       <label class="field">
         <span>Connection</span>
-        <select
-          bind:value={connectionId}
-          onchange={() => (
-            selection++,
-            (objects = {}),
-            (expanded = {}),
-            (selected = null),
-            (preview = null),
-            void refresh()
-          )}
-        >
+        <select bind:value={connectionId} onchange={switchConnection}>
           {#each connections as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
         </select>
       </label>

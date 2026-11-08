@@ -435,6 +435,115 @@ describe('explorer', () => {
     items: [{ name, system: false, usable: true }],
   });
 
+  const objectsOf = (name: string) => ({
+    status: 'ok',
+    items: [{ schema: 'sales', name, kind: 'table' }],
+  });
+  const twoConnections = [
+    { id: 'a', name: 'Alpha', enabled: true, engine: 'postgresql' },
+    { id: 'b', name: 'Beta', enabled: true, engine: 'postgresql' },
+  ];
+
+  it('shows nothing of the previous connection while the next one loads or fails', async () => {
+    const original = api.getMockImplementation();
+    let failBeta: (error: Error) => void = () => undefined;
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections') return twoConnections;
+      if (url === '/connections/a/metadata/schemas') return schemasOf('alpha_schema');
+      if (url === '/connections/b/metadata/schemas') return new Promise((_, reject) => (failBeta = reject));
+      return { status: 'ok', items: [] };
+    }) as never);
+    try {
+      render(Explorer);
+      await settle();
+      expect(screen.getByText('alpha_schema')).toBeTruthy();
+      await fireEvent.change(screen.getByLabelText('Connection'), { target: { value: 'b' } });
+      await settle();
+      expect(screen.queryByText('alpha_schema')).toBeNull();
+      failBeta(new Error('Beta is down'));
+      await settle();
+      expect(screen.queryByText('alpha_schema')).toBeNull();
+      expect(screen.getByText('Beta is down')).toBeTruthy();
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
+  it('drops a late object answer or failure from before a connection switch', async () => {
+    const original = api.getMockImplementation();
+    const alphaObjects: { resolve: (v: unknown) => void; reject: (e: Error) => void }[] = [];
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections') return twoConnections;
+      if (url.endsWith('/metadata/schemas')) return schemasOf('sales');
+      if (url === '/connections/a/metadata/schemas/sales/objects')
+        return new Promise((resolve, reject) => alphaObjects.push({ resolve, reject }));
+      return objectsOf('beta_table');
+    }) as never);
+    try {
+      render(Explorer);
+      await settle();
+      const select = screen.getByLabelText('Connection');
+      // Alpha's objects are slow; Beta's arrive at once.
+      await fireEvent.click(screen.getByText('sales'));
+      await settle();
+      await fireEvent.change(select, { target: { value: 'b' } });
+      await settle();
+      await fireEvent.click(screen.getByText('sales'));
+      await settle();
+      expect(screen.getByText('beta_table')).toBeTruthy();
+      // Alpha's failure arrives late: Beta's schema keeps its objects.
+      alphaObjects[0]?.reject(new Error('Alpha failed'));
+      await settle();
+      expect(screen.getByText('beta_table')).toBeTruthy();
+      expect(screen.queryByText(/Alpha failed/)).toBeNull();
+      // Back to Alpha, which answers its new request first; the old one then arrives late.
+      await fireEvent.change(select, { target: { value: 'a' } });
+      await settle();
+      await fireEvent.click(screen.getByText('sales'));
+      await settle();
+      alphaObjects[1]?.resolve(objectsOf('alpha_new'));
+      await settle();
+      expect(screen.getByText('alpha_new')).toBeTruthy();
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
+  it('keeps the newer objects when an older answer arrives after switching back', async () => {
+    const original = api.getMockImplementation();
+    const alphaObjects: ((v: unknown) => void)[] = [];
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections') return twoConnections;
+      if (url.endsWith('/metadata/schemas')) return schemasOf('sales');
+      if (url === '/connections/a/metadata/schemas/sales/objects')
+        return new Promise((resolve) => alphaObjects.push(resolve));
+      return objectsOf('beta_table');
+    }) as never);
+    try {
+      render(Explorer);
+      await settle();
+      const select = screen.getByLabelText('Connection');
+      await fireEvent.click(screen.getByText('sales'));
+      await settle();
+      // Alpha, then Beta, then Alpha again: the first Alpha request is still pending.
+      await fireEvent.change(select, { target: { value: 'b' } });
+      await settle();
+      await fireEvent.change(select, { target: { value: 'a' } });
+      await settle();
+      await fireEvent.click(screen.getByText('sales'));
+      await settle();
+      expect(alphaObjects).toHaveLength(2);
+      alphaObjects[1]?.(objectsOf('alpha_new'));
+      await settle();
+      alphaObjects[0]?.(objectsOf('alpha_old'));
+      await settle();
+      expect(screen.getByText('alpha_new')).toBeTruthy();
+      expect(screen.queryByText('alpha_old')).toBeNull();
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
   it('never shows one connection’s schemas under another', async () => {
     const original = api.getMockImplementation();
     let answerAlpha: (value: unknown) => void = () => undefined;
