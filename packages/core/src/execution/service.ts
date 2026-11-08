@@ -1212,9 +1212,13 @@ export class ExecutionService {
             // back; a target table that does not exist wrote nothing.
             const nothingWritten = ['syntax', 'read_only'].includes(category);
             const missingIsHarmless = ['not_found', 'permission'].includes(category);
+            // A failure that is not the database's (capturing the rows, storing the result) can come
+            // after the statement committed: a write's outcome is then unknown, never rolled back.
+            const notFromDatabase = !(error instanceof DbError);
             const uncertain =
               lost ||
               mayCommit ||
+              (notFromDatabase && !atomic && writes && !readOnly) ||
               (row.engine === 'mysql' &&
                 !atomic &&
                 writes &&

@@ -493,6 +493,16 @@ class PostgresSession implements DbSession {
 
     const batchSize = options.batchSize ?? 500;
     let opened: Cursor<Cell[]> | null = null;
+    /** A failure to capture the rows is not the database's: it is passed on as it is. */
+    let captureFailure: { error: unknown } | null = null;
+    const capture = async <T>(work: () => T | Promise<T>): Promise<T> => {
+      try {
+        return await work();
+      } catch (error) {
+        captureFailure = { error };
+        throw error;
+      }
+    };
     const outcome: StatementOutcome = {
       command: null,
       affectedRows: null,
@@ -580,11 +590,11 @@ class PostgresSession implements DbSession {
             binary: f.dataTypeID === BYTEA,
           }));
           outcome.resultSets = 1;
-          await sink.start(columns, 0);
+          await capture(() => sink.start(columns, 0));
         }
         if (rows.length && !discarding) {
           outcome.rowsDelivered += rows.length;
-          if ((await sink.rows(rows, 0)) === 'stop') {
+          if ((await capture(() => sink.rows(rows, 0))) === 'stop') {
             outcome.stopped = true;
             // A statement that changes data runs to its end; only its further rows are dropped.
             if (options.onStop === 'drain') discarding = true;
@@ -601,6 +611,8 @@ class PostgresSession implements DbSession {
       // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
       // and every later query on this connection would wait behind it.
       if (opened) await this.#closeCursor(opened);
+      // Not the database's error: the statement may have finished (and committed) before it.
+      if (captureFailure && (captureFailure as { error: unknown }).error === error) throw error;
       const final = guard.abandoned
         ? guard.error()
         : afterInterruption(mapPostgresError(error), interrupted, timeout);

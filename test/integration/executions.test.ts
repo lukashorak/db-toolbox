@@ -341,6 +341,34 @@ for (const { engine, variable, prepare } of engines) {
       },
     );
 
+    it(
+      'a write whose result could not be stored is reported with an unknown outcome, never rolled back',
+      { skip: engine !== 'postgresql' },
+      async () => {
+        // The INSERT … RETURNING commits; then storing its result fails (a full disk, say).
+        const db = core.db as unknown as { run: (sql: string, params?: unknown) => unknown };
+        const run = db.run.bind(db);
+        let fail = true;
+        db.run = (sql: string, params?: unknown) => {
+          if (fail && sql.includes('INSERT INTO result_sets')) {
+            fail = false;
+            throw new Error('database or disk is full');
+          }
+          return run(sql, params);
+        };
+        try {
+          const view = await submit("INSERT INTO wb_items (name) VALUES ('run-capture-failed') RETURNING id");
+          const done = await settle(core, view.id);
+          assert.equal(done.status, 'failed');
+          assert.equal(done.statements[0]?.transactionOutcome, 'unknown');
+          assert.equal(done.transactionOutcome, 'unknown');
+          assert.equal(await count("name = 'run-capture-failed'"), 1, 'the row was committed');
+        } finally {
+          db.run = run;
+        }
+      },
+    );
+
     it('a read-only connection rejects writes before running and runs reads read-only', async () => {
       const rejected = await core.executions.submit(writer, {
         connectionId: readOnly,
