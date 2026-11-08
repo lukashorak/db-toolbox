@@ -334,6 +334,38 @@ describe('MCP with PostgreSQL', { skip: skipUnless('POSTGRES_TEST_URL') }, () =>
     );
   });
 
+  it('database error messages count against the allowance, because they can quote data', async () => {
+    const { call } = await connect('workbench-mcp-small');
+    // PostgreSQL repeats the invalid value in its message: here every label in the table.
+    const leak = await call('execute_sql', {
+      connectionId: ids.rw,
+      sql: "SELECT string_agg(label, ',')::integer FROM wb_rows",
+      requestKey: 'errtext-0000001',
+      transactionMode: 'per_statement',
+      captureMode: 'preview',
+    });
+    assert.equal(leak.data.status, 'failed');
+    assert.equal(leak.data.statements[0].error.code, '22P02');
+    assert.match(leak.data.statements[0].error.message, /withheld/);
+    const firstLabel = 'c4ca4238a0b923820dcc509a6f75849b'; // md5('1')
+    assert.ok(!JSON.stringify(leak.data).includes(firstLabel), 'no label reaches the client');
+    const again = await call('get_execution', { executionId: leak.data.executionId });
+    assert.ok(!JSON.stringify(again.data).includes(firstLabel));
+    // A message the allowance covers is shown, and the GUI always has the full diagnostics.
+    const small = await call('execute_sql', {
+      connectionId: ids.rw,
+      sql: "SELECT 'abc'::integer",
+      requestKey: 'errtext-0000002',
+      transactionMode: 'per_statement',
+      captureMode: 'preview',
+    });
+    assert.match(small.data.statements[0].error.message, /invalid input syntax for type integer: "abc"/);
+    assert.match(
+      String(core.executions.view(leak.data.executionId).statements[0]?.error?.message),
+      new RegExp(firstLabel),
+    );
+  });
+
   it('exports without sending contents, and export downloads are closed to MCP tokens', async () => {
     const { call } = await connect('workbench-mcp');
     const run = await call('execute_sql', {

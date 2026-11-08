@@ -10,7 +10,16 @@ import type { ProfileService } from '../services/profiles.js';
 import { parseInput } from '../services/validation.js';
 import type { Row } from '../store/database.js';
 import { readRows, resultGone } from './capture.js';
+import type { ExecutionView } from './service.js';
 import { canSeeExecution } from './visibility.js';
+
+type ErrorView = ExecutionView['error'];
+
+/** An error message the database server composed (not one this tool wrote). */
+function fromDatabase(error: NonNullable<ErrorView>): boolean {
+  const detail = error.detail as { sqlState?: unknown; category?: unknown } | null;
+  return typeof detail?.sqlState === 'string' && !['cancelled', 'timeout'].includes(String(detail.category));
+}
 
 const decideSchema = z
   .object({
@@ -500,6 +509,75 @@ export class DisclosureService {
       });
     });
     this.events.emit('change', { id });
+  }
+
+  /**
+   * The execution as an MCP client may see it. Error messages the database composed can quote data
+   * (an invalid value, a duplicate key, text a function raised), so each counts once against the
+   * profile's byte allowance for the execution, like captured rows. One the allowance cannot cover
+   * is withheld; its code stays. Messages this tool wrote, and the GUI's view, are unchanged.
+   */
+  diagnostics(actor: Actor, view: ExecutionView): ExecutionView {
+    if (actor.source !== 'mcp') return view;
+    const profile = actor.profileId ? this.profiles.findByClientId(actor.clientId) : null;
+    if (!profile || profile.id !== actor.profileId || !profile.enabled) {
+      throw new AppError('profile_disabled', 'The MCP profile is not available.');
+    }
+    const reveal = (item: string, error: ErrorView): ErrorView =>
+      error && fromDatabase(error)
+        ? { ...error, message: this.#diagnostic(actor, view.id, profile, item, error.message) }
+        : error;
+    return {
+      ...view,
+      error: reveal('execution', view.error),
+      statements: view.statements.map((s) => ({ ...s, error: reveal(`statement:${s.ordinal}`, s.error) })),
+    };
+  }
+
+  #diagnostic(
+    actor: Actor,
+    executionId: string,
+    profile: { id: string; previewBytes: number },
+    item: string,
+    message: string,
+  ): string {
+    const bytes = Buffer.byteLength(message);
+    const disclosed = this.ctx.db.transaction(() => {
+      const key = { id: executionId, profile: profile.id, item };
+      const seen = this.ctx.db.get(
+        'SELECT disclosed FROM mcp_diagnostics WHERE execution_id = :id AND profile_id = :profile AND item = :item',
+        key,
+      );
+      if (seen) return Boolean(Number(seen.disclosed));
+      const usage = this.ctx.db.get(
+        'SELECT bytes_returned FROM mcp_usage WHERE execution_id = :id AND profile_id = :profile',
+        { id: executionId, profile: profile.id },
+      );
+      const fits = bytes <= Math.max(0, profile.previewBytes - Number(usage?.bytes_returned ?? 0));
+      this.ctx.db.run(
+        `INSERT INTO mcp_diagnostics (execution_id, profile_id, item, disclosed, bytes)
+         VALUES (:id, :profile, :item, :disclosed, :bytes)`,
+        { ...key, disclosed: fits ? 1 : 0, bytes },
+      );
+      if (fits) {
+        this.ctx.db.run(
+          `INSERT INTO mcp_usage (execution_id, profile_id, rows_returned, bytes_returned) VALUES (:id, :profile, 0, :bytes)
+           ON CONFLICT (execution_id, profile_id) DO UPDATE SET bytes_returned = bytes_returned + excluded.bytes_returned`,
+          { id: executionId, profile: profile.id, bytes },
+        );
+      }
+      this.ctx.audit.record({
+        actor,
+        action: 'mcp.error_message',
+        target: { type: 'execution', id: executionId },
+        outcome: fits ? 'succeeded' : 'denied',
+        details: { item, bytes },
+      });
+      return fits;
+    });
+    return disclosed
+      ? message
+      : `The database's message is withheld (${bytes} bytes): it may quote data, and it is larger than what remains of this MCP profile's allowance for the execution. Read it in Database Workbench.`;
   }
 
   #expire(): void {

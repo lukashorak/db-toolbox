@@ -294,7 +294,23 @@ ALTER TABLE statements ADD COLUMN read_only_safe INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE statements ADD COLUMN changes_session INTEGER NOT NULL DEFAULT 1;
 `;
 
+/**
+ * Database error messages shown to an MCP client: each counts once against the profile's allowance
+ * for the execution (they can quote data), and one the allowance could not cover stays withheld.
+ */
+const MCP_DIAGNOSTICS = `
+CREATE TABLE mcp_diagnostics (
+  execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+  profile_id   TEXT NOT NULL,
+  item         TEXT NOT NULL,
+  disclosed    INTEGER NOT NULL,
+  bytes        INTEGER NOT NULL,
+  PRIMARY KEY (execution_id, profile_id, item)
+) STRICT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: 'initial schema', sql: INITIAL },
   { version: 2, name: 'statement analysis flags', sql: STATEMENT_FLAGS },
+  { version: 3, name: 'MCP diagnostics accounting', sql: MCP_DIAGNOSTICS },
 ];

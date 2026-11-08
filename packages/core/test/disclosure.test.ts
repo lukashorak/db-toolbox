@@ -125,6 +125,62 @@ describe('MCP disclosure', () => {
     core.close();
   });
 
+  it('counts database error messages against the allowance once, and withholds what it cannot cover', async () => {
+    const { core, id, mcp, profile } = await setup();
+    // A database error that quotes data: PostgreSQL's invalid-integer message repeats the value.
+    const leaked = `invalid input syntax for type integer: "${'secret,'.repeat(40)}"`;
+    const detail = JSON.stringify({ category: 'syntax', sqlState: '22P02' });
+    core.db.run(
+      `UPDATE executions SET status = 'failed', error_code = '22P02', error_message = :message, error_detail = :detail
+        WHERE id = :id`,
+      { id, message: `Statement 1: ${leaked}`, detail },
+    );
+    core.db.run(
+      `UPDATE statements SET status = 'failed', error_code = '22P02', error_message = :message, error_detail = :detail
+        WHERE execution_id = :id AND ordinal = 0`,
+      { id, message: leaked, detail },
+    );
+    const usedBytes = () =>
+      Number(
+        core.db.get('SELECT bytes_returned FROM mcp_usage WHERE execution_id = :id', { id })
+          ?.bytes_returned ?? 0,
+      );
+    const shown = core.disclosure.diagnostics(mcp, core.executions.get(mcp, id));
+    assert.equal(shown.statements[0]?.error?.message, leaked);
+    const charged = usedBytes();
+    assert.equal(charged, Buffer.byteLength(leaked) + Buffer.byteLength(`Statement 1: ${leaked}`));
+    // Shown again without being charged again.
+    core.disclosure.diagnostics(mcp, core.executions.get(mcp, id));
+    assert.equal(usedBytes(), charged);
+
+    // A profile whose allowance cannot cover it gets the code and a note, not the message.
+    core.profiles.update(admin, profile.id, { previewBytes: 100 });
+    const { id: second } = await core.executions.submit(mcp, {
+      connectionId: String(shown.connection.id),
+      sql: 'SELECT n::int FROM t',
+    });
+    core.db.run(
+      `UPDATE statements SET status = 'failed', error_code = '22P02', error_message = :message, error_detail = :detail
+        WHERE execution_id = :id AND ordinal = 0`,
+      { id: second, message: leaked, detail },
+    );
+    const withheld = core.disclosure.diagnostics(mcp, core.executions.get(mcp, second)).statements[0]?.error;
+    assert.equal(withheld?.code, '22P02');
+    assert.match(String(withheld?.message), /withheld/);
+    assert.doesNotMatch(String(withheld?.message), /secret/);
+    // The GUI keeps the full diagnostics; messages this tool wrote are not charged.
+    assert.equal(core.executions.get(writer, second).statements[0]?.error?.message, leaked);
+    core.db.run(
+      `UPDATE executions SET error_code = 'timeout', error_message = 'The execution reached its time limit.'
+        WHERE id = :id`,
+      { id: second },
+    );
+    assert.equal(
+      core.disclosure.diagnostics(mcp, core.executions.get(mcp, second)).error?.message,
+      'The execution reached its time limit.',
+    );
+  });
+
   it('deny and revoke stop further pages; disabled profiles get nothing', async () => {
     const { core, id, mcp, profile } = await setup();
     const pending = String(core.disclosure.page(mcp, id, 0, { offset: 0, limit: 30 }).approval?.id);

@@ -250,7 +250,7 @@ export function buildMcpServer(actor: Actor, deps: McpDeps): McpServer {
   const submit = async (input: SubmitInput, wait: number | undefined) => {
     const view = await core.executions.submit(actor, { ...input, scope: 'MCP' });
     if (view.status === 'preflight_rejected') rejection(view);
-    return summarize(await settle(core, actor, view.id, wait ?? 10));
+    return summarize(core.disclosure.diagnostics(actor, await settle(core, actor, view.id, wait ?? 10)));
   };
   const runInput = (args: RunArgs) => ({
     requestKey: args.requestKey,
@@ -425,7 +425,12 @@ export function buildMcpServer(actor: Actor, deps: McpDeps): McpServer {
       annotations: readOnlyTool,
     },
     run(async (args: { executionId: string; waitSeconds?: number }) =>
-      summarize(await settle(core, actor, args.executionId, args.waitSeconds ?? 0)),
+      summarize(
+        core.disclosure.diagnostics(
+          actor,
+          await settle(core, actor, args.executionId, args.waitSeconds ?? 0),
+        ),
+      ),
     ),
   );
 
@@ -445,7 +450,12 @@ export function buildMcpServer(actor: Actor, deps: McpDeps): McpServer {
     },
     run(async (args: { executionId: string; waitSeconds?: number }) => {
       core.executions.cancel(actor, args.executionId);
-      return summarize(await settle(core, actor, args.executionId, args.waitSeconds ?? 5));
+      return summarize(
+        core.disclosure.diagnostics(
+          actor,
+          await settle(core, actor, args.executionId, args.waitSeconds ?? 5),
+        ),
+      );
     }),
   );
 
