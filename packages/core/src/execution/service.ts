@@ -131,6 +131,33 @@ interface Running {
  * acknowledged and then runs in the background, independent of the request that created it.
  * Status, transaction outcome and result completeness are reported separately and honestly.
  */
+/** `work`, unless the signal aborts or the deadline (epoch ms) passes first. */
+async function untilDone<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  deadline: number,
+): Promise<T | 'cancelled' | 'timeout'> {
+  work.catch(() => undefined); // An abandoned lookup may still fail later.
+  if (signal.aborted) return 'cancelled';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), Math.max(0, deadline - Date.now()));
+      }),
+      new Promise<'cancelled'>((resolve) => {
+        onAbort = () => resolve('cancelled');
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export class ExecutionService {
   readonly events = new EventEmitter();
   readonly #running = new Map<string, Running>();
@@ -900,7 +927,19 @@ export class ExecutionService {
     // connection may point elsewhere now (another database or host), and tables may have changed:
     // check again against the adapter that will run the script.
     if (atomic && !readOnly && row.engine === 'mysql') {
-      const problems = await this.#engineProblems(adapter, String(row.sql));
+      // Bounded like the run itself: a cancel or the time limit ends it even if a lookup stalls.
+      const problems = await untilDone(this.#engineProblems(adapter, String(row.sql)), signal, deadline);
+      if (problems === 'cancelled') {
+        this.#finalize(id, 'cancelled', 'not_started', null, 'Cancelled before it started.');
+        return;
+      }
+      if (problems === 'timeout') {
+        this.#finalize(id, 'timed_out', 'not_started', {
+          code: 'timeout',
+          message: 'The time limit was reached while the storage engines were being checked. Nothing ran.',
+        });
+        return;
+      }
       if (problems.length) {
         this.#finalize(id, 'rejected', 'not_started', {
           code: 'preflight_rejected',

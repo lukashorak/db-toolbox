@@ -544,6 +544,35 @@ for (const { engine, variable, prepare } of engines) {
           assert.deepEqual([done.status, done.transactionOutcome], ['rejected', 'not_started']);
           assert.match(String(done.error?.message), /MyISAM/);
           await settle(single, busy.id);
+
+          // A storage-engine lookup that stalls at the start gives way to a cancel and to the time limit.
+          single.connections.update(writer, id, { database: t.database });
+          const adapter = await single.databases.adapterForConnection(id);
+          const lookup = adapter.tableEngine.bind(adapter);
+          const ahead = await single.executions.submit(writer, { connectionId: id, sql: 'SELECT SLEEP(1)' });
+          const cancelled = await single.executions.submit(writer, {
+            connectionId: id,
+            sql: "INSERT INTO wb_items (name) VALUES ('run-stalled')",
+            transactionMode: 'atomic',
+          });
+          const limited = await single.executions.submit(writer, {
+            connectionId: id,
+            sql: "INSERT INTO wb_items (name) VALUES ('run-stalled-2')",
+            transactionMode: 'atomic',
+            timeoutMs: 1500,
+          });
+          adapter.tableEngine = () => new Promise(() => undefined);
+          try {
+            await settle(single, ahead.id);
+            await until(() => single.executions.view(cancelled.id).status === 'running');
+            single.executions.cancel(writer, cancelled.id);
+            const stopped = await settle(single, cancelled.id);
+            assert.deepEqual([stopped.status, stopped.transactionOutcome], ['cancelled', 'not_started']);
+            const timedOut = await settle(single, limited.id);
+            assert.deepEqual([timedOut.status, timedOut.transactionOutcome], ['timed_out', 'not_started']);
+          } finally {
+            adapter.tableEngine = lookup;
+          }
         } finally {
           await single.shutdown();
         }

@@ -1,5 +1,7 @@
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptions } from 'mysql2';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
+
+const METADATA_TIMEOUT_MS = 30_000;
 import { DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
@@ -118,23 +120,33 @@ export class MysqlAdapter implements DbAdapter {
     );
   }
 
-  async #pooledQuery(pool: Pool, sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
+  async #pooledQuery(
+    pool: Pool,
+    sql: string,
+    params: unknown[] = [],
+    timeout?: number,
+  ): Promise<Record<string, unknown>[]> {
     const connection = await this.#acquire(pool);
+    let timedOut = false;
     try {
       return await new Promise((resolve, reject) =>
-        connection.query({ sql, values: params }, (error, rows) =>
-          error
-            ? reject(mapMysqlError(error))
-            : resolve((Array.isArray(rows) ? rows : []) as Record<string, unknown>[]),
-        ),
+        connection.query({ sql, values: params, ...(timeout ? { timeout } : {}) }, (error, rows) => {
+          if (error) {
+            timedOut = (error as { code?: string }).code === 'PROTOCOL_SEQUENCE_TIMEOUT';
+            reject(mapMysqlError(error));
+          } else resolve((Array.isArray(rows) ? rows : []) as Record<string, unknown>[]);
+        }),
       );
     } finally {
-      connection.release();
+      // A query that timed out may still be running there: that connection is not reused.
+      if (timedOut) connection.destroy();
+      else connection.release();
     }
   }
 
+  /** Metadata lookups give up after 30 s, so a stalled one cannot hold the metadata connection. */
   #metaQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return this.#pooledQuery(this.#meta, sql, params);
+    return this.#pooledQuery(this.#meta, sql, params, METADATA_TIMEOUT_MS);
   }
 
   async withSession<T>(fn: (session: DbSession) => Promise<T>): Promise<T> {
