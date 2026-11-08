@@ -552,6 +552,18 @@ for (const { engine, variable, prepare } of engines) {
           [half.status, half.statements[0]?.transactionOutcome, half.transactionOutcome],
           ['failed', 'unknown', 'unknown'],
         );
+        // A temporary MyISAM table is invisible to the metadata connection: unknown, not a rollback.
+        const temp = await run(
+          'CREATE TEMPORARY TABLE wb_tmp (id int PRIMARY KEY) ENGINE=MyISAM; INSERT INTO wb_tmp VALUES (1); INSERT INTO wb_tmp VALUES (2), (1)',
+          { connectionId: writable },
+        );
+        assert.deepEqual([temp.status, temp.statements[2]?.transactionOutcome], ['failed', 'unknown']);
+        // A write to a table that does not exist fails before writing anything.
+        const missing = await run('INSERT INTO wb_no_such_table VALUES (1)', { connectionId: writable });
+        assert.deepEqual(
+          [missing.statements[0]?.transactionOutcome, missing.transactionOutcome],
+          ['rolled_back', 'none'],
+        );
         // InnoDB undoes the failed statement: that is still a rollback.
         const inno = await run("INSERT INTO wb_items (name) VALUES ('run-inno-ok'), ('alpha')", {
           connectionId: writable,

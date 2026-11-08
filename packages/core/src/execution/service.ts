@@ -1005,14 +1005,18 @@ export class ExecutionService {
                     : 'failed';
             if (!atomic && readOnly)
               await session.rollback().catch(() => session.markDirty('rollback failed'));
-            // Per statement, a failed write rolls back only if every table it writes can roll back.
+            // Errors raised before anything is written (syntax, a missing table or column, a
+            // missing privilege, read-only) leave nothing behind. Otherwise, per statement, a failed
+            // write rolls back only if every table it writes is known to roll back.
+            const nothingWritten = ['syntax', 'not_found', 'permission', 'read_only'].includes(category);
             const uncertain =
               lost ||
-              mayCommit ||
+              (mayCommit && !nothingWritten) ||
               (row.engine === 'mysql' &&
                 !atomic &&
                 writes &&
                 !readOnly &&
+                !nothingWritten &&
                 !(await this.#failedWriteRolledBack(adapter, String(st.sql), database)));
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
@@ -1178,7 +1182,9 @@ export class ExecutionService {
       } catch {
         return false;
       }
-      if (engine === UNRESOLVED_VIEW || (engine && !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())))
+      // No engine found: a temporary table (invisible to the metadata connection, possibly MyISAM)
+      // or one that is gone. Its rollback is not established.
+      if (!engine || engine === UNRESOLVED_VIEW || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase()))
         return false;
     }
     return true;

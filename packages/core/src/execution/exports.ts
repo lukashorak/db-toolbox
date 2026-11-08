@@ -290,7 +290,13 @@ export class ExportService {
     );
     for (const row of rows) {
       await this.#removeFile(row);
-      this.ctx.db.run("UPDATE exports SET status = 'expired' WHERE id = :id", { id: String(row.id) });
+      // A deletion that finished while the file was removed keeps its `deleted`.
+      this.ctx.db.run(
+        "UPDATE exports SET status = 'expired' WHERE id = :id AND status NOT IN ('expired', 'deleted')",
+        {
+          id: String(row.id),
+        },
+      );
     }
     // Folders of executions whose metadata is about to be deleted.
     for (const e of this.ctx.db.all('SELECT id FROM executions WHERE metadata_expires_at <= :at', { at })) {

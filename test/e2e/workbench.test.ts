@@ -198,6 +198,31 @@ describe(
       await finished('succeeded');
     });
 
+    it('does not mark a rejection on text edited while it was being submitted', async () => {
+      await setSql('BEGIN;\nSELECT 1');
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const isSubmit = (r: { method(): string; url(): string }) =>
+        r.method() === 'POST' && /\/api\/v1\/executions$/.test(r.url());
+      await page.route('**/api/v1/executions', async (route) => {
+        if (isSubmit(route.request())) await held;
+        await route.continue();
+      });
+      const answered = page.waitForResponse((r) => isSubmit(r.request()));
+      await page.getByRole('button', { name: 'Run script' }).click();
+      // The person edits the text before the (rejecting) answer arrives.
+      await page.getByTestId('sql-editor').fill('SELECT 2 AS edited');
+      release();
+      await answered;
+      await page.unroute('**/api/v1/executions');
+      await page
+        .getByRole('status')
+        .getByText(/transaction/i)
+        .first()
+        .waitFor();
+      assert.equal(await page.getByText('Not run.').count(), 0, 'no rejection marks on the new text');
+    });
+
     it('never runs a statement range of an earlier text', async () => {
       // A long first text: its statement range would cover both statements of the shorter next one.
       await setSql('SELECT 1 AS a_first_text_that_is_longer_than_the_next_one');

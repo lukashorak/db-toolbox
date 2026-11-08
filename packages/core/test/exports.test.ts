@@ -301,6 +301,19 @@ describe('result deletion and retention', () => {
     core.close();
   });
 
+  it('cleanup does not turn an export deleted in the meantime into an expired one', async () => {
+    const { core, id } = await fixture();
+    const created = await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    // Cleanup selects the export, then waits on removing its file…
+    const cleaning = core.exports.cleanup(new Date('2026-11-09T00:00:00Z'));
+    // …while a deletion of the result finishes (its database change).
+    core.db.run("UPDATE exports SET status = 'deleted' WHERE id = :id", { id: created.id });
+    await cleaning;
+    assert.equal(core.exports.get(writer, created.id).status, 'deleted');
+    core.close();
+  });
+
   it('cleanup removes export files and chunks after retention and keeps metadata', async () => {
     const { core, id, dir } = await fixture();
     const created = await core.exports.create(writer, id, 0, { format: 'json' });

@@ -236,6 +236,7 @@
     // The tab this run belongs to, even if the person switches tabs before the answer arrives.
     const origin = tab;
     const connectionId = tab.connectionId;
+    const submittedSql = tab.sql;
     // Set before the first await, so a second call in the meantime returns above.
     const tabId = tab.id;
     submitting.add(tabId);
@@ -257,11 +258,15 @@
       origin.runs = [view.id, ...(origin.runs ?? [])].slice(0, 20);
       if (workbench.active === tabId) shownRun = view.id;
     } catch (e) {
-      if (workbench.active !== tabId) {
-        toast(`${origin.title}: ${e instanceof Error ? e.message : String(e)}`, 'danger');
-      } else if (
+      const message = e instanceof Error ? e.message : String(e);
+      // Rejection marks belong to exactly the text that was submitted, in the tab it came from:
+      // after a tab switch or an edit, the reason is shown as a message instead.
+      const unchanged = () => workbench.active === tabId && origin.sql === submittedSql;
+      let marked = false;
+      if (
         e instanceof ApiError &&
-        (e.code === 'read_only_policy' || e.code === 'preflight_rejected')
+        (e.code === 'read_only_policy' || e.code === 'preflight_rejected') &&
+        unchanged()
       ) {
         const statements =
           (
@@ -270,8 +275,12 @@
               sql: part.sql,
             }).catch(() => null)
           )?.statements ?? [];
-        rejected = { problems: (e.details?.problems ?? []) as Problem[], base: part.base, statements };
-      } else toast(e instanceof Error ? e.message : String(e), 'danger');
+        if (unchanged()) {
+          rejected = { problems: (e.details?.problems ?? []) as Problem[], base: part.base, statements };
+          marked = true;
+        }
+      }
+      if (!marked) toast(workbench.active === tabId ? message : `${origin.title}: ${message}`, 'danger');
     } finally {
       submitting.delete(tabId);
     }
