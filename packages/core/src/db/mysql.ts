@@ -4,6 +4,7 @@ import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
 import { afterInterruption, DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
+import { settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
 import type {
   Cell,
@@ -683,10 +684,13 @@ class MysqlSession implements DbSession {
     };
     let interrupted: 'timeout' | 'cancelled' | 'stopped' | null = null;
     let killed: Promise<boolean> | null = null;
+    /** Every wait on this connection: KILL QUERY cannot end one on a connection that stopped answering. */
+    const guard = new StallGuard(() => this.#abandon());
     const interrupt = (why: 'timeout' | 'cancelled' | 'stopped') => {
       if (interrupted) return;
       interrupted = why;
       killed = this.adapter.cancel(this.backendId);
+      guard.interrupted();
     };
     const timer = setTimeout(() => interrupt('timeout'), timeout);
     const onAbort = () => interrupt('cancelled');
@@ -700,113 +704,115 @@ class MysqlSession implements DbSession {
     let lost: ((error?: unknown) => void) | null = null;
     let failed: unknown = null;
     try {
-      await new Promise<void>((resolve, reject) => {
-        let columns: ColumnInfo[] = [];
-        let batch: Cell[][] = [];
-        let index = -1;
-        let pending: Promise<void> = Promise.resolve();
-        // `pause`: hold the socket while the sink catches up. Not after the last row: once the
-        // statement has ended (or was cancelled), a paused connection can swallow the reply to the
-        // next command, which then never returns.
-        const flush = (pause = true) => {
-          if (!batch.length) return;
-          const rows = batch;
-          const at = index;
-          batch = [];
-          if (pause) this.connection.pause();
-          pending = pending
-            .then(async () => {
-              if (interrupted || discarded.has(at)) return;
-              outcome.rowsDelivered += rows.length;
-              if ((await sink.rows(rows, at)) === 'stop') {
-                outcome.stopped = true;
-                if (drain) discarded.add(at);
-                else interrupt('stopped');
-              }
-            })
-            .catch((error: unknown) => {
-              failed ??= error;
-              interrupt('stopped');
-            })
-            .finally(() => {
-              if (pause) this.connection.resume();
-            });
-        };
-        const query = this.connection.query({
-          sql: this.#label + sql,
-          rowsAsArray: true,
-          typeCast: RAW as never,
-        });
-        /** An exception inside a driver event handler would otherwise leave this promise pending. */
-        const guard =
-          <A extends unknown[]>(handler: (...args: A) => void) =>
-          (...args: A) => {
-            try {
-              handler(...args);
-            } catch (error) {
-              failed ??= error;
-            }
-          };
-        query.on(
-          'fields',
-          guard((fields: RawField[] | undefined) => {
-            // Statements without a result set report an empty field list.
-            if (!fields?.length) return;
-            flush();
-            index++;
-            columns = fields.map(columnInfo);
-            outcome.resultSets = index + 1;
-            const cols = columns;
+      await guard.wait(
+        new Promise<void>((resolve, reject) => {
+          let columns: ColumnInfo[] = [];
+          let batch: Cell[][] = [];
+          let index = -1;
+          let pending: Promise<void> = Promise.resolve();
+          // `pause`: hold the socket while the sink catches up. Not after the last row: once the
+          // statement has ended (or was cancelled), a paused connection can swallow the reply to the
+          // next command, which then never returns.
+          const flush = (pause = true) => {
+            if (!batch.length) return;
+            const rows = batch;
             const at = index;
+            batch = [];
+            if (pause) this.connection.pause();
             pending = pending
-              .then(() => sink.start(cols, at))
+              .then(async () => {
+                if (interrupted || discarded.has(at)) return;
+                outcome.rowsDelivered += rows.length;
+                if ((await sink.rows(rows, at)) === 'stop') {
+                  outcome.stopped = true;
+                  if (drain) discarded.add(at);
+                  else interrupt('stopped');
+                }
+              })
               .catch((error: unknown) => {
-                // Mirrors flush(): a sink that cannot store the result ends the statement.
                 failed ??= error;
                 interrupt('stopped');
+              })
+              .finally(() => {
+                if (pause) this.connection.resume();
               });
-          }),
-        );
-        query.on(
-          'result',
-          guard((row: unknown) => {
-            if (Array.isArray(row)) {
-              if (interrupted || discarded.has(index)) return;
-              batch.push(row.map((value, i) => toCell(value, columns[i]?.binary ?? false)));
-              if (batch.length >= batchSize) flush();
-            } else if (row && typeof row === 'object') {
-              const header = row as { affectedRows?: number; warningStatus?: number };
-              if (typeof header.affectedRows === 'number')
-                outcome.affectedRows = (outcome.affectedRows ?? 0) + header.affectedRows;
-              warnings += header.warningStatus ?? 0;
-            }
-          }),
-        );
-        query.on('error', (error: unknown) => {
-          void pending.finally(() => reject(error));
-        });
-        query.on('end', () => {
-          flush(false);
-          // finally, not then: the outer promise must settle even if a step of the chain failed.
-          void pending.finally(() => (failed ? reject(failed) : resolve()));
-        });
-        // A dropped connection (KILL, a restart, the network) reaches mysql2's connection, not a
-        // streaming query: without this, the statement would wait forever.
-        lost = (error?: unknown) =>
-          void pending.finally(() =>
-            reject(
-              error ??
-                Object.assign(new Error('Connection lost: the server closed the connection.'), {
-                  code: 'PROTOCOL_CONNECTION_LOST',
-                  fatal: true,
-                }),
-            ),
+          };
+          const query = this.connection.query({
+            sql: this.#label + sql,
+            rowsAsArray: true,
+            typeCast: RAW as never,
+          });
+          /** An exception inside a driver event handler would otherwise leave this promise pending. */
+          const guard =
+            <A extends unknown[]>(handler: (...args: A) => void) =>
+            (...args: A) => {
+              try {
+                handler(...args);
+              } catch (error) {
+                failed ??= error;
+              }
+            };
+          query.on(
+            'fields',
+            guard((fields: RawField[] | undefined) => {
+              // Statements without a result set report an empty field list.
+              if (!fields?.length) return;
+              flush();
+              index++;
+              columns = fields.map(columnInfo);
+              outcome.resultSets = index + 1;
+              const cols = columns;
+              const at = index;
+              pending = pending
+                .then(() => sink.start(cols, at))
+                .catch((error: unknown) => {
+                  // Mirrors flush(): a sink that cannot store the result ends the statement.
+                  failed ??= error;
+                  interrupt('stopped');
+                });
+            }),
           );
-        this.connection.once('error', lost);
-        this.connection.once('end', lost);
-      });
+          query.on(
+            'result',
+            guard((row: unknown) => {
+              if (Array.isArray(row)) {
+                if (interrupted || discarded.has(index)) return;
+                batch.push(row.map((value, i) => toCell(value, columns[i]?.binary ?? false)));
+                if (batch.length >= batchSize) flush();
+              } else if (row && typeof row === 'object') {
+                const header = row as { affectedRows?: number; warningStatus?: number };
+                if (typeof header.affectedRows === 'number')
+                  outcome.affectedRows = (outcome.affectedRows ?? 0) + header.affectedRows;
+                warnings += header.warningStatus ?? 0;
+              }
+            }),
+          );
+          query.on('error', (error: unknown) => {
+            void pending.finally(() => reject(error));
+          });
+          query.on('end', () => {
+            flush(false);
+            // finally, not then: the outer promise must settle even if a step of the chain failed.
+            void pending.finally(() => (failed ? reject(failed) : resolve()));
+          });
+          // A dropped connection (KILL, a restart, the network) reaches mysql2's connection, not a
+          // streaming query: without this, the statement would wait forever.
+          lost = (error?: unknown) =>
+            void pending.finally(() =>
+              reject(
+                error ??
+                  Object.assign(new Error('Connection lost: the server closed the connection.'), {
+                    code: 'PROTOCOL_CONNECTION_LOST',
+                    fatal: true,
+                  }),
+              ),
+            );
+          this.connection.once('error', lost);
+          this.connection.once('end', lost);
+        }),
+      );
     } catch (error) {
-      const mapped = mapMysqlError(error);
+      const mapped = guard.abandoned ? guard.error() : mapMysqlError(error);
       const stoppedOnRequest =
         interrupted === 'stopped' && (mapped.code === '1317' || mapped.code === '3024');
       // Otherwise (the sink stopped reading and the server ended the statement on request), the
@@ -824,7 +830,8 @@ class MysqlSession implements DbSession {
       }
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);
-      if (killed) await this.#absorbKill(killed);
+      if (killed && !guard.abandoned) await guard.wait(this.#absorbKill(killed));
+      guard.stop();
     }
     // The sink failed (for example, storing captured rows): its stop request ended the statement
     // without an error of its own, but the result is incomplete and must not pass as finished.
@@ -851,7 +858,10 @@ class MysqlSession implements DbSession {
    * the next statement on this connection.
    */
   async #absorbKill(killed: Promise<boolean>): Promise<void> {
-    await killed;
+    if (!(await settlesWithin(killed, STALL_GRACE_MS))) {
+      this.markDirty('a cancel request did not settle');
+      return;
+    }
     try {
       await this.#run('SELECT 1');
     } catch (error) {
@@ -865,6 +875,15 @@ class MysqlSession implements DbSession {
       }
       this.markDirty('connection state unknown after cancellation');
     }
+  }
+
+  /**
+   * Closes a connection that stopped answering (the raw socket: mysql2's own close waits for the
+   * server and keeps a pending statement waiting). The statement ends as a lost connection.
+   */
+  #abandon(): void {
+    this.markDirty('the connection stopped answering');
+    (this.connection as unknown as { stream?: { destroy(): void } }).stream?.destroy();
   }
 
   async finish(): Promise<void> {

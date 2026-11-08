@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { afterInterruption, DbError, mapMysqlError, mapPostgresError } from '../src/db/errors.js';
+import { settlesWithin, StallGuard } from '../src/db/stall.js';
 import { describeTls, mysqlTls, mysqlVerifyFullProblem, postgresTls } from '../src/db/tls.js';
 import { triggerVisible } from '../src/db/mysql.js';
 import { AppError } from '../src/domain/errors.js';
@@ -259,5 +260,52 @@ describe('errors after a cancel or the time limit', () => {
     // The server's own timeout counts as one too; anything else is left as it was.
     assert.equal(afterInterruption(new DbError('timeout', 'statement timeout'), null, 5).category, 'timeout');
     assert.equal(afterInterruption(failed, null, 1000), failed);
+  });
+});
+
+describe('connections that stop answering', () => {
+  const later = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  /** A wait that only `abandon` (closing the connection) ends. */
+  const silent = () => {
+    let end: (error: Error) => void = () => undefined;
+    const wait = new Promise<never>((_, reject) => (end = reject));
+    return { wait, end: () => end(new Error('Connection terminated unexpectedly')) };
+  };
+
+  it('closes the connection when a wait outlasts the grace period after an interruption', async () => {
+    const read = silent();
+    let closed = 0;
+    const guard = new StallGuard(() => {
+      closed++;
+      read.end();
+    }, 20);
+    const waiting = guard.wait(read.wait).catch((e: Error) => e.message);
+    await later(40);
+    assert.equal(closed, 0, 'a long wait without an interruption is left alone');
+    guard.interrupted();
+    assert.equal(await waiting, 'Connection terminated unexpectedly');
+    assert.deepEqual([closed, guard.abandoned, guard.error().category], [1, true, 'connectivity']);
+  });
+
+  it('leaves a connection that answers in time, and starts the grace period with the next wait', async () => {
+    const read = silent();
+    let closed = 0;
+    const guard = new StallGuard(() => {
+      closed++;
+      read.end();
+    }, 30);
+    guard.interrupted();
+    await later(50);
+    assert.equal(closed, 0, 'nothing was waiting');
+    assert.equal(await guard.wait(later(10).then(() => 'answered')), 'answered');
+    await later(40);
+    assert.equal(closed, 0, 'the timer stops with the wait');
+    await guard.wait(read.wait).catch(() => undefined);
+    assert.equal(closed, 1);
+  });
+
+  it('tells whether a promise settles in time', async () => {
+    assert.equal(await settlesWithin(Promise.reject(new Error('x')), 50), true);
+    assert.equal(await settlesWithin(new Promise(() => undefined), 20), false);
   });
 });

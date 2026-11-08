@@ -204,6 +204,52 @@ for (const { engine, variable, prepare } of engines) {
       assert.equal((error as { category?: string } | null)?.category, 'connectivity');
     });
 
+    it(
+      'closes a connection that stops answering after a cancel, so the statement cannot wait forever',
+      { timeout: 30_000 },
+      async () => {
+        const controller = new AbortController();
+        let started = 0;
+        const error = await adapter.withSession(async (s) => {
+          const { sink } = collect();
+          const running = s
+            .execute(engine === 'postgresql' ? 'SELECT pg_sleep(30)' : 'SELECT SLEEP(30)', sink, {
+              timeoutMs: 60_000,
+              batchSize: 100,
+              signal: controller.signal,
+            })
+            .then(
+              () => null,
+              (e: unknown) => e,
+            );
+          await new Promise((r) => setTimeout(r, 300));
+          // The connection stays open, but nothing more arrives from it: the cancel goes through
+          // another connection and stops the statement, whose answer is never read.
+          const internals = s as unknown as {
+            connection?: { stream?: Socket };
+            client?: { connection?: { stream?: Socket } };
+          };
+          const socket = internals.connection?.stream ?? internals.client?.connection?.stream;
+          assert.ok(socket, 'found the session socket');
+          socket.pause();
+          started = Date.now();
+          controller.abort();
+          return running;
+        });
+        const waited = Date.now() - started;
+        assert.equal((error as { category?: string } | null)?.category, 'connectivity');
+        assert.match((error as Error).message, /stopped answering/);
+        assert.ok(waited >= 4000 && waited < 10_000, `closed after ${waited} ms`);
+        // The closed connection is not reused.
+        const next = await adapter.withSession(async (s) => {
+          const { sink, sets } = collect();
+          await s.execute('SELECT 1', sink, { timeoutMs: 5000 });
+          return sets[0]?.rows;
+        });
+        assert.deepEqual(next, [['1']]);
+      },
+    );
+
     it('stops waiting for result type names when cancelled', { skip: engine !== 'postgresql' }, async () => {
       // The metadata connection never answers; a cancel of the work backend does not reach it.
       const pg = adapter as unknown as { typeNames: (oids: number[]) => Promise<Map<number, string>> };

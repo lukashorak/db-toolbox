@@ -1,6 +1,7 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import { afterInterruption, DbError, mapPostgresError } from './errors.js';
+import { settlesWithin, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
 import { analyzeStatement } from '../sql/analyze.js';
@@ -215,22 +216,6 @@ export class PostgresAdapter implements DbAdapter {
   }
 }
 
-/** True if the promise settles (either way) within `ms`. */
-async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await Promise.race([
-    promise.then(
-      () => true,
-      () => true,
-    ),
-    new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(false), ms);
-    }),
-  ]);
-  clearTimeout(timer);
-  return settled;
-}
-
 /** Command tags of statements that change rows; with RETURNING, each returned row is a changed row. */
 const CHANGES_ROWS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
 
@@ -366,6 +351,18 @@ class PostgresSession implements DbSession {
   }
 
   /**
+   * Closes a connection that stopped answering. Its pending reads end as a lost connection; nothing
+   * more is sent, and it is not reused.
+   */
+  #abandon(): void {
+    this.#stuck = true;
+    this.markDirty('the connection stopped answering');
+    (
+      this.client as unknown as { connection?: { stream?: { destroy(): void } } }
+    ).connection?.stream?.destroy();
+  }
+
+  /**
    * Closes a cursor that an error left open (its portal still holds the connection), within 2 s.
    * A cursor that finished or failed on its own needs nothing.
    */
@@ -391,9 +388,6 @@ class PostgresSession implements DbSession {
 
   async execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome> {
     const timeout = Math.max(1, Math.floor(options.timeoutMs));
-    if (this.#inTransaction) await this.#run(`SET LOCAL statement_timeout = ${timeout}`);
-    else await this.#run(`SET statement_timeout = ${timeout}`);
-
     const notices: string[] = [];
     const onNotice = (notice: { message?: string; severity?: string }) => {
       if (notices.length < 50) notices.push(`${notice.severity ?? 'NOTICE'}: ${notice.message ?? ''}`);
@@ -405,10 +399,13 @@ class PostgresSession implements DbSession {
     let cancelling: Promise<unknown> | null = null;
     /** Called once when the statement is interrupted (a wait elsewhere stops waiting). */
     let onInterrupt: (() => void) | null = null;
+    /** Every wait on this connection: a cancel cannot end one on a connection that stopped answering. */
+    const guard = new StallGuard(() => this.#abandon());
     const interrupt = (why: 'timeout' | 'cancelled') => {
       if (interrupted) return;
       interrupted = why;
       cancelling = this.adapter.cancel(this.backendId);
+      guard.interrupted();
       onInterrupt?.();
     };
     // statement_timeout ends the statement on the server; this backstop covers a server that does not answer.
@@ -417,9 +414,7 @@ class PostgresSession implements DbSession {
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const batchSize = options.batchSize ?? 500;
-    const cursor = this.client.query(
-      new Cursor<Cell[]>(sql, undefined, { rowMode: 'array', types: TEXT_TYPES }),
-    );
+    let opened: Cursor<Cell[]> | null = null;
     const outcome: StatementOutcome = {
       command: null,
       affectedRows: null,
@@ -432,6 +427,16 @@ class PostgresSession implements DbSession {
     let rowsRead = 0;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
+      await guard.wait(
+        this.#run(
+          this.#inTransaction
+            ? `SET LOCAL statement_timeout = ${timeout}`
+            : `SET statement_timeout = ${timeout}`,
+        ),
+      );
+      const cursor = (opened = this.client.query(
+        new Cursor<Cell[]>(sql, undefined, { rowMode: 'array', types: TEXT_TYPES }),
+      ));
       for (;;) {
         // Between batches the server has no running query, so pg_cancel_backend (and
         // statement_timeout, which counts per fetch) cannot stop a long read: stop reading here.
@@ -440,7 +445,7 @@ class PostgresSession implements DbSession {
         // is committed yet, and the interruption stands, so the transaction is rolled back.
         if (interrupted && outcome.command && !this.#inTransaction) break;
         if (interrupted) {
-          await cursor.close().catch(() => undefined);
+          await guard.wait(cursor.close()).catch(() => undefined);
           throw new DbError(
             interrupted,
             interrupted === 'timeout'
@@ -448,11 +453,12 @@ class PostgresSession implements DbSession {
               : 'The statement was cancelled.',
           );
         }
-        const { rows, result } = await new Promise<{ rows: Cell[][]; result?: pg.QueryResult }>(
-          (resolve, reject) =>
+        const { rows, result } = await guard.wait(
+          new Promise<{ rows: Cell[][]; result?: pg.QueryResult }>((resolve, reject) =>
             cursor.read(batchSize, (error, rows, result) =>
               error ? reject(error) : resolve({ rows: rows as Cell[][], result }),
             ),
+          ),
         );
         // pg-cursor omits the result on a read after the portal has closed (exact multiple of the batch size).
         if (!result) break;
@@ -482,7 +488,7 @@ class PostgresSession implements DbSession {
           // INSERT … RETURNING) and is reported as finished, with OIDs for type names. Inside a
           // transaction nothing is committed yet: the interruption stands and it is rolled back.
           if (interrupted && !(result.command && !this.#inTransaction)) {
-            await cursor.close().catch(() => undefined);
+            await guard.wait(cursor.close()).catch(() => undefined);
             throw new DbError(
               interrupted,
               interrupted === 'timeout'
@@ -505,7 +511,7 @@ class PostgresSession implements DbSession {
             // A statement that changes data runs to its end; only its further rows are dropped.
             if (options.onStop === 'drain') discarding = true;
             else {
-              await cursor.close();
+              await guard.wait(cursor.close());
               break;
             }
           }
@@ -516,12 +522,15 @@ class PostgresSession implements DbSession {
     } catch (error) {
       // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
       // and every later query on this connection would wait behind it.
-      await this.#closeCursor(cursor);
-      const final = afterInterruption(mapPostgresError(error), interrupted, timeout);
+      if (opened) await this.#closeCursor(opened);
+      const final = guard.abandoned
+        ? guard.error()
+        : afterInterruption(mapPostgresError(error), interrupted, timeout);
       if (final.category === 'connectivity') this.markDirty('connection lost');
       throw final;
     } finally {
       clearTimeout(timer);
+      guard.stop();
       options.signal?.removeEventListener('abort', onAbort);
       this.client.removeListener('notice', onNotice);
       if (interrupted && !this.#inTransaction) this.markDirty(`statement ${interrupted}`);
