@@ -167,11 +167,33 @@ export class MysqlAdapter implements DbAdapter {
    * be determined (no privilege, a cycle, nesting deeper than 16) reports UNRESOLVED_VIEW.
    */
   async tableEngine(table: TableRef): Promise<string | null> {
-    return this.#engineOf(table.schema, table.name, []);
+    return this.#engineOf(table.schema, table.name, [], new Map());
   }
 
-  /** `ancestors`: the views above this one on the current path (a view used twice is not a cycle). */
-  async #engineOf(schema: string | null, name: string, ancestors: string[]): Promise<string | null> {
+  /**
+   * `ancestors`: the views above this one on the current path (a view used twice is not a cycle).
+   * `known`: relations already resolved in this lookup, so a view shared by many paths is looked up
+   * once and branching view graphs cost one lookup per relation, not per path.
+   */
+  async #engineOf(
+    schema: string | null,
+    name: string,
+    ancestors: string[],
+    known: Map<string, string | null>,
+  ): Promise<string | null> {
+    const asked = `${schema ?? ''}.${name}`;
+    if (known.has(asked)) return known.get(asked) ?? null;
+    const engine = await this.#resolveEngine(schema, name, ancestors, known);
+    known.set(asked, engine);
+    return engine;
+  }
+
+  async #resolveEngine(
+    schema: string | null,
+    name: string,
+    ancestors: string[],
+    known: Map<string, string | null>,
+  ): Promise<string | null> {
     const [row] = await this.#metaQuery(
       `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
@@ -189,7 +211,7 @@ export class MysqlAdapter implements DbAdapter {
     if (!bases.length) return UNRESOLVED_VIEW;
     let found: string | null = null;
     for (const base of bases) {
-      const engine = await this.#engineOf(String(base.db), String(base.name), path);
+      const engine = await this.#engineOf(String(base.db), String(base.name), path, known);
       if (engine === null || engine === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
       if (!TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
       found ??= engine;

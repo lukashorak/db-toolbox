@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:net';
+import mysql from 'mysql2/promise';
 import { after, before, describe, it } from 'node:test';
 import {
   AdapterRegistry,
@@ -200,6 +201,28 @@ for (const { engine, variable, prepare } of engines) {
           // Views report their base tables' engine; a view reached twice is not a cycle.
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_legacy_notes' }), 'MyISAM');
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_v_both' }), 'InnoDB');
+          // A graph that branches at every level is resolved with one lookup per view, not per path
+          // (2^5 paths here). Questions counts the statements the server received.
+          const u = new URL(url);
+          const root = await mysql.createConnection({
+            host: u.hostname,
+            port: Number(u.port),
+            user: decodeURIComponent(u.username),
+            password: decodeURIComponent(u.password),
+            ssl: { rejectUnauthorized: false },
+          });
+          try {
+            const questions = async () => {
+              const [rows] = await root.query("SHOW GLOBAL STATUS LIKE 'Questions'");
+              return Number((rows as { Value: string }[])[0]?.Value);
+            };
+            const before = await questions();
+            assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_g5' }), 'InnoDB');
+            const asked = (await questions()) - before - 1;
+            assert.ok(asked <= 2 * 16 + 1, `${asked} metadata queries`);
+          } finally {
+            await root.end();
+          }
           assert.equal(await adapter.tableEngine({ schema: DATABASE, name: 'wb_items' }), 'InnoDB');
           const problems = await preflight(
             await analyzeScript(
@@ -356,6 +379,11 @@ for (const { engine, variable, prepare } of engines) {
               ['UPDATE', total],
               `${total} ${onStop}`,
             );
+          }
+          // Reads that return rows under another command tag change nothing.
+          for (const sql of ['EXPLAIN SELECT 1', 'SHOW search_path', 'SELECT 1', 'VALUES (1), (2)']) {
+            const { outcome } = await run(sql);
+            assert.equal(outcome.affectedRows, null, sql);
           }
         });
       }

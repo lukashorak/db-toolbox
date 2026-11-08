@@ -195,6 +195,9 @@ export class PostgresAdapter implements DbAdapter {
   }
 }
 
+/** Command tags of statements that change rows; with RETURNING, each returned row is a changed row. */
+const CHANGES_ROWS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
+
 class PostgresSession implements DbSession {
   readonly backendId: number;
   dirty: string | null = null;
@@ -347,9 +350,9 @@ class PostgresSession implements DbSession {
           outcome.command = result.command;
           outcome.affectedRows = !result.fields.length
             ? (result.rowCount ?? null)
-            : result.command === 'SELECT'
-              ? null
-              : rowsRead;
+            : CHANGES_ROWS.has(result.command)
+              ? rowsRead
+              : null;
         }
         if (outcome.resultSets === 0 && result.fields.length) {
           const names = await this.adapter.typeNames(result.fields.map((f) => f.dataTypeID));

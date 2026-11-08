@@ -103,6 +103,22 @@ export async function preparePostgres(url: string): Promise<void> {
   }
 }
 
+/**
+ * A view graph that branches at every level: wb_g<n> joins two views that both read wb_g<n-1>, so
+ * wb_g<levels> reaches wb_g0 along 2^levels paths.
+ */
+export function branchingViews(levels: number): string {
+  const sql = ['CREATE VIEW wb_g0 AS SELECT id FROM wb_items;'];
+  for (let n = 1; n <= levels; n++) {
+    sql.push(
+      `CREATE VIEW wb_g${n}a AS SELECT id FROM wb_g${n - 1};`,
+      `CREATE VIEW wb_g${n}b AS SELECT id FROM wb_g${n - 1};`,
+      `CREATE VIEW wb_g${n} AS SELECT a.id FROM wb_g${n}a a JOIN wb_g${n}b b ON b.id = a.id;`,
+    );
+  }
+  return sql.join('\n      ');
+}
+
 export async function prepareMysql(url: string): Promise<void> {
   const u = new URL(url);
   const root = await mysql.createConnection({
@@ -163,6 +179,7 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE VIEW wb_v_left AS SELECT id, name FROM wb_v_base;
       CREATE VIEW wb_v_right AS SELECT id FROM wb_v_base;
       CREATE VIEW wb_v_both AS SELECT l.id, l.name FROM wb_v_left l JOIN wb_v_right r ON r.id = l.id;
+      ${branchingViews(5)}
       CREATE FUNCTION wb_item_count() RETURNS int READS SQL DATA RETURN (SELECT count(*) FROM wb_items);
       CREATE TABLE wb_numbers (n int PRIMARY KEY);
       SET SESSION cte_max_recursion_depth = 10000;
