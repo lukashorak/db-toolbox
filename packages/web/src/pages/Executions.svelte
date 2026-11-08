@@ -28,6 +28,8 @@
   let approvals = $state<
     { id: string; resultIndex: number; profile: { name: string }; status: string; expiresAt: string | null }[]
   >([]);
+  /** Why the MCP disclosure list could not be loaded, if it could not. */
+  let approvalsFailure = $state<string | null>(null);
   let retainDays = $state(7);
   let confirmDelete = $state(false);
   let error = $state<string | null>(null);
@@ -56,14 +58,21 @@
       const [loaded, loadedExports, loadedApprovals] = await Promise.all([
         api<ExecutionView>('GET', `/executions/${executionId}`),
         api<ExportView[]>('GET', `/executions/${executionId}/exports`),
-        api<typeof approvals & { executionId: string }[]>('GET', '/approvals').catch(() => []),
+        // Approvals are optional to the page, but a failure is said, never shown as "None".
+        api<typeof approvals & { executionId: string }[]>('GET', '/approvals').catch(
+          (e: unknown) => new Error(e instanceof Error ? e.message : String(e)),
+        ),
       ]);
       if (!current()) return;
       detail = loaded;
       exports = loadedExports;
-      approvals = loadedApprovals.filter(
-        (a) => (a as unknown as { executionId: string }).executionId === executionId,
-      );
+      approvalsFailure = loadedApprovals instanceof Error ? loadedApprovals.message : null;
+      approvals =
+        loadedApprovals instanceof Error
+          ? []
+          : loadedApprovals.filter(
+              (a) => (a as unknown as { executionId: string }).executionId === executionId,
+            );
       error = null;
     } catch (e) {
       if (!current()) return;
@@ -80,7 +89,8 @@
       const view = await api<ExecutionView>('POST', '/executions', {
         connectionId: shown.connection.id,
         sql,
-        title: `${shown.title} (full)`,
+        // Titles are at most 200 characters: leave room for the suffix.
+        title: `${shown.title.slice(0, 200 - ' (full)'.length)} (full)`,
         scope: 'Full result',
         requestKey: crypto.randomUUID(),
         captureMode: 'full',
@@ -295,11 +305,14 @@
         </ul>
         <p class="section-label">MCP disclosure</p>
         <ul>
-          {#each approvals as a (a.id)}<li>
-              Result {a.resultIndex + 1} · {a.profile.name} · {a.status}{a.expiresAt
-                ? ` until ${new Date(a.expiresAt).toLocaleString()}`
-                : ''}
-            </li>{:else}<li>None.</li>{/each}
+          {#if approvalsFailure}<li class="warn">Could not be loaded: {approvalsFailure}</li>
+          {:else}
+            {#each approvals as a (a.id)}<li>
+                Result {a.resultIndex + 1} · {a.profile.name} · {a.status}{a.expiresAt
+                  ? ` until ${new Date(a.expiresAt).toLocaleString()}`
+                  : ''}
+              </li>{:else}<li>None.</li>{/each}
+          {/if}
         </ul>
       </section>
     </div>

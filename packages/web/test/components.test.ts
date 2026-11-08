@@ -666,6 +666,26 @@ describe('execution history', () => {
     }
   });
 
+  it('says when MCP disclosures could not be loaded, instead of showing none', async () => {
+    const original = api.getMockImplementation();
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/approvals') throw new Error('Approvals are unavailable');
+      if (url === '/executions/exe_c') return executionOf('exe_c', 'Gamma run');
+      if (url.endsWith('/exports') || url === '/connections') return [];
+      return { rows: [['1']] };
+    }) as never);
+    try {
+      navigate('/executions/exe_c');
+      render(Executions);
+      await settle();
+      expect(screen.getByText(/Could not be loaded: Approvals are unavailable/)).toBeTruthy();
+      expect(screen.queryByText('None.')).toBeNull();
+    } finally {
+      if (original) api.mockImplementation(original);
+      navigate('/');
+    }
+  });
+
   it('runs the full result from history and opens the new execution', async () => {
     const original = api.getMockImplementation();
     const posted: unknown[] = [];
@@ -677,7 +697,8 @@ describe('execution history', () => {
       if (url.startsWith('/executions/exe_')) {
         if (url.endsWith('/exports')) return [];
         if (url.includes('/rows')) return { rows: [['1']] };
-        return executionOf(url.slice('/executions/'.length), 'Preview run');
+        // A title at the 200-character limit: the rerun's title must still fit.
+        return executionOf(url.slice('/executions/'.length), 'P'.repeat(200));
       }
       if (url === '/approvals' || url === '/connections') return [];
       return { rows: [] };
@@ -697,6 +718,8 @@ describe('execution history', () => {
         sql: 'SELECT n FROM numbers',
         captureMode: 'full',
       });
+      const title = (posted[0] as { title: string }).title;
+      expect([title.length <= 200, title.endsWith(' (full)')]).toEqual([true, true]);
       expect(route.path).toBe('/executions/exe_full');
     } finally {
       if (original) api.mockImplementation(original);
