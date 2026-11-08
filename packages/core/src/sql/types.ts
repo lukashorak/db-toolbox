@@ -65,6 +65,8 @@ export interface StatementAnalysis {
    * checks what they write like the statement's own writes.
    */
   callsFunctions?: TableRef[];
+  /** PostgreSQL: a built-in function the statement calls changes data (large objects), with what. */
+  builtinWrite?: string;
   /**
    * Tables and views the statement names, as written. A view can call functions that write, so
    * those checks follow views too.

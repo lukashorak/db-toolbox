@@ -257,6 +257,12 @@ export async function prepareMysql(url: string): Promise<void> {
       -- A function that only reads, but from a view whose function writes MyISAM.
       CREATE FUNCTION wb_fn_reads_view() RETURNS int DETERMINISTIC MODIFIES SQL DATA
         RETURN (SELECT v FROM wb_v_fn_legacy LIMIT 1);
+      -- A trigger that writes MyISAM, then fails on a missing table.
+      CREATE TABLE wb_trig_fail (id int PRIMARY KEY) ENGINE=InnoDB;
+      CREATE TRIGGER wb_trig_fail_ai AFTER INSERT ON wb_trig_fail FOR EACH ROW BEGIN
+        INSERT INTO wb_legacy VALUES (NEW.id + 4000, 'before failing');
+        INSERT INTO wb_no_such_table VALUES (1);
+      END;
       -- An InnoDB table whose trigger reaches MyISAM only through a function in an expression.
       CREATE TABLE wb_fn_trig (id int PRIMARY KEY, v int) ENGINE=InnoDB;
       CREATE TRIGGER wb_fn_trig_set BEFORE INSERT ON wb_fn_trig FOR EACH ROW SET NEW.v = wb_fn_legacy();

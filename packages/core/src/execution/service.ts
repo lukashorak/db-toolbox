@@ -1027,7 +1027,9 @@ export class ExecutionService {
               functions: analysis.callsFunctions ?? [],
               relations: analysis.referencesTables ?? [],
             };
-            if (refs.functions.length || refs.relations.length) {
+            // A built-in that changes data (a PostgreSQL large object) needs no lookup.
+            if (analysis.builtinWrite) writesThroughFunctions = true;
+            else if (refs.functions.length || refs.relations.length) {
               const lookups = new AbortController();
               const found = await untilDone(
                 session.mayWriteThrough(refs, database, lookups.signal).catch(() => true),
@@ -1135,10 +1137,12 @@ export class ExecutionService {
                     : 'failed';
             if (!atomic && readOnly)
               await session.rollback().catch(() => session.markDirty('rollback failed'));
-            // For a single statement, errors raised before anything is written (syntax, a missing
-            // table or column, a missing privilege, read-only) leave nothing behind. Otherwise, per
-            // statement, a failed write rolls back only if every table it writes is known to roll back.
-            const nothingWritten = ['syntax', 'not_found', 'permission', 'read_only'].includes(category);
+            // A syntax or read-only error stops the statement before it runs. A missing object or
+            // privilege may be hit inside a trigger or stored function after earlier writes, so per
+            // statement, a failed write rolls back only if everything it can reach is known to roll
+            // back; a target table that does not exist wrote nothing.
+            const nothingWritten = ['syntax', 'read_only'].includes(category);
+            const missingIsHarmless = ['not_found', 'permission'].includes(category);
             const uncertain =
               lost ||
               mayCommit ||
@@ -1147,7 +1151,7 @@ export class ExecutionService {
                 writes &&
                 !readOnly &&
                 !nothingWritten &&
-                !(await this.#failedWriteRolledBack(adapter, String(st.sql), database)));
+                !(await this.#failedWriteRolledBack(adapter, String(st.sql), database, missingIsHarmless)));
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
               : uncertain && writes && !readOnly
@@ -1337,7 +1341,12 @@ export class ExecutionService {
    * undoes a failed statement; MyISAM and other non-transactional tables keep the rows written
    * before the error (a multi-row INSERT that hits a duplicate key half way).
    */
-  async #failedWriteRolledBack(adapter: DbAdapter, sql: string, database: string | null): Promise<boolean> {
+  async #failedWriteRolledBack(
+    adapter: DbAdapter,
+    sql: string,
+    database: string | null,
+    missingIsHarmless = false,
+  ): Promise<boolean> {
     const analysis = await analyzeStatement(sql, 'mysql');
     if (analysis.writeTargetsUnknown || analysis.mayCommit || analysis.irreversible) return false;
     const declared = analysis.declaredEngine?.toLowerCase();
@@ -1350,9 +1359,13 @@ export class ExecutionService {
         return false;
       }
       // No engine found: a temporary table (invisible to the metadata connection, possibly MyISAM)
-      // or one that is gone. Its rollback is not established.
-      if (!engine || engine === UNRESOLVED_VIEW || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase()))
+      // or one that is gone. Its rollback is not established, unless the error says an object was
+      // missing: a table that does not exist wrote nothing, and a temporary one has no triggers.
+      if (!engine) {
+        if (missingIsHarmless) continue;
         return false;
+      }
+      if (engine === UNRESOLVED_VIEW || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return false;
     }
     // A stored function, called directly or by a view, may have written a non-transactional table
     // before the statement failed.

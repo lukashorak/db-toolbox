@@ -344,6 +344,11 @@ describe('preflight', () => {
       { schema: null, name: 'k' },
     ]);
     assert.deepEqual(await calls('select extract(year from d) from t'), []);
+    // Built-ins that change data are known without a lookup; sequences are not counted.
+    const builtin = async (sql: string) => (await analyzeStatement(sql, 'postgresql')).builtinWrite;
+    assert.equal(await builtin('select pg_catalog.lo_create(0)'), 'lo_create() creates a large object');
+    assert.equal(await builtin("select lo_put(1, 0, 'x')"), 'lo_put() changes a large object');
+    assert.equal(await builtin("select nextval('s')"), undefined);
   });
 
   it('lists the tables and views a statement names, without WITH query names', async () => {

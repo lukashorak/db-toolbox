@@ -756,6 +756,18 @@ for (const { engine, variable, prepare } of engines) {
           ['failed', 'unknown', 'unknown'],
         );
         assert.equal(await count("name = 'proc-before-missing'"), 1);
+        // So does one raised in a trigger after it wrote to a MyISAM table, which keeps that row.
+        const trigger = await run('INSERT INTO wb_trig_fail VALUES (1)', { connectionId: writable });
+        assert.deepEqual(
+          [trigger.status, trigger.statements[0]?.transactionOutcome, trigger.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+        // A table that does not exist wrote nothing.
+        const absent = await run('INSERT INTO wb_no_such_table VALUES (1)', { connectionId: writable });
+        assert.deepEqual(
+          [absent.status, absent.statements[0]?.transactionOutcome],
+          ['failed', 'rolled_back'],
+        );
       });
 
       it('lets a procedure finish its writes when its rows reach the preview limit', async () => {
@@ -814,6 +826,15 @@ for (const { engine, variable, prepare } of engines) {
       );
       assert.equal(await logged(), before + 3 + 5000);
       if (engine === 'postgresql') {
+        // A built-in that changes data, qualified or not.
+        for (const sql of ['SELECT lo_create(0)', 'SELECT pg_catalog.lo_unlink(pg_catalog.lo_create(0))']) {
+          const lo = await run(sql);
+          assert.deepEqual(
+            [lo.statements[0]?.kind, lo.statements[0]?.transactionOutcome],
+            ['write', 'committed'],
+            sql,
+          );
+        }
         // However deep the views go.
         const deep = await run('SELECT * FROM wb_v_deep_18');
         assert.deepEqual(

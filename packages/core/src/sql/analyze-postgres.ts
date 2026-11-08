@@ -54,6 +54,22 @@ const UNSAFE_PREFIXES: [string, string][] = [
 ];
 
 const WRITE_NODES = new Set(['InsertStmt', 'UpdateStmt', 'DeleteStmt', 'MergeStmt']);
+/**
+ * Built-in functions that change data in the database: large objects, which live in
+ * pg_largeobject and roll back with the transaction. Sequences (nextval, setval) are left out:
+ * PostgreSQL never rolls them back, and they hold no table data.
+ */
+const WRITING_BUILT_INS: Record<string, string> = {
+  lo_create: 'creates a large object',
+  lo_creat: 'creates a large object',
+  lo_from_bytea: 'creates a large object',
+  lo_import: 'creates a large object',
+  lo_put: 'changes a large object',
+  lowrite: 'changes a large object',
+  lo_truncate: 'changes a large object',
+  lo_truncate64: 'changes a large object',
+  lo_unlink: 'deletes a large object',
+};
 /** Functions that write, rename or delete files on the database server. */
 const FILE_FUNCTIONS = new Set(['lo_export', 'pg_file_write', 'pg_file_rename', 'pg_file_unlink']);
 
@@ -168,6 +184,7 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       if (reason) unsafe(analysis, `${name}() ${reason}`);
       // set_config(…, false) keeps the setting for the rest of the session.
       if (name === 'set_config') analysis.changesSession = true;
+      if (WRITING_BUILT_INS[name]) analysis.builtinWrite ??= `${name}() ${WRITING_BUILT_INS[name]}`;
       // Files on the server outlive any rollback.
       if (FILE_FUNCTIONS.has(name)) analysis.irreversible = `${name}() changes files on the database server`;
       // Session-level advisory locks outlive the transaction: the connection must not be reused.
