@@ -183,6 +183,41 @@ describe(
       assert.equal(await page.locator('[role="tree"] [role="treeitem"][tabindex="0"]').count(), 1);
     });
 
+    it('a lost session: the sign-in dialog has the focus, and the app behind it cannot be reached', async () => {
+      await page.goto(`${env.base}/executions`);
+      await page.getByTestId('executions').waitFor();
+      // The Settings page's request is refused, as when the session is revoked (only that one, so
+      // the page's own polling cannot end the session before the click).
+      await page.route('**/api/v1/settings/storage', (route) =>
+        route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'unauthenticated', message: 'Sign in again.' }),
+        }),
+      );
+      try {
+        await page.getByRole('link', { name: 'Settings' }).click();
+        await page.getByRole('alertdialog', { name: 'Your session has ended' }).waitFor();
+        await page.locator('[role="alertdialog"] button:focus', { hasText: 'Sign in again' }).waitFor();
+        for (let i = 0; i < 4; i++) {
+          await page.keyboard.press('Tab');
+          const focused = await page.evaluate(() => {
+            const doc = (globalThis as unknown as { document: { activeElement: unknown; body: unknown } })
+              .document;
+            const active = doc.activeElement as { closest(s: string): unknown; outerHTML: string } | null;
+            return !active || active === doc.body || active.closest('[role="alertdialog"]')
+              ? null
+              : active.outerHTML.slice(0, 120);
+          });
+          assert.equal(focused, null, `Tab ${i + 1} left the dialog`);
+        }
+        const violations = await audit();
+        assert.equal(violations.length, 0, describeViolations(violations));
+      } finally {
+        await page.unroute('**/api/v1/settings/storage');
+      }
+    });
+
     it('fits a 390 px wide screen without scrolling sideways', async () => {
       await page.setViewportSize({ width: 390, height: 844 });
       const wide: string[] = [];

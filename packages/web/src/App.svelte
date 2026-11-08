@@ -76,7 +76,7 @@
 {:else if session.status === 'failed'}
   <Gate kind="failed" />
 {:else}
-  <Shell title={TITLES[section] ?? 'Workbench'}>
+  <Shell title={TITLES[section] ?? 'Workbench'} inert={session.status === 'lost'}>
     {#if section === '/workbench'}
       <Workbench />
     {:else if section === '/executions'}

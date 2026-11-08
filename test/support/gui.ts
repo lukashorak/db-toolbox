@@ -32,7 +32,7 @@ export type Locator = {
   getAttribute(name: string): Promise<string | null>;
   first(): Locator;
   nth(i: number): Locator;
-  locator(selector: string): Locator;
+  locator(selector: string, options?: { hasText?: string | RegExp }): Locator;
   getByRole(role: string, options?: object): Locator;
   getByText(text: string | RegExp, options?: object): Locator;
   getByLabel(text: string | RegExp, options?: object): Locator;
@@ -49,7 +49,11 @@ export type Page = Locator & {
   on(event: 'request', listener: (request: RequestInfo) => void): void;
   route(
     url: string,
-    handler: (route: { request(): RequestInfo; continue(): Promise<void> }) => unknown,
+    handler: (route: {
+      request(): RequestInfo;
+      continue(): Promise<void>;
+      fulfill(response: { status: number; contentType?: string; body?: string }): Promise<void>;
+    }) => unknown,
   ): Promise<void>;
   unroute(url: string): Promise<void>;
   waitForResponse(

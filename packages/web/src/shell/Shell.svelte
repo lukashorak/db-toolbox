@@ -7,7 +7,8 @@
   import { can, jobs, runningJobs, session } from '../lib/session.svelte';
   import JobsPopover from './JobsPopover.svelte';
 
-  let { title, children }: { title: string; children: Snippet } = $props();
+  /** `inert`: a modal is open over the app (a lost session); nothing here can be focused or used. */
+  let { title, children, inert = false }: { title: string; children: Snippet; inert?: boolean } = $props();
   const demo = import.meta.env.VITE_DEMO === '1';
 
   const nav = $derived(
@@ -30,49 +31,54 @@
   const isActive = (path: string) => route.path === path || route.path.startsWith(`${path}/`);
 </script>
 
-<a class="skip" href="#main">Skip to content</a>
-<div class="shell">
-  <nav class="sidebar" aria-label="Main">
-    <div class="brand">Database Workbench</div>
-    {#if demo}<div class="demo">Demo data</div>{/if}
-    <ul>
-      {#each nav as item (item.path)}
-        <li>
-          <a
-            href={item.path}
-            aria-current={isActive(item.path) ? 'page' : undefined}
-            onclick={(e) => {
-              e.preventDefault();
-              navigate(item.path);
-            }}
-          >
-            {item.label}
-            {#if item.badge}<span class="badge" aria-label="{item.badge} pending">{item.badge}</span>{/if}
-          </a>
-        </li>
-      {/each}
-    </ul>
-  </nav>
-  <div class="main">
-    <header class="header">
-      <h1>{title}</h1>
-      <div class="tools">
-        <JobsPopover />
-        <Menu
-          label={session.user?.displayName ?? 'Account'}
-          items={[
-            { label: 'Settings', onSelect: () => navigate('/settings') },
-            { label: 'Sign out', onSelect: () => void signOut() },
-          ]}
-        />
-      </div>
-    </header>
-    <main id="main" tabindex="-1">{@render children()}</main>
+<div class="frame" {inert}>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="shell">
+    <nav class="sidebar" aria-label="Main">
+      <div class="brand">Database Workbench</div>
+      {#if demo}<div class="demo">Demo data</div>{/if}
+      <ul>
+        {#each nav as item (item.path)}
+          <li>
+            <a
+              href={item.path}
+              aria-current={isActive(item.path) ? 'page' : undefined}
+              onclick={(e) => {
+                e.preventDefault();
+                navigate(item.path);
+              }}
+            >
+              {item.label}
+              {#if item.badge}<span class="badge" aria-label="{item.badge} pending">{item.badge}</span>{/if}
+            </a>
+          </li>
+        {/each}
+      </ul>
+    </nav>
+    <div class="main">
+      <header class="header">
+        <h1>{title}</h1>
+        <div class="tools">
+          <JobsPopover />
+          <Menu
+            label={session.user?.displayName ?? 'Account'}
+            items={[
+              { label: 'Settings', onSelect: () => navigate('/settings') },
+              { label: 'Sign out', onSelect: () => void signOut() },
+            ]}
+          />
+        </div>
+      </header>
+      <main id="main" tabindex="-1">{@render children()}</main>
+    </div>
   </div>
+  <Toasts />
 </div>
-<Toasts />
 
 <style>
+  .frame {
+    display: contents;
+  }
   .skip {
     position: absolute;
     left: -9999px;

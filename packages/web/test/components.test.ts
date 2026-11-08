@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { createRawSnippet, tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import DataGrid from '../src/components/DataGrid.svelte';
 import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
+import Gate from '../src/pages/Gate.svelte';
 import Monitoring from '../src/pages/Monitoring.svelte';
+import Shell from '../src/shell/Shell.svelte';
 import Explorer from '../src/pages/Explorer.svelte';
 import Executions from '../src/pages/Executions.svelte';
 import SavedQueries from '../src/pages/SavedQueries.svelte';
@@ -27,6 +29,18 @@ vi.mock('../src/lib/api', () => ({ api, ApiError: class extends Error {} }));
 
 afterEach(cleanup);
 
+// Browsers reflect the `inert` property to its attribute (Svelte sets the property); jsdom has neither.
+if (!('inert' in HTMLElement.prototype)) {
+  Object.defineProperty(HTMLElement.prototype, 'inert', {
+    get(this: HTMLElement) {
+      return this.hasAttribute('inert');
+    },
+    set(this: HTMLElement, value: unknown) {
+      this.toggleAttribute('inert', Boolean(value));
+    },
+  });
+}
+
 describe('status and policy', () => {
   it('shows status with a label and an icon, not color alone', () => {
     render(StatusPill, { kind: 'transaction', value: 'partial_commit' });
@@ -43,6 +57,26 @@ describe('status and policy', () => {
   it('falls back to the raw value for an unknown status', () => {
     render(StatusPill, { kind: 'execution', value: 'something_new' });
     expect(screen.getByText('something_new')).toBeTruthy();
+  });
+});
+
+describe('lost session', () => {
+  it('moves focus into the sign-in dialog', async () => {
+    render(Gate, { kind: 'lost' });
+    await tick();
+    const dialog = screen.getByRole('alertdialog', { name: 'Your session has ended' });
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sign in again' }));
+  });
+
+  it('makes the app behind the dialog inert, and only then', async () => {
+    const children = createRawSnippet(() => ({ render: () => '<button>Run</button>' }));
+    const { rerender } = render(Shell, { title: 'Workbench', children, inert: true });
+    for (const name of ['Skip to content', 'Run']) {
+      expect(screen.getByText(name).closest('[inert]'), name).not.toBeNull();
+    }
+    await rerender({ title: 'Workbench', children, inert: false });
+    expect(document.querySelector('[inert]')).toBeNull();
   });
 });
 
