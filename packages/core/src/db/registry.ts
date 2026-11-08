@@ -19,6 +19,8 @@ export interface RegistryOptions {
   applicationName?: string;
   /** How long a PostgreSQL metadata lookup may run (default 30 s); tests lower it. */
   metadataTimeoutMs?: number;
+  /** How long a monitoring query may run (default 30 s); tests lower it. */
+  monitorTimeoutMs?: number;
 }
 
 interface Entry {
@@ -42,7 +44,11 @@ export class AdapterRegistry {
     if (existing) void this.#retire(existing);
     const transport = new DirectTransport(target);
     const adapter = transport.open().then((endpoint) => {
-      const common = { sizes: this.options.sizes, connectTimeoutMs: this.options.connectTimeoutMs ?? 10_000 };
+      const common = {
+        sizes: this.options.sizes,
+        connectTimeoutMs: this.options.connectTimeoutMs ?? 10_000,
+        ...(this.options.monitorTimeoutMs ? { monitorTimeoutMs: this.options.monitorTimeoutMs } : {}),
+      };
       return target.engine === 'postgresql'
         ? new PostgresAdapter(target, endpoint, {
             ...common,

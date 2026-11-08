@@ -23,6 +23,8 @@ import type {
 } from './types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
+/** Monitoring queries give up after this long. */
+const MONITOR_TIMEOUT_MS = 30_000;
 /** The character set and collation sessions use: negotiated at connect, set again after a reset. */
 const CONNECTION_COLLATION = 'UTF8MB4_GENERAL_CI';
 
@@ -173,6 +175,8 @@ const toCell = (value: unknown, binary: boolean, encoding = 'utf8'): Cell => {
 export interface MysqlOptions {
   sizes: PoolSizes;
   connectTimeoutMs: number;
+  /** How long a monitoring query may wait for its answer (default 30 s). */
+  monitorTimeoutMs?: number;
 }
 
 export function mysqlConnectionOptions(
@@ -206,6 +210,7 @@ export class MysqlAdapter implements DbAdapter {
   readonly #monitor: Pool;
   readonly monitorAccount: string;
   readonly #refusal: DbError | null;
+  readonly #monitorTimeout: number;
   #active = 0;
 
   constructor(target: ConnectionTarget, endpoint: Endpoint, options: MysqlOptions) {
@@ -228,6 +233,7 @@ export class MysqlAdapter implements DbAdapter {
     this.#meta = pool(options.sizes.metadata);
     this.#control = pool(options.sizes.control);
     this.#monitor = pool(options.sizes.monitor ?? 1, target.monitor);
+    this.#monitorTimeout = options.monitorTimeoutMs ?? MONITOR_TIMEOUT_MS;
     this.monitorAccount = target.monitor?.username ?? target.username;
     this.metadata = new MysqlMetadata((sql, params) => this.#metaQuery(sql, params), target.database);
   }
@@ -635,8 +641,12 @@ export class MysqlAdapter implements DbAdapter {
     return this.#active;
   }
 
+  /**
+   * Monitoring queries give up after 30 s, like metadata lookups: a monitoring connection that stops
+   * answering would otherwise hold every later refresh, and shutdown. It is then destroyed.
+   */
   monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return this.#pooledQuery(this.#monitor, sql, params);
+    return this.#pooledQuery(this.#monitor, sql, params, this.#monitorTimeout);
   }
 
   async close(): Promise<void> {

@@ -12,7 +12,7 @@ Each stored connection gets one adapter, opened on first use and replaced when t
 | metadata | 1                                                     | Object browser, connection details                           |
 | control  | 1                                                     | Cancellation (`pg_cancel_backend`, `KILL QUERY`), monitoring |
 
-Cancellation works even when every work slot is busy. Idle connections close after 30 seconds. A metadata lookup ends on the server after 30 seconds; if its connection stops answering, the client also gives up 5 seconds later and the connection leaves the pool, so a stalled one cannot hold the object browser or preflight.
+Cancellation works even when every work slot is busy. Idle connections close after 30 seconds. A metadata lookup ends on the server after 30 seconds; if its connection stops answering, the client also gives up 5 seconds later and the connection leaves the pool, so a stalled one cannot hold the object browser or preflight. Monitoring queries are bounded the same way (30 seconds; PostgreSQL ends them on the server and gives up on the client 5 seconds later, MySQL gives up on the client), and a stalled monitoring connection is closed, so it cannot hold later refreshes or shutdown.
 
 A session goes back to the pool only when its state is known to be clean. It is closed instead when any of these happened:
 

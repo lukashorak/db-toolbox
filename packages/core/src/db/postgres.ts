@@ -23,6 +23,8 @@ import type {
 
 /** Metadata lookups end on the server after this long. */
 const METADATA_TIMEOUT_MS = 30_000;
+/** Monitoring queries end on the server after this long. */
+const MONITOR_TIMEOUT_MS = 30_000;
 
 /**
  * bytea in PostgreSQL's hex form (`\x…`), the form results and exports promise, also when
@@ -110,6 +112,8 @@ export interface PostgresOptions {
   applicationName: string;
   /** How long a metadata lookup may run on the server (default 30 s). */
   metadataTimeoutMs?: number;
+  /** How long a monitoring query may run on the server (default 30 s). */
+  monitorTimeoutMs?: number;
 }
 
 export function postgresClientConfig(
@@ -177,7 +181,13 @@ export class PostgresAdapter implements DbAdapter {
     // A cancel that is not answered fails and its client is removed from the pool (a query error
     // releases it as broken); waiting for a client is bounded by the connection timeout.
     this.#control = pool(options.sizes.control, 'control', null, { query_timeout: CONTROL_TIMEOUT_MS });
-    this.#monitor = pool(options.sizes.monitor ?? 1, 'monitor', target.monitor);
+    // Monitoring queries get the same two bounds: a monitoring connection that stops answering
+    // would otherwise hold every later refresh, and shutdown, on the only monitoring connection.
+    const monitorTimeout = options.monitorTimeoutMs ?? MONITOR_TIMEOUT_MS;
+    this.#monitor = pool(options.sizes.monitor ?? 1, 'monitor', target.monitor, {
+      statement_timeout: monitorTimeout,
+      query_timeout: monitorTimeout + STALL_GRACE_MS,
+    });
     this.monitorAccount = target.monitor?.username ?? target.username;
     this.metadata = new PostgresMetadata((sql, params) => this.#metaQuery(sql, params), target.schema);
   }

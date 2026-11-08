@@ -488,6 +488,48 @@ for (const { engine, variable, prepare } of engines) {
       },
     );
 
+    it(
+      'gives up on a monitoring query whose connection stops answering, and the next one gets a fresh connection',
+      { timeout: 40_000 },
+      async () => {
+        const real = target();
+        const proxy = await freezableProxy(real.host, real.port);
+        // A short limit keeps the test fast; PostgreSQL's client gives up the grace period later.
+        const proxied = new AdapterRegistry({
+          sizes: { work: 1, metadata: 1, control: 1 },
+          connectTimeoutMs: 5000,
+          monitorTimeoutMs: 1000,
+        });
+        try {
+          const via = await proxied.get({
+            ...target({ id: 'cn_monitor_stall', host: '127.0.0.1', port: proxy.port, tlsMode: 'verify-ca' }),
+            updatedAt: 'v1',
+          });
+          assert.equal((await via.monitorQuery('SELECT 1 AS ok')).length, 1);
+          assert.equal(proxy.connections(), 1, 'only the monitoring connection is open');
+          proxy.freeze();
+          let started = Date.now();
+          // Without a bound the query would wait forever: give it 15 s, then count it as hung.
+          await assert.rejects(
+            Promise.race([
+              via.monitorQuery('SELECT 1 AS ok'),
+              new Promise((resolve) => setTimeout(resolve, 15_000, 'still waiting')),
+            ]),
+          );
+          const waited = Date.now() - started;
+          const [least, most] = engine === 'postgresql' ? [5000, 10_000] : [1000, 5000];
+          assert.ok(waited >= least && waited < most, `gave up after ${waited} ms`);
+          // The stalled connection left the pool: the next query opens a new one and is answered.
+          started = Date.now();
+          assert.equal((await via.monitorQuery('SELECT 1 AS ok')).length, 1);
+          assert.ok(Date.now() - started < 3000, 'answered at once');
+        } finally {
+          proxy.close();
+          await proxied.closeAll();
+        }
+      },
+    );
+
     it('stops waiting for result type names when cancelled', { skip: engine !== 'postgresql' }, async () => {
       // The metadata connection never answers; a cancel of the work backend does not reach it.
       const pg = adapter as unknown as { typeNames: (oids: number[]) => Promise<Map<number, string>> };
