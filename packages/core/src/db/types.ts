@@ -83,6 +83,11 @@ export interface ExecuteOptions {
  * the connection has a grace period to answer, then it is closed and the wait fails as a lost
  * connection (whether the command took effect is unknown).
  */
+export interface ViewEffects {
+  irreversible: string | null;
+  notReadOnly: string | null;
+}
+
 export interface WaitBounds {
   signal?: AbortSignal;
   deadline?: number;
@@ -137,11 +142,13 @@ export interface DbAdapter {
    */
   viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
   /**
-   * PostgreSQL: what reading this relation does that a rollback cannot undo (dblink, files on the
-   * server), through every view beneath it; null for a base table or a view that does none. MySQL:
-   * always null (its views are checked through viewEngine).
+   * PostgreSQL: what reading this relation does, through every view beneath it: `irreversible`,
+   * what a rollback cannot undo (dblink, files on the server); `notReadOnly`, what a read-only
+   * transaction does not stop or the read-only policy refuses (the same verdict as calling it
+   * directly). Both null for a base table or a view that does neither. MySQL: always null (its
+   * views are checked through viewEngine).
    */
-  viewEffects(table: TableRef, signal?: AbortSignal): Promise<string | null>;
+  viewEffects(table: TableRef, signal?: AbortSignal): Promise<ViewEffects>;
   /** Sessions currently checked out. */
   activeSessions(): number;
   /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */

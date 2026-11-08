@@ -359,6 +359,23 @@ for (const { engine, variable, prepare } of engines) {
         ).id,
       );
       assert.deepEqual([read.status, read.readOnly, read.transactionOutcome], ['succeeded', true, 'none']);
+      if (engine === 'postgresql') {
+        // A view runs what its definition calls: read-only refuses it as it refuses the direct call
+        // (here a file write; dblink would write over its own connection, outside the read-only
+        // transaction).
+        for (const transactionMode of ['per_statement', 'atomic'] as const) {
+          const throughView = await core.executions.submit(writer, {
+            connectionId: readOnly,
+            sql: 'SELECT * FROM wb_v_export_nested',
+            transactionMode,
+          });
+          assert.equal(throughView.status, 'preflight_rejected', transactionMode);
+          assert.match(
+            String(throughView.error?.message),
+            /reads the view wb_v_export_nested, which is not allowed under a read-only policy/,
+          );
+        }
+      }
     });
 
     it('returns the existing execution for a repeated request key and refuses a changed payload', async () => {

@@ -18,6 +18,7 @@ import type {
   ResultSink,
   StatementOutcome,
   WaitBounds,
+  ViewEffects,
 } from './types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
@@ -493,8 +494,8 @@ export class MysqlAdapter implements DbAdapter {
     return engine;
   }
 
-  async viewEffects(): Promise<string | null> {
-    return null;
+  async viewEffects(): Promise<ViewEffects> {
+    return { irreversible: null, notReadOnly: null };
   }
 
   async viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {

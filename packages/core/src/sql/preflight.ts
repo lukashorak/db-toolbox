@@ -1,3 +1,4 @@
+import type { ViewEffects } from '../db/types.js';
 import type { Engine } from '../domain/types.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type AnalyzedStatement, type TableRef } from './types.js';
 
@@ -45,8 +46,11 @@ export interface PreflightOptions {
   functionEngine?: (fn: TableRef) => Promise<string | null>;
   /** MySQL atomic mode: what reading a named relation writes (see DbAdapter.viewEngine). */
   viewEngine?: (table: TableRef) => Promise<string | null>;
-  /** PostgreSQL atomic mode: what reading a named relation does that a rollback cannot undo. */
-  viewEffects?: (table: TableRef) => Promise<string | null>;
+  /**
+   * PostgreSQL, writable atomic mode and any read-only run: what reading a named relation does that
+   * a rollback cannot undo, or that the read-only policy refuses (see DbAdapter.viewEffects).
+   */
+  viewEffects?: (table: TableRef) => Promise<ViewEffects>;
 }
 
 const label = (s: AnalyzedStatement) => `Statement ${s.index + 1} (line ${s.range.startLine})`;
@@ -144,22 +148,32 @@ export async function preflight(
     }
   }
 
-  // A view can call what no rollback undoes (dblink, files on the server): reading it is as
-  // irreversible as calling it directly.
-  if (options.transactionMode === 'atomic' && !options.readOnly && options.viewEffects) {
-    const seen = new Map<string, string | null>();
+  // A view runs what its definition calls: reading it is as irreversible (dblink, files on the
+  // server), and under a read-only policy as unsafe (dblink writes over its own connection, which
+  // the read-only transaction does not cover), as calling that directly.
+  const atomicWrites = options.transactionMode === 'atomic' && !options.readOnly;
+  if ((atomicWrites || options.readOnly) && options.viewEffects) {
+    const seen = new Map<string, ViewEffects>();
     for (const s of statements) {
       for (const table of s.analysis.referencesTables ?? []) {
         const key = `${table.schema ?? ''}.${table.name}`;
         if (!seen.has(key)) seen.set(key, await options.viewEffects(table));
-        const effect = seen.get(key);
-        if (!effect) continue;
-        problems.push({
-          code: 'irreversible_effect',
-          statement: s.index,
-          message: `${label(s)} reads the view ${table.schema ? `${table.schema}.` : ''}${table.name}. Through it, ${effect}: the script cannot be promised to run as one transaction.`,
-          hint: 'Use per-statement mode, or run this statement separately.',
-        });
+        const effects = seen.get(key);
+        const view = `${table.schema ? `${table.schema}.` : ''}${table.name}`;
+        if (options.readOnly && effects?.notReadOnly) {
+          problems.push({
+            code: 'read_only_violation',
+            statement: s.index,
+            message: `${label(s)} reads the view ${view}, which is not allowed under a read-only policy${sources}: through it, ${effects.notReadOnly}.`,
+          });
+        } else if (atomicWrites && effects?.irreversible) {
+          problems.push({
+            code: 'irreversible_effect',
+            statement: s.index,
+            message: `${label(s)} reads the view ${view}. Through it, ${effects.irreversible}: the script cannot be promised to run as one transaction.`,
+            hint: 'Use per-statement mode, or run this statement separately.',
+          });
+        }
       }
     }
   }

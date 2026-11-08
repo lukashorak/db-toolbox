@@ -310,10 +310,16 @@ export class ExecutionService {
 
     const statements = await analyzeScript(v.sql, connection.engine);
     let problems: PreflightProblem[];
+    // MySQL single-transaction runs check storage engines; PostgreSQL checks what the views a script
+    // reads do, for single-transaction writes and for every read-only run.
     const adapter =
-      v.transactionMode === 'atomic' && (connection.engine === 'mysql' || !policy.readOnly)
-        ? await this.#adapter(connection.id)
-        : null;
+      connection.engine === 'mysql'
+        ? v.transactionMode === 'atomic'
+          ? await this.#adapter(connection.id)
+          : null
+        : (v.transactionMode === 'atomic' && !policy.readOnly) || policy.readOnly
+          ? await this.#adapter(connection.id)
+          : null;
     problems = await preflight(statements, {
       engine: connection.engine,
       transactionMode: v.transactionMode,
@@ -346,7 +352,7 @@ export class ExecutionService {
               try {
                 return await adapter.viewEffects(table);
               } catch {
-                return VIEW_UNCHECKED;
+                return { irreversible: VIEW_UNCHECKED, notReadOnly: VIEW_UNCHECKED };
               }
             },
           }
@@ -1001,12 +1007,18 @@ export class ExecutionService {
     // The storage engines were checked at submission against the connection as it was then. The
     // connection may point elsewhere now (another database or host), and tables may have changed:
     // check again against the adapter that will run the script.
-    if (atomic && !readOnly) {
+    if ((atomic && !readOnly) || (readOnly && row.engine === 'postgresql')) {
       // Bounded like the run itself: a cancel or the time limit ends it even if a lookup stalls, and
       // then stops the lookups too, so none is left waiting for the metadata connection.
       const lookups = new AbortController();
       const problems = await untilDone(
-        this.#engineProblems(adapter, row.engine as Engine, String(row.sql), lookups.signal),
+        this.#engineProblems(
+          adapter,
+          row.engine as Engine,
+          String(row.sql),
+          { transactionMode: atomic ? 'atomic' : 'per_statement', readOnly },
+          lookups.signal,
+        ),
         signal,
         deadline,
       );
@@ -1018,7 +1030,7 @@ export class ExecutionService {
       if (problems === 'timeout') {
         this.#finalize(id, 'timed_out', 'not_started', {
           code: 'timeout',
-          message: 'The time limit was reached while the storage engines were being checked. Nothing ran.',
+          message: 'The time limit was reached while the tables and views were being checked. Nothing ran.',
         });
         return;
       }
@@ -1378,12 +1390,17 @@ export class ExecutionService {
    * stays queued and is authorized again when it starts.
    */
   /** MySQL single transaction: storage-engine problems of the script, checked through `adapter`. */
-  async #engineProblems(adapter: DbAdapter, engine: Engine, sql: string, signal: AbortSignal) {
+  async #engineProblems(
+    adapter: DbAdapter,
+    engine: Engine,
+    sql: string,
+    mode: { transactionMode: 'atomic' | 'per_statement'; readOnly: boolean },
+    signal: AbortSignal,
+  ) {
     const statements = await analyzeScript(sql, engine);
     const problems = await preflight(statements, {
       engine,
-      transactionMode: 'atomic',
-      readOnly: false,
+      ...mode,
       tableEngine: async (table) => {
         signal.throwIfAborted();
         try {
@@ -1413,7 +1430,7 @@ export class ExecutionService {
         try {
           return await adapter.viewEffects(table, signal);
         } catch {
-          return VIEW_UNCHECKED;
+          return { irreversible: VIEW_UNCHECKED, notReadOnly: VIEW_UNCHECKED };
         }
       },
     });
@@ -1422,7 +1439,8 @@ export class ExecutionService {
       (p) =>
         p.code === 'non_transactional_engine' ||
         p.code === 'unchecked_write_target' ||
-        (p.code === 'irreversible_effect' && p.message.includes(' reads the view ')),
+        (['irreversible_effect', 'read_only_violation'].includes(p.code) &&
+          p.message.includes(' reads the view ')),
     );
   }
 

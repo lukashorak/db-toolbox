@@ -473,13 +473,16 @@ describe('preflight', () => {
     assert.deepEqual(await run('set session sql_mode = ""', 'mysql', { transactionMode: 'atomic' }), []);
   });
 
-  it('refuses reading a view with irreversible effects in single-transaction mode', async () => {
+  it('refuses reading a view whose definition does what a direct call may not', async () => {
     const looked: string[] = [];
     const viewEffects = async (t: { schema: string | null; name: string }) => {
       looked.push(`${t.schema ?? ''}.${t.name}`);
       return t.name === 'remote_audit'
-        ? 'dblink_exec() runs SQL over another connection, which commits on its own'
-        : null;
+        ? {
+            irreversible: 'dblink_exec() runs SQL over another connection, which commits on its own',
+            notReadOnly: 'dblink_exec() runs SQL over another connection that is not read-only',
+          }
+        : { irreversible: null, notReadOnly: null };
     };
     const problems = await run(
       'insert into a values (1); select * from app.remote_audit; select * from plain',
@@ -496,8 +499,25 @@ describe('preflight', () => {
     );
     // The relations it reads (an INSERT's target is written, not read through its definition).
     assert.deepEqual(looked.sort(), ['.plain', 'app.remote_audit']);
-    // Per statement, and under a read-only policy (the transaction stops local writes; dblink is
-    // refused there on its own), the view is not looked up.
+    // Under a read-only policy, in either mode: dblink writes over its own connection, which the
+    // read-only transaction does not cover.
+    for (const transactionMode of ['per_statement', 'atomic'] as const) {
+      const readOnly = await run('select * from app.remote_audit', 'postgresql', {
+        transactionMode,
+        readOnly: true,
+        viewEffects,
+      });
+      assert.deepEqual(
+        readOnly.map((p) => [p.code, p.statement]),
+        [['read_only_violation', 0]],
+        transactionMode,
+      );
+      assert.match(
+        String(readOnly[0]?.message),
+        /reads the view app\.remote_audit, which is not allowed under a read-only policy/,
+      );
+    }
+    // Writable, per statement: each statement's outcome is reported as it is.
     assert.deepEqual(await run('select * from app.remote_audit', 'postgresql', { viewEffects }), []);
   });
 

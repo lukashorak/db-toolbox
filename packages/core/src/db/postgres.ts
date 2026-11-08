@@ -17,6 +17,7 @@ import type {
   PoolSizes,
   ResultSink,
   StatementOutcome,
+  ViewEffects,
   WaitBounds,
 } from './types.js';
 
@@ -236,11 +237,12 @@ export class PostgresAdapter implements DbAdapter {
   }
 
   /**
-   * The irreversible effect of reading a view (dblink, files on the server), through every view
-   * beneath it, from the definitions' analysis. An unqualified name counts in every schema: a script
-   * can change the search path before it reads the view.
+   * What reading a view does, through every view beneath it, from the definitions' analysis: the
+   * irreversible effect (dblink, files on the server), and what the read-only policy refuses (the
+   * same as calling it directly: dblink, file and large-object functions, sequences). An
+   * unqualified name counts in every schema: a script can change the search path first.
    */
-  async viewEffects(table: TableRef): Promise<string | null> {
+  async viewEffects(table: TableRef): Promise<ViewEffects> {
     const rows = await this.#metaQuery(
       `WITH RECURSIVE views (oid) AS (
          SELECT c.oid FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace s ON s.oid = c.relnamespace
@@ -255,13 +257,15 @@ export class PostgresAdapter implements DbAdapter {
        SELECT pg_catalog.pg_get_viewdef(views.oid) AS definition FROM views`,
       [table.name, table.schema],
     );
+    const effects: ViewEffects = { irreversible: null, notReadOnly: null };
     for (const row of rows) {
       // Only a view dropped meanwhile has no definition; the run checks again when it starts.
       if (row.definition == null) continue;
-      const effect = (await analyzeStatement(String(row.definition), 'postgresql')).irreversible;
-      if (effect) return effect;
+      const a = await analyzeStatement(String(row.definition), 'postgresql');
+      effects.irreversible ??= a.irreversible ?? null;
+      if (!a.readOnlySafe) effects.notReadOnly ??= a.reasons.join('; ') || 'it cannot be checked';
     }
-    return null;
+    return effects;
   }
 
   async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
