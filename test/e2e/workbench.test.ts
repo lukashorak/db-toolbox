@@ -239,16 +239,25 @@ describe(
     });
 
     it('runs the full result on the connection of the result shown, not the one selected since', async () => {
+      // A run that finished after `before`: the panel shows another execution, succeeded.
+      const nextRun = async (before: string | null) => {
+        await page
+          .locator(`[data-testid="results"][data-status="succeeded"]:not([data-execution-id="${before}"])`)
+          .waitFor({ timeout: 20_000 });
+        return results().getAttribute('data-execution-id');
+      };
+      const shown = async () =>
+        (await results().count()) ? await results().getAttribute('data-execution-id') : null;
       await page.getByLabel('Connection').selectOption({ label: 'Fixture' });
       await setSql('SELECT n FROM wb_numbers ORDER BY n');
+      const earlier = await shown();
       await page.getByTestId('run-target').click();
-      await finished();
-      const preview = await results().getAttribute('data-execution-id');
+      const preview = await nextRun(earlier);
+      assert.match(String(await results().locator('.meta').textContent()), /^Fixture · Statement 1/);
       await page.getByLabel('Connection').selectOption({ label: 'Zeta copy' });
       await results().getByRole('button', { name: 'Run full result' }).click();
       await page.getByRole('dialog').getByRole('button', { name: 'Run full result' }).click();
-      await page.locator(`[data-testid="results"]:not([data-execution-id="${preview}"])`).waitFor();
-      await finished();
+      await nextRun(preview);
       assert.match(String(await results().locator('.meta').textContent()), /^Fixture · Full result/);
       await page.getByLabel('Connection').selectOption({ label: 'Fixture' });
     });
