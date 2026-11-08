@@ -23,8 +23,41 @@ import type {
 /** Metadata lookups end on the server after this long. */
 const METADATA_TIMEOUT_MS = 30_000;
 
-/** Keep every value in PostgreSQL's text form: lossless for numeric, int8, dates, arrays and JSON. */
-const TEXT_TYPES = { getTypeParser: () => (value: string) => value };
+/**
+ * bytea in PostgreSQL's hex form (`\x…`), the form results and exports promise, also when
+ * `bytea_output` is `escape` (set on the server, or by an earlier statement): there, bytes outside
+ * printable ASCII are `\ooo` (octal) and a backslash is doubled.
+ */
+export function byteaHex(text: string): string {
+  if (text.startsWith('\\x')) return text;
+  const bytes: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') {
+      if (text[i + 1] === '\\') {
+        bytes.push(0x5c);
+        i++;
+        continue;
+      }
+      const octal = text.slice(i + 1, i + 4);
+      if (/^[0-3][0-7]{2}$/.test(octal)) {
+        bytes.push(parseInt(octal, 8));
+        i += 3;
+        continue;
+      }
+    }
+    bytes.push(text.charCodeAt(i) & 0xff);
+  }
+  return `\\x${Buffer.from(bytes).toString('hex')}`;
+}
+
+const BYTEA = 17;
+const identity = (value: string) => value;
+
+/**
+ * Keep every value in PostgreSQL's text form: lossless for numeric, int8, dates, arrays and JSON.
+ * bytea is always the hex form.
+ */
+const TEXT_TYPES = { getTypeParser: (oid: number) => (oid === BYTEA ? byteaHex : identity) };
 
 const BUILTIN_TYPES = new Map<number, string>([
   [16, 'bool'],
@@ -511,7 +544,7 @@ class PostgresSession implements DbSession {
           const columns: ColumnInfo[] = result.fields.map((f) => ({
             name: f.name,
             type: names.get(f.dataTypeID) ?? String(f.dataTypeID),
-            binary: f.dataTypeID === 17,
+            binary: f.dataTypeID === BYTEA,
           }));
           outcome.resultSets = 1;
           await sink.start(columns, 0);

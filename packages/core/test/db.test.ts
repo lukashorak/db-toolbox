@@ -4,6 +4,7 @@ import { afterInterruption, DbError, mapMysqlError, mapPostgresError } from '../
 import { settlesWithin, StallGuard } from '../src/db/stall.js';
 import { describeTls, mysqlTls, mysqlVerifyFullProblem, postgresTls } from '../src/db/tls.js';
 import { triggerVisible } from '../src/db/mysql.js';
+import { byteaHex } from '../src/db/postgres.js';
 import { AppError } from '../src/domain/errors.js';
 import { actor, admin, pgInput, testCore } from './helpers.js';
 
@@ -307,5 +308,14 @@ describe('connections that stop answering', () => {
   it('tells whether a promise settles in time', async () => {
     assert.equal(await settlesWithin(Promise.reject(new Error('x')), 50), true);
     assert.equal(await settlesWithin(new Promise(() => undefined), 20), false);
+  });
+});
+
+describe('PostgreSQL bytea', () => {
+  it('is always the hex form, also when bytea_output is escape', () => {
+    assert.equal(byteaHex('\\xff00'), '\\xff00');
+    // escape form: octal for bytes outside printable ASCII, a doubled backslash, printable as is
+    assert.equal(byteaHex('\\377\\000\\\\A'), '\\xff005c41');
+    assert.equal(byteaHex(''), '\\x');
   });
 });

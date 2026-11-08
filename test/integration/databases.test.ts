@@ -14,6 +14,7 @@ import {
   analyzeScript,
   analyzeStatement,
   DbError,
+  hexToBase64,
   preflight,
   type Cell,
   type ColumnInfo,
@@ -709,6 +710,25 @@ for (const { engine, variable, prepare } of engines) {
     });
 
     describe('execution', () => {
+      it(
+        'captures bytea in the hex form whatever bytea_output says',
+        { skip: engine !== 'postgresql' },
+        async () => {
+          const rows = await adapter.withSession(async (s) => {
+            await s.execute('SET bytea_output = escape', collect().sink, { timeoutMs: 5000 });
+            const { sets, sink } = collect();
+            await s.execute("SELECT decode('ff005c41', 'hex'), ''::bytea", sink, { timeoutMs: 5000 });
+            return sets[0]?.rows;
+          });
+          assert.deepEqual(rows, [['\\xff005c41', '\\x']]);
+          // The JSON export reads it as hex.
+          assert.equal(
+            hexToBase64(String(rows?.[0]?.[0])),
+            Buffer.from('ff005c41', 'hex').toString('base64'),
+          );
+        },
+      );
+
       it('returns values as lossless text, binary as hex, and NULL as null', async () => {
         const sql =
           engine === 'postgresql'
