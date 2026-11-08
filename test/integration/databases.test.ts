@@ -813,6 +813,26 @@ for (const { engine, variable, prepare } of engines) {
       );
 
       it(
+        'refuses COPY to or from the client with an error, instead of stopping the process',
+        { skip: engine !== 'postgresql' },
+        async () => {
+          // Preflight refuses both; the adapter must survive one that reaches it anyway.
+          for (const [sql, message] of [
+            ['COPY wb_items (name) FROM STDIN', /COPY FROM STDIN is not supported/],
+            ['COPY (SELECT 1) TO STDOUT', /COPY TO STDOUT is not supported/],
+          ] as const) {
+            const error = await run(sql).then(
+              () => null,
+              (e: unknown) => e as { category?: string; message?: string },
+            );
+            assert.equal(error?.category, 'other', sql);
+            assert.match(String(error?.message), message);
+          }
+          assert.deepEqual((await run('SELECT 1')).sets[0]?.rows, [['1']]);
+        },
+      );
+
+      it(
         'captures bytea in the hex form whatever bytea_output says',
         { skip: engine !== 'postgresql' },
         async () => {

@@ -371,6 +371,10 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
     case 'CopyStmt': {
       if (body.is_from) {
         const a = unsafe(kindOf('write'), 'COPY FROM loads data');
+        // COPY FROM STDIN waits for data the client sends, which the workbench does not do.
+        if (!body.filename && !body.is_program)
+          a.unsupported =
+            'COPY FROM STDIN is not supported here. Use INSERT, or COPY FROM a file on the server.';
         // The program runs on the database server whichever way the data goes: a rollback undoes
         // the rows it loaded, not what the program did.
         if (body.is_program) a.irreversible = 'runs a program on the database server';

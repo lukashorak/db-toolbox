@@ -582,6 +582,14 @@ describe('preflight', () => {
 
   it('rejects unsupported and incomplete statements and empty scripts', async () => {
     assert.equal((await run('copy t to stdout', 'postgresql'))[0]?.code, 'unsupported_statement');
+    // COPY FROM STDIN waits for data the workbench never sends, in either transaction mode.
+    for (const transactionMode of ['per_statement', 'atomic'] as const) {
+      for (const sql of ['copy t from stdin', 'copy t (a, b) from stdin with (format csv)']) {
+        const problems = await run(sql, 'postgresql', { transactionMode });
+        assert.equal(problems[0]?.code, 'unsupported_statement', `${sql} (${transactionMode})`);
+        assert.match(String(problems[0]?.message), /COPY FROM STDIN is not supported/);
+      }
+    }
     assert.equal((await run("select 'open", 'mysql'))[0]?.code, 'incomplete_statement');
     assert.equal((await run(' -- nothing', 'mysql'))[0]?.code, 'empty_script');
   });

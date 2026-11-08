@@ -525,6 +525,8 @@ class PostgresSession implements DbSession {
     connection.on('parameterStatus', onParameter);
     /** Not the database's error: the statement finished (and may have committed) before it. */
     let encodingChanged: SessionUnusableError | null = null;
+    /** A COPY that exchanges data with the client, which the workbench does not do. */
+    let copy: string | null = null;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       await guard.wait(
@@ -534,9 +536,20 @@ class PostgresSession implements DbSession {
             : `SET statement_timeout = ${timeout}`,
         ),
       );
-      const cursor = (opened = this.client.query(
-        new Cursor<Cell[]>(sql, undefined, { rowMode: 'array', types: TEXT_TYPES }),
-      ));
+      const created = new Cursor<Cell[]>(sql, undefined, { rowMode: 'array', types: TEXT_TYPES });
+      // pg-cursor has no COPY support, and pg calls these on the active query: without them a COPY
+      // would throw inside the socket's event handler and stop the whole process. Preflight refuses
+      // COPY FROM STDIN and TO STDOUT; one that gets here anyway fails instead.
+      Object.assign(created, {
+        handleCopyInResponse: (connection: { sendCopyFail(message: string): void }) => {
+          copy = 'COPY FROM STDIN is not supported here. Use INSERT, or COPY FROM a file on the server.';
+          connection.sendCopyFail(copy);
+        },
+        handleCopyData: () => {
+          copy = 'COPY TO STDOUT is not supported here. Use SELECT and export the result.';
+        },
+      });
+      const cursor = (opened = this.client.query(created));
       for (;;) {
         // Between batches the server has no running query, so pg_cancel_backend (and
         // statement_timeout, which counts per fetch) cannot stop a long read: stop reading here.
@@ -618,6 +631,7 @@ class PostgresSession implements DbSession {
         }
         if (rows.length < batchSize) break;
       }
+      if (copy) throw new DbError('other', copy);
       // The server reports a change before it says it is ready, which the last read waits for.
       if (encoding) {
         throw (encodingChanged = new SessionUnusableError(
@@ -627,6 +641,11 @@ class PostgresSession implements DbSession {
       return outcome;
     } catch (error) {
       if (encodingChanged && error === encodingChanged) throw error;
+      // The server ends a refused COPY FROM STDIN as cancelled (57014): say why instead.
+      if (copy && !guard.abandoned) {
+        if (opened) await this.#closeCursor(opened);
+        throw new DbError('other', copy);
+      }
       // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
       // and every later query on this connection would wait behind it.
       if (opened) await this.#closeCursor(opened);
