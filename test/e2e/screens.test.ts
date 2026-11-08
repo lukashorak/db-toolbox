@@ -118,7 +118,7 @@ describe(
 
       await page.getByRole('button', { name: 'Open SELECT' }).click();
       await page.waitForURL(/\/workbench$/);
-      assert.match(String(await page.getByTestId('sql-editor').textContent()), /FROM public\.wb_items/);
+      assert.match(String(await page.getByTestId('sql-editor').textContent()), /FROM "public"\."wb_items"/);
 
       await page.getByRole('link', { name: 'Explorer' }).click();
       await page.getByLabel('Connection').selectOption({ label: 'Reader' });

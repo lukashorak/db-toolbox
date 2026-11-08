@@ -193,6 +193,7 @@ docker compose start workbench
 
 - refuses while a server uses the database. It sees the server's heartbeat, which a clean stop removes; after a crash, wait 45 seconds;
 - refuses a backup that fails `verify`: a damaged file, a schema newer than this release, or a key that does not open its credentials;
+- prepares the replacement beside the live file first, and swaps only when it opens cleanly. If anything fails, the live database stays as it was;
 - keeps the replaced database as `workbench.sqlite.before-restore-<time>`;
 - applies the migrations an older backup needs.
 

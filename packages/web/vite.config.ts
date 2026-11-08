@@ -8,7 +8,14 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5173,
-    proxy: { '/api': api, '/mcp': api, '/healthz': api, '/readyz': api },
+    // Keys starting with ^ are regular expressions: '/mcp' alone would also catch the GUI's /mcp-access.
+    proxy: {
+      '/api': api,
+      '^/mcp(\\?.*)?$': api,
+      '/.well-known': api,
+      '/healthz': api,
+      '/readyz': api,
+    },
   },
   build: { outDir: 'dist', emptyOutDir: true, sourcemap: true },
 });

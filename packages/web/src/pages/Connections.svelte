@@ -63,6 +63,8 @@
         report.ok ? 'success' : 'danger',
       );
       await load();
+    } catch (e) {
+      toast(`${c.name}: the test could not run. ${e instanceof Error ? e.message : String(e)}`, 'danger');
     } finally {
       busy = false;
     }

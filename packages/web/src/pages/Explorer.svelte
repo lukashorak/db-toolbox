@@ -4,6 +4,7 @@
   import DataGrid from '../components/DataGrid.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import TreeRow from '../components/TreeRow.svelte';
+  import { treeKeyboard } from '../lib/tree';
   import { api, ApiError } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { selectSql } from '../lib/sql';
@@ -196,7 +197,7 @@
     {#if loading && !schemas}<p role="status">Loading schemas…</p>{/if}
     {#if schemas}
       {#if schemas.reason}<p class="note">{schemas.reason}</p>{/if}
-      <div role="tree" aria-label="Database objects" data-testid="tree">
+      <div role="tree" aria-label="Database objects" data-testid="tree" use:treeKeyboard>
         {#each schemas.items.filter((s) => !s.system) as schema (schema.name)}
           <TreeRow
             label={schema.name}

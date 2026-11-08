@@ -64,6 +64,7 @@ A reverse proxy must not replace them. The Keycloak origin comes from `KEYCLOAK_
 ## Accepted risks
 
 - **`style-src 'unsafe-inline'`**: CodeMirror injects its own style sheets, and components set style attributes. Scripts stay restricted to this origin, which is what matters for token theft.
+- **Spreadsheet formulas in CSV exports**: exports keep every value exactly (AC11), so a value that begins with `=`, `+`, `-` or `@` stays as it is, and a spreadsheet program may evaluate it as a formula. Import untrusted data as text, or use the JSON export.
 - **Tokens in session storage**: needed for a pure single-page app without a back-end session. They are short-lived, limited to the tab, and protected by the CSP above.
 - **Rate limits in memory, per process**: they match the single-container deployment. Behind several replicas they would apply per replica.
 - **Advisories in development tools only** (2026-11-07, not shipped in the image):

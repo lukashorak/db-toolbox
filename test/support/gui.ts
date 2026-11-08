@@ -24,6 +24,7 @@ export type Locator = {
   inputValue(): Promise<string>;
   fill(v: string): Promise<void>;
   click(): Promise<void>;
+  focus(): Promise<void>;
   selectOption(v: string | { label: string }): Promise<unknown>;
   check(): Promise<void>;
   count(): Promise<number>;

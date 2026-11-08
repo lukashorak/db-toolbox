@@ -257,13 +257,13 @@ class MysqlSession implements DbSession {
 
     let warnings = 0;
     let lost: ((error?: unknown) => void) | null = null;
+    let failed: unknown = null;
     try {
       await new Promise<void>((resolve, reject) => {
         let columns: ColumnInfo[] = [];
         let batch: Cell[][] = [];
         let index = -1;
         let pending: Promise<void> = Promise.resolve();
-        let failed: unknown = null;
         // `pause`: hold the socket while the sink catches up. Not after the last row: once the
         // statement has ended (or was cancelled), a paused connection can swallow the reply to the
         // next command, which then never returns.
@@ -316,7 +316,13 @@ class MysqlSession implements DbSession {
             outcome.resultSets = index + 1;
             const cols = columns;
             const at = index;
-            pending = pending.then(() => sink.start(cols, at));
+            pending = pending
+              .then(() => sink.start(cols, at))
+              .catch((error: unknown) => {
+                // Mirrors flush(): a sink that cannot store the result ends the statement.
+                failed ??= error;
+                interrupt('stopped');
+              });
           }),
         );
         query.on(
@@ -339,7 +345,8 @@ class MysqlSession implements DbSession {
         });
         query.on('end', () => {
           flush(false);
-          void pending.then(() => (failed ? reject(failed) : resolve()));
+          // finally, not then: the outer promise must settle even if a step of the chain failed.
+          void pending.finally(() => (failed ? reject(failed) : resolve()));
         });
         // A dropped connection (KILL, a restart, the network) reaches mysql2's connection, not a
         // streaming query: without this, the statement would wait forever.
@@ -383,6 +390,9 @@ class MysqlSession implements DbSession {
       options.signal?.removeEventListener('abort', onAbort);
       if (killed) await this.#absorbKill(killed);
     }
+    // The sink failed (for example, storing captured rows): its stop request ended the statement
+    // without an error of its own, but the result is incomplete and must not pass as finished.
+    if (failed) throw failed;
     // An interrupted SLEEP() or BENCHMARK() ends without an error; the interruption still counts.
     if (interrupted === 'timeout') {
       throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`);

@@ -37,7 +37,7 @@
   aria-level={level}
   aria-expanded={expanded}
   aria-selected={selected}
-  tabindex={selected ? 0 : -1}
+  tabindex="-1"
   style="padding-left: {8 + (level - 1) * 14}px"
   onclick={() => onSelect?.()}
   onkeydown={keydown}

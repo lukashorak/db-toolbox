@@ -335,7 +335,10 @@ export class MonitoringService {
          WHERE t.TYPE = 'FOREGROUND' AND t.PROCESSLIST_ID IS NOT NULL AND t.PROCESSLIST_ID <> CONNECTION_ID()
          ORDER BY t.PROCESSLIST_TIME DESC LIMIT 500`);
       const items = rows.map(toSession);
-      const waits = await q(`
+      let waits: Record<string, unknown>[] | null = null;
+      let waitsProblem: string | null = null;
+      try {
+        waits = await q(`
         SELECT rt.PROCESSLIST_ID AS waiting, bt.PROCESSLIST_ID AS blocking,
                CONCAT(rl.LOCK_TYPE, ' ', rl.LOCK_MODE) AS lock_name,
                CONCAT_WS('.', rl.OBJECT_SCHEMA, rl.OBJECT_NAME) AS object,
@@ -355,7 +358,12 @@ export class MonitoringService {
            AND g.OBJECT_NAME <=> p.OBJECT_NAME AND g.OWNER_THREAD_ID <> p.OWNER_THREAD_ID
           LEFT JOIN performance_schema.threads gt ON gt.THREAD_ID = g.OWNER_THREAD_ID
          WHERE p.LOCK_STATUS = 'PENDING'`);
-      const lockItems: LockWait[] = waits.map((w) => ({
+      } catch (error) {
+        // An account may read threads but not the lock tables (managed services restrict them):
+        // keep the sessions and say why lock waits are missing.
+        waitsProblem = `Lock waits need SELECT on performance_schema.data_locks, data_lock_waits and metadata_locks: ${(error as Error).message}`;
+      }
+      const lockItems: LockWait[] = (waits ?? []).map((w) => ({
         waiting: String(w.waiting),
         blocking: str(w.blocking),
         lock: str(w.lock_name),
@@ -372,11 +380,10 @@ export class MonitoringService {
         ? null
         : "Without the PROCESS privilege, other users' sessions are not shown.";
       sessions = { availability: access.process ? 'available' : 'limited', reason: limited, items };
-      lockWaits = {
-        availability: access.process ? 'available' : 'limited',
-        reason: limited,
-        items: lockItems,
-      };
+      lockWaits =
+        waits === null
+          ? { availability: 'unavailable', reason: waitsProblem, items: [] }
+          : { availability: access.process ? 'available' : 'limited', reason: limited, items: lockItems };
     } else {
       const rows =
         await q(`SELECT ID AS id, USER AS user, HOST AS host, DB AS db, COMMAND AS command, STATE AS state,

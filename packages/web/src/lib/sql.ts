@@ -1,8 +1,10 @@
-/** Quotes an identifier for the engine when it needs quoting. */
+/**
+ * Quotes an identifier for the engine, always: a plain-looking name can still be a reserved word
+ * (`order`, `user`), and quoting keeps PostgreSQL's case exactly as the catalog reports it.
+ */
 export function quoteIdent(name: string, engine: 'postgresql' | 'mysql'): string {
-  if (engine === 'mysql')
-    return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(name) ? name : `\`${name.replace(/`/g, '``')}\``;
-  return /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+  if (engine === 'mysql') return `\`${name.replace(/`/g, '``')}\``;
+  return `"${name.replace(/"/g, '""')}"`;
 }
 
 export function selectSql(engine: 'postgresql' | 'mysql', schema: string, name: string, limit = 100): string {

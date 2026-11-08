@@ -143,6 +143,23 @@ describe('preflight', () => {
     );
   });
 
+  it('rejects MySQL procedure calls in single-transaction mode, because a procedure can commit', async () => {
+    const script = 'insert into a values (1); call commits_inside(); select 1 from missing';
+    assert.deepEqual(await run(script, 'mysql'), []);
+    const problems = await run(script, 'mysql', { transactionMode: 'atomic' });
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [['routine_may_commit', 1]],
+    );
+    // In PostgreSQL a procedure that commits inside a transaction block fails, so CALL may stay.
+    assert.equal(
+      (await run('call p()', 'postgresql', { transactionMode: 'atomic' })).some(
+        (p) => p.code === 'routine_may_commit',
+      ),
+      false,
+    );
+  });
+
   it('rejects PostgreSQL statements that cannot run in a transaction block in single-transaction mode', async () => {
     const problems = await run('create index concurrently i on t (a)', 'postgresql', {
       transactionMode: 'atomic',

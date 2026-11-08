@@ -44,11 +44,26 @@ export const builtInDefaults = (limits: Limits): ExecutionDefaults => ({
 export class SettingsService {
   constructor(private readonly ctx: ServiceContext) {}
 
-  /** Effective defaults: built-in values overlaid with saved administrator changes. */
+  /**
+   * Effective defaults: built-in values overlaid with saved administrator changes, bounded by the
+   * deployment's limits as they are now. Lowering FULL_TIMEOUT_MAX_MS or CONCURRENCY_PER_CONNECTION
+   * therefore also lowers saved values above it.
+   */
   defaults(): ExecutionDefaults {
     const row = this.ctx.db.get('SELECT value FROM settings WHERE key = :key', { key: KEY });
     const saved = row ? (JSON.parse(String(row.value)) as Partial<ExecutionDefaults>) : {};
-    return { ...builtInDefaults(this.ctx.limits), ...saved };
+    const merged = { ...builtInDefaults(this.ctx.limits), ...saved };
+    const fullTimeoutMaxMs = Math.min(merged.fullTimeoutMaxMs, this.ctx.limits.fullTimeoutMaxMs);
+    return {
+      ...merged,
+      fullTimeoutMaxMs,
+      ordinaryTimeoutMs: Math.min(merged.ordinaryTimeoutMs, fullTimeoutMaxMs),
+      // The work pool of each connection has this many sessions; more slots would wait in the driver.
+      concurrencyPerConnection: Math.min(
+        merged.concurrencyPerConnection,
+        this.ctx.limits.concurrencyPerConnection,
+      ),
+    };
   }
 
   /** Changing a limit never changes grants in target databases. */
@@ -61,6 +76,12 @@ export class SettingsService {
       throw fieldError(
         'fullTimeoutMaxMs',
         'This exceeds the maximum set by the deployment (FULL_TIMEOUT_MAX_MS).',
+      );
+    }
+    if (next.concurrencyPerConnection > this.ctx.limits.concurrencyPerConnection) {
+      throw fieldError(
+        'concurrencyPerConnection',
+        `This exceeds the maximum set by the deployment (CONCURRENCY_PER_CONNECTION, ${this.ctx.limits.concurrencyPerConnection}).`,
       );
     }
     if (next.ordinaryTimeoutMs > next.fullTimeoutMaxMs) {

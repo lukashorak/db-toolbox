@@ -167,6 +167,22 @@ describe(
       assert.equal(await all.count(), before);
     });
 
+    it('the Explorer tree works from the keyboard: one tab stop, arrows move and expand, Enter selects', async () => {
+      await page.goto(`${env.base}/explorer`);
+      const rows = page.locator('[role="tree"] [role="treeitem"]');
+      await rows.first().waitFor();
+      // Nothing is selected yet, so the first row is the tree's tab stop.
+      assert.equal(await rows.first().getAttribute('tabindex'), '0');
+      await page.getByRole('treeitem', { name: /public/ }).focus();
+      await page.keyboard.press('ArrowRight');
+      await page.locator('[role="treeitem"][aria-level="2"]').first().waitFor();
+      await page.keyboard.press('ArrowDown');
+      await page.locator('[role="treeitem"][aria-level="2"]:focus').waitFor();
+      await page.keyboard.press('Enter');
+      await page.locator('[role="treeitem"][aria-level="2"][aria-selected="true"]:focus').waitFor();
+      assert.equal(await page.locator('[role="tree"] [role="treeitem"][tabindex="0"]').count(), 1);
+    });
+
     it('fits a 390 px wide screen without scrolling sideways', async () => {
       await page.setViewportSize({ width: 390, height: 844 });
       const wide: string[] = [];

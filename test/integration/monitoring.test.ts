@@ -214,6 +214,28 @@ for (const { engine, variable, prepare } of [
       }
     });
 
+    it('keeps the sessions when the account may read threads but not the lock tables', async (t) => {
+      if (engine !== 'mysql') return t.skip('MySQL performance_schema privileges');
+      const root = await rawClient(engine, url);
+      try {
+        await root.query("CREATE USER IF NOT EXISTS 'wb_partial'@'%' IDENTIFIED BY 'partial-pw'");
+        await root.query("GRANT SELECT ON performance_schema.threads TO 'wb_partial'@'%'");
+        await root.query("GRANT SELECT ON performance_schema.session_connect_attrs TO 'wb_partial'@'%'");
+        await root.query(`GRANT SELECT ON \`${targetFrom(url, engine).database}\`.* TO 'wb_partial'@'%'`);
+      } finally {
+        await root.close();
+      }
+      const id = connect('Partial performance_schema', {
+        monitorUsername: 'wb_partial',
+        monitorPassword: 'partial-pw',
+      });
+      const snapshot = await core.monitoring.activity(operator, id);
+      assert.equal(snapshot.account, 'wb_partial');
+      assert.notEqual(snapshot.sessions.availability, 'unavailable');
+      assert.equal(snapshot.lockWaits.availability, 'unavailable');
+      assert.match(String(snapshot.lockWaits.reason), /data_locks/);
+    });
+
     it('shows limited visibility for an account without monitoring rights, never zeros', async () => {
       const holder = await rawClient(engine, url);
       try {

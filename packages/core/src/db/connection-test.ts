@@ -378,6 +378,11 @@ export async function testConnection(
     report.ok = true;
     return report;
   } catch (error) {
+    // A probe that timed out is still running on the connection; a graceful close would wait for it.
+    if (error instanceof DbError && error.category === 'timeout') {
+      abort();
+      close = async () => undefined;
+    }
     report.steps.push({
       name: 'probe',
       status: 'failed',
@@ -386,6 +391,9 @@ export async function testConnection(
     });
     return fail(error, []);
   } finally {
-    await close();
+    // Bounded, so a server that stops answering cannot hold the test request open.
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([close(), new Promise<void>((r) => (timer = setTimeout(() => (abort(), r()), 2000)))]);
+    clearTimeout(timer);
   }
 }

@@ -155,6 +155,8 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       const reason =
         UNSAFE_FUNCTIONS[name] ?? UNSAFE_PREFIXES.find(([prefix]) => name.startsWith(prefix))?.[1];
       if (reason) unsafe(analysis, `${name}() ${reason}`);
+      // set_config(…, false) keeps the setting for the rest of the session.
+      if (name === 'set_config') analysis.changesSession = true;
     }
   });
 }

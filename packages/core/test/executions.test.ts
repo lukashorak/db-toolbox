@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createCore, type Core } from '../src/core.js';
 import { AppError } from '../src/domain/errors.js';
@@ -230,6 +233,141 @@ describe('restart reconciliation and retention', () => {
     assert.equal(core.executions.view(atomicRunning.id).transactionOutcome, 'rolled_back');
     assert.match(String(ps.statusNote), /not run again/);
     assert.equal(core.executions.view(queued.id).status, 'queued');
+    core.close();
+  });
+
+  it('keeps chunks captured before a crash countable, readable and expiring', async () => {
+    const { core, connection } = pausedCore();
+    const view = await core.executions.submit(writer, { connectionId: connection, sql: 'SELECT n FROM t' });
+    const db = core.db;
+    db.run("UPDATE executions SET status = 'running' WHERE id = :id", { id: view.id });
+    db.run("UPDATE statements SET status = 'running' WHERE execution_id = :id", { id: view.id });
+    // As a crash leaves it: chunks flushed, the result set still 'capturing' with zero counts.
+    db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, completeness, captured_at)
+       VALUES (:id, 0, 0, '[{"name":"n","type":"int4","binary":false}]', 'capturing', '2026-11-07T10:00:00.000Z')`,
+      { id: view.id },
+    );
+    for (const [chunk, start] of [
+      [0, 0],
+      [1, 2],
+    ] as const)
+      db.run(
+        `INSERT INTO result_chunks (execution_id, result_index, chunk_index, row_start, row_count, byte_count, data)
+         VALUES (:id, 0, :chunk, :start, 2, 12, :data)`,
+        {
+          id: view.id,
+          chunk,
+          start,
+          data: Buffer.from(JSON.stringify([[String(start + 1)], [String(start + 2)]])),
+        },
+      );
+    const storedBefore = core.executions.storedBytes;
+    core.executions.reconcile();
+    const [set] = core.executions.view(view.id).resultSets;
+    assert.deepEqual([set?.completeness, set?.rowCount, set?.byteCount], ['interrupted', 4, 24]);
+    const stored = db.get('SELECT expires_at FROM result_sets WHERE execution_id = :id', { id: view.id });
+    assert.ok(stored?.expires_at, 'cleanup can expire it');
+    assert.equal(core.executions.storedBytes, storedBefore + 24, 'counted in the storage quota');
+    assert.deepEqual(
+      core.executions.rows(writer, view.id, 0).rows.map((r) => r[0]),
+      ['1', '2', '3', '4'],
+    );
+    core.close();
+  });
+
+  it('pages through executions submitted in the same millisecond without skipping any', async () => {
+    const at = new Date(Date.UTC(2026, 10, 8, 9));
+    const core = createCore({
+      databaseFile: ':memory:',
+      encryptionKey: TEST_KEY,
+      limits,
+      clock: { now: () => at },
+      executions: { globalCap: 0 },
+    });
+    core.users.touch(admin);
+    core.users.touch(writer);
+    const connection = core.connections.create(admin, { ...pgInput, name: 'Same ms' }).id;
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++)
+      ids.push((await core.executions.submit(writer, { connectionId: connection, sql: `SELECT ${i}` })).id);
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (;;) {
+      const page = core.executions.list(writer, { limit: 1, ...(before ? { before } : {}) });
+      if (!page.length) break;
+      seen.push(page[0]!.id);
+      before = page[0]!.id;
+    }
+    assert.deepEqual(seen, [...ids].reverse());
+    core.close();
+  });
+
+  it('rechecks read-only safety at dispatch, not only the statement kind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'workbench-dispatch-'));
+    try {
+      const file = join(dir, 'workbench.sqlite');
+      const paused = createCore({
+        databaseFile: file,
+        encryptionKey: TEST_KEY,
+        limits,
+        executions: { globalCap: 0 },
+      });
+      for (const a of [admin, writer]) paused.users.touch(a);
+      const connection = paused.connections.create(admin, {
+        ...pgInput,
+        name: 'Tightened',
+        readOnly: false,
+      }).id;
+      // A read by kind that a read-only transaction does not stop.
+      const queued = await paused.executions.submit(writer, {
+        connectionId: connection,
+        sql: 'SELECT pg_terminate_backend(42)',
+      });
+      assert.equal(queued.status, 'queued');
+      paused.connections.update(admin, connection, { readOnly: true });
+      paused.close();
+
+      const running = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits });
+      running.executions.reconcile();
+      running.executions.resume();
+      const view = running.executions.view(queued.id);
+      assert.equal(view.status, 'rejected');
+      assert.match(String(view.error?.message), /became read-only/);
+      await running.shutdown();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses rows past their retention even before cleanup runs', async () => {
+    const { core, connection } = pausedCore();
+    const view = await core.executions.submit(writer, { connectionId: connection, sql: 'SELECT n FROM t' });
+    core.db.run("UPDATE executions SET status = 'succeeded' WHERE id = :id", { id: view.id });
+    core.db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, completeness, expires_at)
+       VALUES (:id, 0, 0, '[]', 0, 0, 'complete', '2000-01-01T00:00:00.000Z')`,
+      { id: view.id },
+    );
+    assert.throws(() => core.executions.rows(writer, view.id, 0), code('result_expired'));
+    core.close();
+  });
+
+  it('returns the same execution for overlapping submissions with one request key', async () => {
+    const { core, connection } = pausedCore();
+    const input = { connectionId: connection, sql: 'SELECT 1', requestKey: 'overlap-0001' };
+    const [a, b] = await Promise.all([
+      core.executions.submit(writer, input),
+      core.executions.submit(writer, input),
+    ]);
+    assert.equal(a.id, b.id);
+    await assert.rejects(
+      Promise.all([
+        core.executions.submit(writer, { ...input, requestKey: 'overlap-0002' }),
+        core.executions.submit(writer, { ...input, requestKey: 'overlap-0002', sql: 'SELECT 2' }),
+      ]),
+      code('idempotency_conflict'),
+    );
     core.close();
   });
 

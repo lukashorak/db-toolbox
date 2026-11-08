@@ -1,6 +1,6 @@
 import type { Cell, ColumnInfo, ResultSink } from '../db/types.js';
 import type { Completeness } from '../domain/types.js';
-import type { Database } from '../store/database.js';
+import type { Database, Row } from '../store/database.js';
 
 /**
  * Bytes of captured result data across all executions. Shared by concurrent captures so the
@@ -15,13 +15,22 @@ export class StorageBudget {
     this.#used = used;
   }
 
-  static fromDatabase(db: Database, totalBytes: number): StorageBudget {
+  static #stored(db: Database): number {
     const row = db.get(
       `SELECT coalesce(sum(byte_count), 0) AS used FROM result_sets WHERE completeness NOT IN ('expired', 'deleted')`,
     );
+    return Number(row?.used ?? 0);
+  }
+
+  static fromDatabase(db: Database, totalBytes: number): StorageBudget {
     // Keep 5% (at most 64 MiB) for execution metadata, statements and audit.
     const reserve = Math.min(Math.floor(totalBytes * 0.05), 64 * 1024 * 1024);
-    return new StorageBudget(totalBytes - reserve, Number(row?.used ?? 0));
+    return new StorageBudget(totalBytes - reserve, StorageBudget.#stored(db));
+  }
+
+  /** Counts stored results again, for example after restart recovery added interrupted ones. */
+  recount(db: Database): void {
+    this.#used = StorageBudget.#stored(db);
   }
 
   get used(): number {
@@ -189,6 +198,16 @@ export class ResultCapture implements ResultSink {
       );
     }
   }
+}
+
+/**
+ * A captured result that may no longer be read: expired or deleted, or past its retention deadline
+ * although the periodic cleanup has not removed it yet.
+ */
+export function resultGone(set: Row, now: Date): boolean {
+  const completeness = String(set.completeness);
+  if (completeness === 'expired' || completeness === 'deleted') return true;
+  return set.expires_at != null && Date.parse(String(set.expires_at)) <= now.getTime();
 }
 
 /** Reads a page of captured rows. */

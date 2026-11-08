@@ -48,6 +48,10 @@ Clients branch on `error`; `message` is for people and may change. The full list
 | `rate_limited`                                                        | 429  | Too many requests from this user, MCP client or address. Retry after `details.retryAfterSeconds`, also sent as `Retry-After`                  |
 | `database_error`                                                      | 502  | The target database failed. `details` carries `category`, `code`, `sqlState`, `detail`, `hint` and `position`                                 |
 
+## Paging
+
+`GET /executions` returns the newest first. For the next page, pass `before=<ID of the last execution on this page>`. Executions submitted in the same millisecond are ordered by ID, so none is skipped. A timestamp is still accepted for `before`.
+
 ## Rate limits and headers
 
 - Requests are limited per signed-in user (`RATE_LIMIT_PER_MINUTE`, 600), per user and MCP client (`MCP_RATE_LIMIT_PER_MINUTE`, 300), and per address for rejected tokens (`AUTH_FAILURES_PER_MINUTE`, 60). A limit allows bursts of its own size; 0 turns it off.

@@ -6,7 +6,7 @@ import type { Cell, ColumnInfo, DbAdapter, DbSession } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
 import { newId } from '../domain/ids.js';
 import type { Actor, Completeness, ExecutionStatus, Role, TransactionOutcome } from '../domain/types.js';
-import { can, evaluateWritePolicy, requirePermission } from '../security/policy.js';
+import { evaluateWritePolicy, requirePermission } from '../security/policy.js';
 import type { ConnectionService } from '../services/connections.js';
 import { isoNow, type ServiceContext } from '../services/context.js';
 import type { DatabaseService } from '../services/databases.js';
@@ -17,7 +17,8 @@ import { analyzeScript } from '../sql/analyze.js';
 import { preflight, type PreflightProblem } from '../sql/preflight.js';
 import type { StatementKind } from '../sql/types.js';
 import { bool, int, type Row } from '../store/database.js';
-import { readRows, ResultCapture, StorageBudget } from './capture.js';
+import { readRows, ResultCapture, StorageBudget, resultGone } from './capture.js';
+import { canSeeExecution } from './visibility.js';
 
 const submitSchema = z
   .object({
@@ -260,7 +261,25 @@ export class ExecutionService {
       Date.parse(now) + defaults.metadataRetentionDays * 86_400_000,
     ).toISOString();
     const rejected = problems.length > 0;
+    let duplicateOf: string | null = null;
     this.ctx.db.transaction(() => {
+      // Again inside the transaction: an overlapping submission with the same key may have been
+      // stored while this one was analysed.
+      const raced = this.ctx.db.get(
+        'SELECT id, request_hash FROM executions WHERE owner = :owner AND request_key = :key',
+        { owner: actor.subject, key: requestKey },
+      );
+      if (raced) {
+        if (raced.request_hash !== hash) {
+          throw new AppError(
+            'idempotency_conflict',
+            'This request key was already used for a different SQL text or different settings.',
+            { executionId: String(raced.id) },
+          );
+        }
+        duplicateOf = String(raced.id);
+        return;
+      }
       this.ctx.db.run(
         `INSERT INTO executions (id, owner, actor_subject, source, client_id, actor_roles, profile_id, profile_name,
            connection_id, connection_name, engine, database_name, schema_name, saved_query_id, title, request_key, request_hash,
@@ -310,14 +329,18 @@ export class ExecutionService {
       for (const s of statements) {
         this.ctx.db.run(
           `INSERT INTO statements (execution_id, ordinal, sql, kind, command, offset_start, offset_end, line_start, column_start,
-             line_end, column_end, status, transaction_outcome)
-           VALUES (:id, :ordinal, :sql, :kind, :command, :os, :oe, :ls, :cs, :le, :ce, 'not_run', 'not_started')`,
+             line_end, column_end, status, transaction_outcome, read_only_safe, changes_session)
+           VALUES (:id, :ordinal, :sql, :kind, :command, :os, :oe, :ls, :cs, :le, :ce, 'not_run', 'not_started', :safe, :session)`,
           {
             id,
             ordinal: s.index,
             sql: s.text,
             kind: s.analysis.kind,
             command: s.analysis.command,
+            safe: int(s.analysis.readOnlySafe),
+            session: int(
+              s.analysis.changesSession || s.analysis.kind === 'session' || s.analysis.kind === 'unknown',
+            ),
             os: s.range.start,
             oe: s.range.end,
             ls: s.range.startLine,
@@ -342,6 +365,7 @@ export class ExecutionService {
         },
       });
     });
+    if (duplicateOf) return this.view(duplicateOf);
     this.#changed(id);
     if (!rejected) this.#pump();
     return this.view(id);
@@ -392,8 +416,23 @@ export class ExecutionService {
       params.connection = query.connectionId;
     }
     if (query.before) {
-      where.push('submitted_at < :before');
-      params.before = query.before;
+      // The ID of the last execution on the previous page (or, for older clients, a timestamp).
+      // Ties on submitted_at are broken by ID, matching the ORDER BY below.
+      const cursor = this.ctx.db.get(
+        'SELECT submitted_at FROM executions WHERE id = :id AND owner = :owner',
+        {
+          id: query.before,
+          owner: actor.subject,
+        },
+      );
+      if (cursor) {
+        where.push('(submitted_at < :beforeAt OR (submitted_at = :beforeAt AND id < :beforeId))');
+        params.beforeAt = String(cursor.submitted_at);
+        params.beforeId = query.before;
+      } else {
+        where.push('submitted_at < :before');
+        params.before = query.before;
+      }
     }
     return this.ctx.db
       .all(
@@ -415,7 +454,7 @@ export class ExecutionService {
     );
     assert(set, 'not_found', 'Result set not found.', { resultIndex });
     const completeness = String(set.completeness) as Completeness;
-    if (completeness === 'expired' || completeness === 'deleted') {
+    if (resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The captured result is no longer stored. Run the query again.');
     }
     const offset = Math.max(0, page.offset ?? 0);
@@ -548,8 +587,7 @@ export class ExecutionService {
 
   /** Owners see their executions; administrators see all. */
   #assertVisible(actor: Actor, row: Row): void {
-    if (row.owner === actor.subject) return;
-    if (actor.source !== 'mcp' && can(actor, 'connections.manage')) return;
+    if (canSeeExecution(this.ctx.db, actor, row)) return;
     throw new AppError('not_found', 'Execution not found.', { id: String(row.id) });
   }
 
@@ -691,8 +729,27 @@ export class ExecutionService {
       const connectionId = String(q.connection_id ?? '');
       const busy = [...this.#running.values()].filter((r) => r.connectionId === connectionId).length;
       if (busy >= slots) continue;
-      this.#start(String(q.id), connectionId);
+      try {
+        this.#start(String(q.id), connectionId);
+      } catch (error) {
+        // One broken row must not stall the queue behind it.
+        this.#failToStart(String(q.id), error);
+      }
     }
+  }
+
+  #failToStart(id: string, error: unknown): void {
+    try {
+      this.ctx.db.run(
+        `UPDATE executions SET status = 'failed', finished_at = :now, error_code = 'internal',
+           error_message = 'The execution could not be started.' WHERE id = :id AND status = 'queued'`,
+        { id, now: isoNow(this.ctx) },
+      );
+      this.#changed(id);
+    } catch {
+      // The application database itself failed; the next start reconciles.
+    }
+    void error;
   }
 
   /** Re-authorizes a queued execution and starts it, or rejects it if it may no longer run. */
@@ -782,8 +839,10 @@ export class ExecutionService {
       ...(profile ? { profile } : {}),
     });
     if (policy.readOnly) {
+      // The same test as the read-only preflight: statements of kind read can still be unsafe
+      // (pg_terminate_backend, for example), so the stored analysis decides, not the kind.
       const unsafe = this.ctx.db.get(
-        "SELECT count(*) AS n FROM statements WHERE execution_id = :id AND kind NOT IN ('read', 'session', 'transaction')",
+        'SELECT count(*) AS n FROM statements WHERE execution_id = :id AND read_only_safe = 0',
         { id: String(row.id) },
       );
       if (!bool(row.read_only) && Number(unsafe?.n ?? 0) > 0) {
@@ -878,16 +937,21 @@ export class ExecutionService {
           });
           try {
             if (!atomic && readOnly) await session.begin({ readOnly: true });
-            const outcome = await session.execute(String(st.sql), sink, {
-              timeoutMs: remaining,
-              signal,
-              batchSize: sink.batchSize,
-            });
+            let outcome;
+            try {
+              outcome = await session.execute(String(st.sql), sink, {
+                timeoutMs: remaining,
+                signal,
+                batchSize: sink.batchSize,
+              });
+            } finally {
+              // SET, user variables (SELECT @v := …) and the like stay on a pooled session: discard
+              // it after this execution, so the next one (perhaps another user's) starts clean.
+              if (bool(st.changes_session)) session.markDirty('session state may have changed');
+            }
             if (!atomic && readOnly) await session.commit();
             sink.finish('complete', expiresAt());
             resultIndex += sink.count;
-            if (st.kind === 'session' || st.kind === 'unknown')
-              session.markDirty('session state may have changed');
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
               : writes && !readOnly
@@ -1072,8 +1136,10 @@ export class ExecutionService {
   reconcile(): { interrupted: number; queued: number } {
     const now = isoNow(this.ctx);
     const inFlight = this.ctx.db.all(
-      "SELECT id, transaction_mode, transaction_outcome, read_only FROM executions WHERE status IN ('running', 'cancel_requested')",
+      `SELECT id, transaction_mode, transaction_outcome, read_only, retention, retain_days FROM executions
+        WHERE status IN ('running', 'cancel_requested')`,
     );
+    const defaults = this.deps.settings.defaults();
     this.ctx.db.transaction(() => {
       for (const e of inFlight) {
         const id = String(e.id);
@@ -1099,9 +1165,21 @@ export class ExecutionService {
             WHERE execution_id = :id AND status = 'running'`,
           { id },
         );
+        // Chunks written before the crash stay readable: count them, so quotas and disclosure see
+        // them, and give them a retention deadline, so cleanup removes them in time.
+        const hours =
+          e.retention === 'retained'
+            ? Number(e.retain_days ?? defaults.retainedMaxDays) * 24
+            : defaults.workingRetentionHours;
         this.ctx.db.run(
-          "UPDATE result_sets SET completeness = 'interrupted' WHERE execution_id = :id AND completeness = 'capturing'",
-          { id },
+          `UPDATE result_sets SET completeness = 'interrupted',
+             row_count = (SELECT coalesce(sum(c.row_count), 0) FROM result_chunks c
+                           WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
+             byte_count = (SELECT coalesce(sum(c.byte_count), 0) FROM result_chunks c
+                            WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
+             expires_at = coalesce(expires_at, :expires)
+           WHERE execution_id = :id AND completeness = 'capturing'`,
+          { id, expires: new Date(Date.parse(now) + hours * 3_600_000).toISOString() },
         );
         this.ctx.db.run(
           `UPDATE executions SET status = 'interrupted', transaction_outcome = :outcome, finished_at = :now,
@@ -1119,6 +1197,7 @@ export class ExecutionService {
     const queued = Number(
       this.ctx.db.get("SELECT count(*) AS n FROM executions WHERE status = 'queued'")?.n ?? 0,
     );
+    this.#budget.recount(this.ctx.db);
     return { interrupted: inFlight.length, queued };
   }
 

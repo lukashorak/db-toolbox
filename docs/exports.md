@@ -42,6 +42,7 @@ A preview-only export says so in two places:
   - timestamps appear as the database returned them;
   - binary values are `\x` followed by lowercase hex.
 - Duplicate column names stay duplicated.
+- Values that begin with `=`, `+`, `-` or `@` are not altered either. Spreadsheet programs can treat such a cell as a formula, so import untrusted data as text, or use JSON ([security.md](security.md#accepted-risks)).
 
 ## JSON
 

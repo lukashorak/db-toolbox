@@ -411,6 +411,43 @@ for (const { engine, variable, prepare } of engines) {
       assert.equal(await count("name = 'run-lost-atomic'"), 0);
     });
 
+    it('discards a session after a statement that leaves session state, so the next run starts clean', async () => {
+      // One session per connection, so the second run would get the same one from the pool.
+      const single = makeCore(join(dir, 'session-state.sqlite'), { CONCURRENCY_PER_CONNECTION: '1' });
+      try {
+        const t = targetFrom(url, engine);
+        const id = single.connections.create(writer, {
+          name: 'One session',
+          engine,
+          environment: 'development',
+          host: t.host,
+          port: t.port,
+          database: t.database,
+          schema: t.schema,
+          username: t.username,
+          password: t.password,
+          tlsMode: 'verify-full',
+          caPem: t.caPem,
+          readOnly: false,
+        }).id;
+        const runOn = async (sql: string) =>
+          settle(single, (await single.executions.submit(writer, { connectionId: id, sql })).id);
+        const set =
+          engine === 'mysql'
+            ? "SELECT @wb_secret := 'left behind'"
+            : "SELECT set_config('wb.secret', 'left behind', false)";
+        assert.equal((await runOn(set)).status, 'succeeded');
+        const read =
+          engine === 'mysql' ? 'SELECT @wb_secret AS v' : "SELECT current_setting('wb.secret', true) AS v";
+        const view = await runOn(read);
+        assert.equal(view.status, 'succeeded');
+        const value = single.executions.rows(writer, view.id, 0).rows[0]?.[0];
+        assert.ok(value === null || value === '', `the next run saw ${JSON.stringify(value)}`);
+      } finally {
+        await single.shutdown();
+      }
+    });
+
     it('cancels a queued execution before it starts', async () => {
       await core.executions.idle();
       const a = await submit(sleep(1));

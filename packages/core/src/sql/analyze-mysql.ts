@@ -348,6 +348,7 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
     case 'CALL': {
       const a = write('CALL', 'procedures can modify data and control transactions');
       a.returnsRows = true;
+      a.mayCommit = true;
       return a;
     }
     case 'DO':

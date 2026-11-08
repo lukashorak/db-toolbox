@@ -110,6 +110,15 @@ function inspectFile(file: string, encryptionKey?: Buffer): BackupInspection {
       problems.push(
         'ENCRYPTION_KEY does not open the credentials in this file. Use the key that was active when it was made.',
       );
+    if (key === 'not_set' && problems.length === 0) {
+      // Without a key check the key cannot be verified; with stored credentials, a start with the
+      // wrong key would seal a new check and leave the credentials unreadable.
+      const stored = raw.prepare('SELECT count(*) AS n FROM connections').get() as Row | undefined;
+      if (Number(stored?.n ?? 0) > 0)
+        problems.push(
+          'The file has stored credentials but no encryption key check, so ENCRYPTION_KEY cannot be verified against it.',
+        );
+    }
     return { integrity, schemaVersion, latestVersion: LATEST, key, problems };
   } finally {
     raw.close();
@@ -141,7 +150,6 @@ export function restoreDatabase(
 ): RestoreReport {
   const inspection = inspectBackup(backupFile, encryptionKey);
   if (inspection.problems.length) throw new AppError('validation_failed', inspection.problems.join(' '));
-  let previous: string | null = null;
   if (existsSync(liveFile)) {
     const live = new DatabaseSync(liveFile);
     try {
@@ -152,7 +160,41 @@ export function restoreDatabase(
           `A workbench server is using ${liveFile} (last seen ${alive.toISOString()}). Stop it before restoring.`,
         );
       }
-      // Fold the write-ahead log into the file, so the copy kept aside is complete on its own.
+    } finally {
+      live.close();
+    }
+  }
+
+  // Prepare the replacement beside the live file first: open it (which applies the migrations an
+  // older backup needs) and close it cleanly. Until it is ready, the live database is untouched.
+  const staged = `${liveFile}.restoring`;
+  const removeStaged = () => {
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${staged}${suffix}`, { force: true });
+  };
+  removeStaged();
+  let schemaVersion: number;
+  try {
+    copyFileSync(backupFile, staged);
+    chmodSync(staged, 0o600);
+    const db = Database.open(staged);
+    try {
+      markStopped(db);
+      schemaVersion = db.schemaVersion;
+      db.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally {
+      db.close();
+    }
+    for (const suffix of ['-wal', '-shm']) rmSync(`${staged}${suffix}`, { force: true });
+  } catch (error) {
+    removeStaged();
+    throw error;
+  }
+
+  // Swap: keep the live database aside, complete on its own, and put it back if the swap fails.
+  let previous: string | null = null;
+  if (existsSync(liveFile)) {
+    const live = new DatabaseSync(liveFile);
+    try {
       live.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } finally {
       live.close();
@@ -161,16 +203,12 @@ export function restoreDatabase(
     renameSync(liveFile, previous);
     for (const suffix of ['-wal', '-shm']) rmSync(`${liveFile}${suffix}`, { force: true });
   }
-  const partial = `${liveFile}.restoring`;
-  copyFileSync(backupFile, partial);
-  chmodSync(partial, 0o600);
-  renameSync(partial, liveFile);
-  // Opening applies the migrations a backup from an older release needs.
-  const db = Database.open(liveFile);
   try {
-    markStopped(db);
-    return { previous, schemaVersion: db.schemaVersion, migratedFrom: inspection.schemaVersion };
-  } finally {
-    db.close();
+    renameSync(staged, liveFile);
+  } catch (error) {
+    if (previous) renameSync(previous, liveFile);
+    removeStaged();
+    throw error;
   }
+  return { previous, schemaVersion, migratedFrom: inspection.schemaVersion };
 }

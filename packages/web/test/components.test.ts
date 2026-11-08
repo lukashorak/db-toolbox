@@ -5,7 +5,8 @@ import DataGrid from '../src/components/DataGrid.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
-import { loadTabs, read, saveTabs } from '../src/lib/storage';
+import { selectSql } from '../src/lib/sql';
+import { loadTabs, read, saveTabs, write } from '../src/lib/storage';
 import { toast } from '../src/lib/toasts.svelte';
 import PanelHarness from './PanelHarness.svelte';
 
@@ -123,5 +124,29 @@ describe('browser storage', () => {
     } as unknown as Storage;
     expect(read('x', 'fallback', blocked)).toBe('fallback');
     expect(saveTabs('alice', { tabs: [], active: null }, blocked)).toBe(false);
+  });
+
+  it('works when even reading localStorage throws', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied for this document.', 'SecurityError');
+      },
+    });
+    try {
+      expect(read('x', 'fallback')).toBe('fallback');
+      expect(write('x', 1)).toBe(false);
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'localStorage', original);
+    }
+  });
+});
+
+describe('generated SQL', () => {
+  it('always quotes identifiers, so reserved words and mixed case work', () => {
+    expect(selectSql('postgresql', 'order', 'Users')).toBe('SELECT *\nFROM "order"."Users"\nLIMIT 100;');
+    expect(selectSql('mysql', 'order', 'we`ird')).toBe('SELECT *\nFROM `order`.`we``ird`\nLIMIT 100;');
+    expect(selectSql('postgresql', 'public', 'say "hi"')).toContain('"say ""hi"""');
   });
 });

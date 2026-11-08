@@ -83,6 +83,31 @@ describe('backup and restore', () => {
     );
   });
 
+  it('leaves the live database in place when the replacement cannot be opened', async () => {
+    const before = names();
+    // A backup that passes inspection but whose migrations fail: version 1 with version 2's columns.
+    const broken = join(dir, 'backups', 'broken.sqlite');
+    await backupDatabase(live, broken);
+    const raw = new DatabaseSync(broken);
+    raw.exec('PRAGMA user_version = 1');
+    raw.close();
+    assert.deepEqual(inspectBackup(broken, TEST_KEY).problems, []);
+    assert.throws(() => restoreDatabase(live, broken, TEST_KEY), /duplicate column/);
+    assert.deepEqual(names(), before, 'the live database is untouched');
+    assert.equal(existsSync(`${live}.restoring`), false, 'nothing staged is left behind');
+  });
+
+  it('refuses a backup with credentials but no encryption key check', async () => {
+    const file = join(dir, 'backups', 'no-key-check.sqlite');
+    await backupDatabase(live, file);
+    const raw = new DatabaseSync(file);
+    raw.exec("DELETE FROM settings WHERE key = 'security.key_check'");
+    raw.close();
+    const inspection = inspectBackup(file, TEST_KEY);
+    assert.equal(inspection.key, 'not_set');
+    assert.match(inspection.problems.join(), /no encryption key check/);
+  });
+
   it('refuses files that are not workbench backups or come from a newer release', () => {
     const junk = join(dir, 'junk.sqlite');
     writeFileSync(junk, 'not a database');

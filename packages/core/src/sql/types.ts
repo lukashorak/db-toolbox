@@ -26,6 +26,11 @@ export interface StatementAnalysis {
   implicitCommit: boolean;
   /** PostgreSQL: the statement cannot run inside a transaction block. */
   noTransactionBlock: boolean;
+  /**
+   * MySQL: runs code (a procedure) that may COMMIT or ROLLBACK on its own, so a single transaction
+   * around it cannot be promised.
+   */
+  mayCommit?: boolean;
   /** The workbench cannot execute this statement, with the reason. */
   unsupported?: string;
   /** Tables the statement inserts into, updates or deletes from (MySQL engine checks). */

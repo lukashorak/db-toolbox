@@ -11,6 +11,7 @@ export type PreflightCode =
   | 'transaction_control'
   | 'implicit_commit'
   | 'no_transaction_block'
+  | 'routine_may_commit'
   | 'non_transactional_engine'
   | 'unsupported_statement';
 
@@ -103,6 +104,14 @@ export async function preflight(
         statement: s.index,
         message: `${label(s)} (${a.command}) makes MySQL commit implicitly, so the script cannot run as one transaction.`,
         hint: 'Use per-statement mode, or run this statement separately.',
+      });
+    }
+    if (options.transactionMode === 'atomic' && a.mayCommit) {
+      problems.push({
+        code: 'routine_may_commit',
+        statement: s.index,
+        message: `${label(s)} (${a.command}) runs a procedure, which can commit on its own in MySQL, so the script cannot be promised to run as one transaction.`,
+        hint: 'Use per-statement mode.',
       });
     }
     if (options.transactionMode === 'atomic' && a.noTransactionBlock) {

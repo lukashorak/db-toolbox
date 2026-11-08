@@ -4,6 +4,7 @@
   import ConfirmPanel from '../components/ConfirmPanel.svelte';
   import SidePanel from '../components/SidePanel.svelte';
   import TreeRow from '../components/TreeRow.svelte';
+  import { treeKeyboard } from '../lib/tree';
   import { api, ApiError } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { openTab } from '../lib/tabs.svelte';
@@ -160,7 +161,7 @@
     <div class="actions">
       <button class="button" onclick={() => (form = { kind: 'folder-new', name: '' })}>New folder</button>
     </div>
-    <div role="tree" aria-label="Folders" data-testid="folders">
+    <div role="tree" aria-label="Folders" data-testid="folders" use:treeKeyboard>
       <TreeRow
         label="All queries"
         icon="★"

@@ -9,7 +9,8 @@ import { isoNow, type ServiceContext } from '../services/context.js';
 import type { ProfileService } from '../services/profiles.js';
 import { parseInput } from '../services/validation.js';
 import type { Row } from '../store/database.js';
-import { readRows } from './capture.js';
+import { readRows, resultGone } from './capture.js';
+import { canSeeExecution } from './visibility.js';
 
 const decideSchema = z
   .object({
@@ -95,7 +96,8 @@ export class DisclosureService {
       throw new AppError('profile_disabled', 'The MCP profile is not available.');
     }
     const execution = this.ctx.db.get('SELECT * FROM executions WHERE id = :id', { id: executionId });
-    if (!execution || execution.owner !== actor.subject)
+    // Owner, and a connection the profile allows now (not only when the execution ran).
+    if (!execution || !canSeeExecution(this.ctx.db, actor, execution))
       throw new AppError('not_found', 'Execution not found.', { id: executionId });
     const set = this.ctx.db.get(
       'SELECT * FROM result_sets WHERE execution_id = :id AND result_index = :index',
@@ -106,7 +108,7 @@ export class DisclosureService {
     );
     assert(set, 'not_found', 'Result set not found.', { resultIndex });
     const completeness = String(set.completeness) as Completeness;
-    if (completeness === 'expired' || completeness === 'deleted') {
+    if (resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The captured result is no longer stored.');
     }
     this.#expire();
@@ -363,7 +365,7 @@ export class DisclosureService {
         index: resultIndex,
       },
     );
-    if (!set || ['expired', 'deleted', 'capturing'].includes(String(set.completeness))) {
+    if (!set || set.completeness === 'capturing' || resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The result is not stored.');
     }
     const profile = this.ctx.db.get('SELECT id, name FROM mcp_profiles WHERE id = :id', {
@@ -408,6 +410,7 @@ export class DisclosureService {
   }
 
   view(id: string): ApprovalView {
+    this.#expire();
     const r = this.ctx.db.get(
       `SELECT a.*, e.title, e.connection_name FROM disclosure_approvals a JOIN executions e ON e.id = a.execution_id WHERE a.id = :id`,
       { id },
@@ -465,13 +468,13 @@ export class DisclosureService {
     if (row.status !== 'pending')
       throw new AppError('validation_failed', `This request is ${String(row.status)}.`);
     const set = this.ctx.db.get(
-      'SELECT completeness FROM result_sets WHERE execution_id = :id AND result_index = :index',
+      'SELECT completeness, expires_at FROM result_sets WHERE execution_id = :id AND result_index = :index',
       {
         id: String(row.execution_id),
         index: Number(row.result_index),
       },
     );
-    if (!set || ['expired', 'deleted'].includes(String(set.completeness))) {
+    if (!set || resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The result is no longer stored.');
     }
     return row;

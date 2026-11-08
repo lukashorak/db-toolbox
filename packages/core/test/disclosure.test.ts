@@ -87,8 +87,8 @@ describe('MCP disclosure', () => {
     const page = core.disclosure.page(mcp, id, 0, { offset: 20, limit: 30 });
     assert.deepEqual([page.rows.length, page.truncated, page.allowance.approvedRowsRemaining], [10, true, 0]);
     advance(31 * 60_000);
-    const later = core.disclosure.page(mcp, id, 0, { offset: 30, limit: 5 });
-    assert.equal(later.rows.length, 0);
+    // Past the result's retention nothing is readable, even before the periodic cleanup runs.
+    assert.throws(() => core.disclosure.page(mcp, id, 0, { offset: 30, limit: 5 }), code('result_expired'));
     assert.equal(core.disclosure.view(approvalId).status, 'expired');
     core.close();
   });
@@ -108,6 +108,20 @@ describe('MCP disclosure', () => {
     const page = core.disclosure.page(mcp, id, 0, { offset: 20, limit: 30 });
     assert.deepEqual([page.rows.length, page.rows.at(-1)?.[0], page.truncated], [30, '50', false]);
     assert.deepEqual(changes, [approvalId, approvalId, approvalId], 'requested, approved, used');
+    core.close();
+  });
+
+  it('closes results on connections the profile no longer allows', async () => {
+    const { core, id, mcp, profile } = await setup();
+    assert.equal(core.disclosure.page(mcp, id, 0, { limit: 5 }).rows.length, 5);
+    const other = core.connections.create(admin, { ...pgInput, name: 'Elsewhere' }).id;
+    core.profiles.update(admin, profile.id, { connectionIds: [other] });
+    assert.throws(() => core.disclosure.page(mcp, id, 0, { limit: 5 }), code('not_found'));
+    assert.throws(() => core.executions.get(mcp, id), code('not_found'));
+    await assert.rejects(
+      core.exports.create(mcp, id, 0, { format: 'csv', previewOnly: true }),
+      code('not_found'),
+    );
     core.close();
   });
 

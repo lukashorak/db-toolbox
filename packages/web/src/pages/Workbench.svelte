@@ -193,6 +193,15 @@
     sqlOverride?: { sql: string; base: number; scope: string; captureMode?: 'full' },
   ) {
     if (!tab || !tab.connectionId || active) return;
+    // Running "the statement" must never fall back to the whole script: until the statement check
+    // has resolved the range at the cursor, refuse (the shortcut can fire before the button exists).
+    if (kind === 'statement' && !sqlOverride && !target) {
+      toast(
+        'The statement at the cursor is still being checked. Try again in a moment, or run the script.',
+        'info',
+      );
+      return;
+    }
     const part =
       sqlOverride ??
       (kind === 'script' || !target

@@ -7,11 +7,11 @@ import type { Cell, ColumnInfo } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
 import { newId } from '../domain/ids.js';
 import type { Actor, Completeness, ExportStatus } from '../domain/types.js';
-import { can } from '../security/policy.js';
 import { isoNow, type ServiceContext } from '../services/context.js';
 import { parseInput } from '../services/validation.js';
 import { bool, type Row } from '../store/database.js';
-import { readRows } from './capture.js';
+import { readRows, resultGone } from './capture.js';
+import { canSeeExecution } from './visibility.js';
 
 export type ExportFormat = 'csv' | 'json';
 
@@ -105,7 +105,7 @@ export class ExportService {
     const execution = this.#execution(actor, executionId);
     const set = this.#resultSet(executionId, resultIndex);
     const completeness = String(set.completeness) as Completeness;
-    if (completeness === 'expired' || completeness === 'deleted') {
+    if (resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The captured result is no longer stored. Run the query again.');
     }
     if (completeness === 'capturing')
@@ -151,7 +151,7 @@ export class ExportService {
     const row = this.#row(id);
     this.#execution(actor, String(row.execution_id));
     const set = this.#resultSet(String(row.execution_id), Number(row.result_index));
-    if (['expired', 'deleted'].includes(String(set.completeness))) {
+    if (resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The captured result is no longer stored. Run the query again.');
     }
     if (row.status === 'generating') return this.view(id);
@@ -195,6 +195,13 @@ export class ExportService {
   ): Promise<{ path: string; fileName: string; contentType: string; size: number }> {
     const row = this.#row(id);
     this.#execution(actor, String(row.execution_id));
+    const now = this.ctx.clock.now().getTime();
+    if (row.expires_at != null && Date.parse(String(row.expires_at)) <= now) {
+      throw new AppError(
+        'result_expired',
+        'This export has passed its retention and is no longer available.',
+      );
+    }
     if (row.status !== 'ready' || !row.file_name) {
       throw new AppError('export_not_ready', `The export is ${String(row.status)}.`, {
         status: String(row.status),
@@ -316,9 +323,8 @@ export class ExportService {
 
   #execution(actor: Actor, id: string): Row {
     const row = this.ctx.db.get('SELECT * FROM executions WHERE id = :id', { id });
-    const visible =
-      row && (row.owner === actor.subject || (actor.source !== 'mcp' && can(actor, 'connections.manage')));
-    if (!row || !visible) throw new AppError('not_found', 'Execution not found.', { id });
+    if (!row || !canSeeExecution(this.ctx.db, actor, row))
+      throw new AppError('not_found', 'Execution not found.', { id });
     return row;
   }
 
@@ -482,11 +488,13 @@ export class ExportService {
       if (rows !== total) throw new Error(`expected ${total} rows, wrote ${rows}`);
       const { size } = await stat(part);
       await rename(part, join(folder, fileName));
-      this.ctx.db.run(
+      const done = this.ctx.db.run(
         `UPDATE exports SET status = 'ready', file_name = :name, row_count = :rows, byte_count = :size, completed_at = :now
           WHERE id = :id AND status = 'generating'`,
         { id, name: fileName, rows, size, now: isoNow(this.ctx) },
       );
+      // The result was deleted or expired while this file was written: do not leave it behind.
+      if (Number(done.changes) === 0) await rm(join(folder, fileName), { force: true });
     } catch (error) {
       await rm(part, { force: true }).catch(() => undefined);
       const f = exportFailure(error);

@@ -3,7 +3,11 @@ import { describe, it } from 'node:test';
 import { redactDetails } from '../src/audit.js';
 import { AppError } from '../src/domain/errors.js';
 import { newId } from '../src/domain/ids.js';
-import { admin, testCore, writer } from './helpers.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createCore } from '../src/core.js';
+import { admin, limits, TEST_KEY, testCore, writer } from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof AppError && e.code === c;
 
@@ -41,6 +45,32 @@ describe('SettingsService', () => {
       () => core.settings.updateDefaults(admin, { ordinaryTimeoutMs: 400000 }),
       code('validation_failed'),
     );
+    // The work pool of a connection has CONCURRENCY_PER_CONNECTION (2) sessions.
+    assert.throws(
+      () => core.settings.updateDefaults(admin, { concurrencyPerConnection: 3 }),
+      code('validation_failed'),
+    );
+  });
+
+  it('caps saved values when the deployment lowers its limits later', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'workbench-settings-'));
+    try {
+      const file = join(dir, 'workbench.sqlite');
+      const first = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits });
+      first.users.touch(admin);
+      first.settings.updateDefaults(admin, { fullTimeoutMaxMs: 240000, ordinaryTimeoutMs: 120000 });
+      first.close();
+      const lower = { ...limits, fullTimeoutMaxMs: 60000, concurrencyPerConnection: 1 };
+      const second = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits: lower });
+      const d = second.settings.defaults();
+      assert.deepEqual(
+        [d.fullTimeoutMaxMs, d.ordinaryTimeoutMs, d.concurrencyPerConnection],
+        [60000, 60000, 1],
+      );
+      second.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

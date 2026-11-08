@@ -284,4 +284,17 @@ CREATE TABLE settings (
 ) STRICT;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, name: 'initial schema', sql: INITIAL }];
+/**
+ * Per-statement analysis needed when a queued execution starts: whether the statement is safe under
+ * a read-only policy (rechecked if the policy tightened while it waited), and whether it can change
+ * session state (the session is then discarded after use). Rows from before default to the safe side.
+ */
+const STATEMENT_FLAGS = `
+ALTER TABLE statements ADD COLUMN read_only_safe INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE statements ADD COLUMN changes_session INTEGER NOT NULL DEFAULT 1;
+`;
+
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: 'initial schema', sql: INITIAL },
+  { version: 2, name: 'statement analysis flags', sql: STATEMENT_FLAGS },
+];

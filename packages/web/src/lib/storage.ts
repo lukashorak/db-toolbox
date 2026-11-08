@@ -2,22 +2,23 @@
  * Browser storage for per-user conveniences (open tabs, SQL drafts). It can be unavailable
  * (private windows, blocked site data), so every access is guarded and the app works without it.
  */
-export function read<T>(key: string, fallback: T, store: Storage | undefined = globalThis.localStorage): T {
+/** Even reading `localStorage` can throw (SecurityError) when site data is blocked. */
+function defaultStore(): Storage | undefined {
+  return globalThis.localStorage;
+}
+
+export function read<T>(key: string, fallback: T, store?: Storage): T {
   try {
-    const raw = store?.getItem(key);
+    const raw = (store ?? defaultStore())?.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
   }
 }
 
-export function write(
-  key: string,
-  value: unknown,
-  store: Storage | undefined = globalThis.localStorage,
-): boolean {
+export function write(key: string, value: unknown, store?: Storage): boolean {
   try {
-    store?.setItem(key, JSON.stringify(value));
+    (store ?? defaultStore())?.setItem(key, JSON.stringify(value));
     return true;
   } catch {
     return false;
