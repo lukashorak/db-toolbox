@@ -1,5 +1,5 @@
 import type { Engine } from '../domain/types.js';
-import type { AnalyzedStatement, TableRef } from './types.js';
+import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type AnalyzedStatement, type TableRef } from './types.js';
 
 export type TransactionMode = 'per_statement' | 'atomic';
 
@@ -38,8 +38,6 @@ export interface PreflightOptions {
    */
   tableEngine?: (table: TableRef) => Promise<string | null>;
 }
-
-const TRANSACTIONAL_ENGINES = new Set(['innodb', 'ndb', 'ndbcluster']);
 
 const label = (s: AnalyzedStatement) => `Statement ${s.index + 1} (line ${s.range.startLine})`;
 
@@ -151,10 +149,18 @@ export async function preflight(
       }
       for (const written of s.analysis.writesTables) {
         const table: TableRef = { schema: written.schema ?? database, name: written.name };
-        const key = `${table.schema ?? ''}.${table.name}`.toLowerCase();
+        // Exact case: on servers with case-sensitive names, `Ledger` and `ledger` are two tables.
+        const key = `${table.schema ?? ''}.${table.name}`;
         if (!seen.has(key)) seen.set(key, await options.tableEngine(table));
         const engine = seen.get(key);
-        if (engine && !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) {
+        if (engine === UNRESOLVED_VIEW) {
+          problems.push({
+            code: 'unchecked_write_target',
+            statement: s.index,
+            message: `${label(s)} writes through the view ${table.schema ? `${table.schema}.` : ''}${table.name}, whose tables could not be determined, so whether the write can roll back cannot be checked.`,
+            hint: 'Use per-statement mode, or write to the tables directly.',
+          });
+        } else if (engine && !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) {
           problems.push({
             code: 'non_transactional_engine',
             statement: s.index,

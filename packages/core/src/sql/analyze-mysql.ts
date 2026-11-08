@@ -157,6 +157,8 @@ function analyzeQuery(text: string): StatementAnalysis {
     if (node.type === 'function') {
       const name = functionName(node);
       if (UNSAFE_FUNCTIONS[name]) unsafe(a, `${name}() ${UNSAFE_FUNCTIONS[name]}`);
+      // A named lock belongs to the connection, not the transaction: it must not be reused.
+      if (name === 'get_lock') a.changesSession = true;
     }
     if (node.type === 'assign' || (node.type === 'binary_expr' && node.operator === ':='))
       a.changesSession = true;

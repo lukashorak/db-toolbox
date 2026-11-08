@@ -275,6 +275,23 @@ for (const { engine, variable, prepare } of engines) {
         assert.equal(moved.status, 'preflight_rejected');
         assert.match(String(moved.error?.message), /workbench_it_other\.wb_items, a MyISAM table/);
         assert.equal(await count("name = 'run-use'"), 0);
+        // A view has no engine of its own: the MyISAM table beneath it decides.
+        const throughView = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-view'); INSERT INTO wb_legacy_notes (id, note) VALUES (97, 'x')",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(throughView.status, 'preflight_rejected');
+        assert.match(String(throughView.error?.message), /wb_legacy_notes, a MyISAM table/);
+        // A view over InnoDB tables is fine.
+        const innoView = await settle(
+          core,
+          (
+            await submit("INSERT INTO wb_item_names (name) VALUES ('run-view-ok')", {
+              transactionMode: 'atomic',
+            })
+          ).id,
+        );
+        assert.deepEqual([innoView.status, innoView.transactionOutcome], ['succeeded', 'committed']);
       }
     });
 
@@ -465,6 +482,19 @@ for (const { engine, variable, prepare } of engines) {
           '0',
           'the next run reads the permanent table, not the temporary one',
         );
+
+        // Session-level locks belong to the connection: discarding it releases them.
+        const lock = engine === 'mysql' ? "SELECT GET_LOCK('wb_lock', 0)" : 'SELECT pg_advisory_lock(4242)';
+        assert.equal((await runOn(lock)).status, 'succeeded');
+        const held =
+          engine === 'mysql'
+            ? "SELECT IS_USED_LOCK('wb_lock') IS NOT NULL AS held"
+            : "SELECT count(*) > 0 AS held FROM pg_locks WHERE locktype = 'advisory' AND objid = 4242 AND granted";
+        const check = await runOn(held);
+        assert.ok(
+          ['0', 'false', 'f'].includes(String(single.executions.rows(writer, check.id, 0).rows[0]?.[0])),
+          'the lock was released with the connection',
+        );
       } finally {
         await single.shutdown();
       }
@@ -496,6 +526,21 @@ for (const { engine, variable, prepare } of engines) {
         const view = await run('CALL wb_proc()', { connectionId: writable });
         assert.equal(view.resultSets.length, 2);
         assert.deepEqual(core.executions.rows(writer, view.id, 1).rows, [['2', 'x']]);
+      });
+
+      it('lets a procedure finish its writes when its rows reach the preview limit', async () => {
+        const view = await run('CALL wb_report_then_write()', { connectionId: writable });
+        assert.deepEqual([view.status, view.statements[0]?.status], ['succeeded', 'succeeded']);
+        const [set] = view.resultSets;
+        assert.deepEqual(
+          [set?.rowCount, set?.completeness, set?.moreAvailable],
+          [1000, 'preview_limited', true],
+        );
+        assert.equal(
+          await count("name = 'proc-after-report-5000000'"),
+          1,
+          'the write after the rows happened',
+        );
       });
     }
 

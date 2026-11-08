@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { MYSQL_CORPUS, POSTGRES_CORPUS } from '../../../test/fixtures/classification.js';
 import { analyzeScript, analyzeStatement } from '../src/sql/analyze.js';
 import { preflight } from '../src/sql/preflight.js';
+import { UNRESOLVED_VIEW } from '../src/sql/types.js';
 
 describe('statement classification', () => {
   for (const [engine, corpus] of [
@@ -54,6 +55,15 @@ describe('statement classification', () => {
       assert.equal((await analyzeStatement(sql, 'postgresql')).changesSession, true, sql);
     }
     assert.equal((await analyzeStatement('create table t (a int)', 'postgresql')).changesSession, false);
+    // Session-level locks outlive the transaction; transaction-level ones do not.
+    for (const sql of ['select pg_advisory_lock(1)', 'select pg_try_advisory_lock_shared(1, 2)']) {
+      assert.equal((await analyzeStatement(sql, 'postgresql')).changesSession, true, sql);
+    }
+    assert.equal(
+      (await analyzeStatement('select pg_advisory_xact_lock(1)', 'postgresql')).changesSession,
+      false,
+    );
+    assert.equal((await analyzeStatement("select get_lock('x', 0)", 'mysql')).changesSession, true);
     assert.equal((await analyzeStatement('create table t (a int)', 'mysql')).changesSession, false);
     assert.equal((await analyzeStatement('savepoint a', 'postgresql')).transactionControl, 'savepoint');
     assert.equal(
@@ -177,6 +187,27 @@ describe('preflight', () => {
     assert.deepEqual(
       await run('use b; insert into a.t values (1)', 'mysql', { transactionMode: 'atomic', tableEngine }),
       [],
+    );
+  });
+
+  it('checks names in exact case, and refuses writes through views whose tables are unknown', async () => {
+    const asked: string[] = [];
+    const tableEngine = async (t: { schema: string | null; name: string }) => {
+      asked.push(t.name);
+      return { Ledger: 'InnoDB', ledger: 'MyISAM', v: UNRESOLVED_VIEW }[t.name] ?? null;
+    };
+    const problems = await run(
+      'insert into Ledger values (1); insert into ledger values (2); insert into v values (3); select 1 from missing',
+      'mysql',
+      { transactionMode: 'atomic', tableEngine },
+    );
+    assert.deepEqual(asked, ['Ledger', 'ledger', 'v']);
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [
+        ['non_transactional_engine', 1],
+        ['unchecked_write_target', 2],
+      ],
     );
   });
 

@@ -142,6 +142,16 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE TABLE wb_legacy (id int PRIMARY KEY, note text) ENGINE=MyISAM;
       CREATE VIEW wb_item_names AS SELECT id, name FROM wb_items;
       CREATE PROCEDURE wb_proc() BEGIN SELECT 1 AS one; SELECT 2 AS two, 'x' AS label; END;
+      -- Returns more rows than a preview keeps, then writes: the write must still happen.
+      CREATE PROCEDURE wb_report_then_write() BEGIN
+        SELECT n FROM wb_numbers ORDER BY n;
+        -- A write that takes a moment, still running when the preview is full: stopping the
+        -- procedure then would interrupt it (SLEEP would not do: it ends quietly when interrupted).
+        INSERT INTO wb_items (name)
+          SELECT CONCAT('proc-after-report-', count(*)) FROM wb_numbers a CROSS JOIN wb_numbers b WHERE b.n <= 1000;
+      END;
+      -- An updatable view over a MyISAM table (single-transaction checks).
+      CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       CREATE FUNCTION wb_item_count() RETURNS int READS SQL DATA RETURN (SELECT count(*) FROM wb_items);
       CREATE TABLE wb_numbers (n int PRIMARY KEY);
       SET SESSION cte_max_recursion_depth = 10000;

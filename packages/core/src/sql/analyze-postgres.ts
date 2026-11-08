@@ -157,6 +157,8 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       if (reason) unsafe(analysis, `${name}() ${reason}`);
       // set_config(…, false) keeps the setting for the rest of the session.
       if (name === 'set_config') analysis.changesSession = true;
+      // Session-level advisory locks outlive the transaction: the connection must not be reused.
+      if (/^pg_(try_)?advisory_lock(_shared)?$/.test(name)) analysis.changesSession = true;
     }
   });
 }

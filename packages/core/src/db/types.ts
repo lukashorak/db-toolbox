@@ -70,6 +70,12 @@ export interface ExecuteOptions {
   signal?: AbortSignal;
   /** Rows per sink call. */
   batchSize?: number;
+  /**
+   * When the sink has enough rows of a result set: `cancel` ends the statement (default; for
+   * reads), `drain` lets it run to the end and discards the rest of that result set (for statements
+   * that change data, such as a procedure that returns rows and then writes).
+   */
+  onStop?: 'cancel' | 'drain';
 }
 
 export interface DbSession {

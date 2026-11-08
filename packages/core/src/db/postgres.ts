@@ -316,6 +316,7 @@ class PostgresSession implements DbSession {
       stopped: false,
       notices,
     };
+    let discarding = false;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       for (;;) {
@@ -348,12 +349,16 @@ class PostgresSession implements DbSession {
           outcome.resultSets = 1;
           await sink.start(columns, 0);
         }
-        if (rows.length) {
+        if (rows.length && !discarding) {
           outcome.rowsDelivered += rows.length;
           if ((await sink.rows(rows, 0)) === 'stop') {
             outcome.stopped = true;
-            await cursor.close();
-            break;
+            // A statement that changes data runs to its end; only its further rows are dropped.
+            if (options.onStop === 'drain') discarding = true;
+            else {
+              await cursor.close();
+              break;
+            }
           }
         }
         if (rows.length < batchSize) {

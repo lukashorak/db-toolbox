@@ -1,5 +1,5 @@
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptions } from 'mysql2';
-import type { TableRef } from '../sql/types.js';
+import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
 import { DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
@@ -161,12 +161,39 @@ export class MysqlAdapter implements DbAdapter {
     }
   }
 
+  /**
+   * The storage engine a write to this table reaches. A view has no engine of its own: its base
+   * tables decide, and the first non-transactional one is reported. A view whose base tables cannot
+   * be determined (no privilege, nesting too deep) reports UNRESOLVED_VIEW.
+   */
   async tableEngine(table: TableRef): Promise<string | null> {
+    return this.#engineOf(table.schema, table.name, new Set());
+  }
+
+  async #engineOf(schema: string | null, name: string, seen: Set<string>): Promise<string | null> {
     const [row] = await this.#metaQuery(
-      'SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?',
-      [table.schema, table.name],
+      `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
+      [schema, name],
     );
-    return row?.engine ? String(row.engine) : null;
+    if (!row) return null;
+    if (row.type !== 'VIEW') return row.engine ? String(row.engine) : null;
+    const key = `${String(row.db)}.${name}`;
+    if (seen.has(key) || seen.size >= 16) return UNRESOLVED_VIEW;
+    seen.add(key);
+    const bases = await this.#metaQuery(
+      'SELECT TABLE_SCHEMA AS db, TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = ? AND VIEW_NAME = ?',
+      [row.db, name],
+    );
+    if (!bases.length) return UNRESOLVED_VIEW;
+    let found: string | null = null;
+    for (const base of bases) {
+      const engine = await this.#engineOf(String(base.db), String(base.name), seen);
+      if (engine === null || engine === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+      if (!TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
+      found ??= engine;
+    }
+    return found;
   }
 
   activeSessions(): number {
@@ -255,6 +282,9 @@ class MysqlSession implements DbSession {
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) interrupt('cancelled');
 
+    const drain = options.onStop === 'drain';
+    /** Result sets the sink has enough of, while the statement runs on (drain). */
+    const discarded = new Set<number>();
     let warnings = 0;
     let lost: ((error?: unknown) => void) | null = null;
     let failed: unknown = null;
@@ -275,11 +305,12 @@ class MysqlSession implements DbSession {
           if (pause) this.connection.pause();
           pending = pending
             .then(async () => {
-              if (interrupted) return;
+              if (interrupted || discarded.has(at)) return;
               outcome.rowsDelivered += rows.length;
               if ((await sink.rows(rows, at)) === 'stop') {
                 outcome.stopped = true;
-                interrupt('stopped');
+                if (drain) discarded.add(at);
+                else interrupt('stopped');
               }
             })
             .catch((error: unknown) => {
@@ -329,7 +360,7 @@ class MysqlSession implements DbSession {
           'result',
           guard((row: unknown) => {
             if (Array.isArray(row)) {
-              if (interrupted) return;
+              if (interrupted || discarded.has(index)) return;
               batch.push(row.map((value, i) => toCell(value, columns[i]?.binary ?? false)));
               if (batch.length >= batchSize) flush();
             } else if (row && typeof row === 'object') {

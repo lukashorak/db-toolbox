@@ -53,9 +53,9 @@ Status, transaction outcome and result completeness are reported separately.
 All statements of an execution run one after another on one pinned session.
 
 - **Per statement** (default). Each write commits on its own (autocommit). Under a read-only policy, each statement runs inside its own read-only transaction. The run stops at the first error unless `continueOnError` is set. A cancel or timeout always stops it.
-- **Single transaction**. One transaction around the script, read-only when the policy is. Any failure rolls everything back. The outcome is set to `unknown` just before COMMIT and only then to `committed`, so a crash during COMMIT is never reported as committed. Statements that would break the promise are refused before running: transaction control, MySQL statements that commit implicitly, PostgreSQL statements that cannot run in a transaction block, MySQL tables that are not transactional (including `LOAD DATA` targets, and unqualified names after a `USE` in the script, which are looked up in that database), MySQL writes whose tables cannot be determined, and MySQL `CALL`, because a procedure can commit on its own.
+- **Single transaction**. One transaction around the script, read-only when the policy is. Any failure rolls everything back. The outcome is set to `unknown` just before COMMIT and only then to `committed`, so a crash during COMMIT is never reported as committed. Statements that would break the promise are refused before running: transaction control, MySQL statements that commit implicitly, PostgreSQL statements that cannot run in a transaction block, MySQL tables that are not transactional (including `LOAD DATA` targets, the base tables of views, and unqualified names after a `USE` in the script, which are looked up in that database), MySQL writes whose tables cannot be determined (including views whose base tables cannot be read), and MySQL `CALL`, because a procedure can commit on its own.
 
-Statements that change session state mark the session dirty, and the session is discarded after the run. That includes temporary tables (and, in PostgreSQL, anything in `pg_temp`): they live as long as the connection and could shadow a permanent table for the next run.
+Statements that change session state mark the session dirty, and the session is discarded after the run. That includes temporary tables (and, in PostgreSQL, anything in `pg_temp`), which live as long as the connection and could shadow a permanent table for the next run, and session-level locks (PostgreSQL advisory locks, MySQL `GET_LOCK`), which closing the connection releases.
 
 ## Cancellation and time limits
 
@@ -75,6 +75,7 @@ Statements that change session state mark the session dirty, and the session is 
 | preview | 1,000 per result set; a 1,001st row is read to detect "more available" (no COUNT) | `complete` or `preview_limited`                |
 | full    | Everything within 100 MiB per execution and 1 GiB in total                        | `complete` or `quota_limited` (never complete) |
 
+- When a read has enough rows, the database stops it. A statement that changes data (a procedure that returns rows and then writes, `INSERT … RETURNING`) always runs to its end; only its further rows are discarded.
 - A result set cut short by an error, a cancel or a restart is `interrupted`. Results are removed after their retention and become `expired`.
 - Values are lossless text, and binary values are `\x` hex ([decision 0023](decisions/0023-values-as-text.md)). Duplicate column names are kept, and each result set (several per MySQL procedure) is stored separately.
 - Rows are stored as JSON chunks of up to 1,000 rows or 1 MiB. Pages of up to 1,000 rows are read back by offset.

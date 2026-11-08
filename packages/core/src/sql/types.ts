@@ -4,6 +4,15 @@ export type StatementKind = 'read' | 'write' | 'transaction' | 'session' | 'unkn
 
 export type TransactionControl = 'begin' | 'commit' | 'rollback' | 'savepoint' | 'autocommit' | 'lock' | 'xa';
 
+/**
+ * Storage engine reported for a view whose base tables could not be determined (MySQL): whether
+ * a write through it can be rolled back is unknown.
+ */
+export const UNRESOLVED_VIEW = 'unresolved view';
+
+/** MySQL storage engines that roll back (lower case). */
+export const TRANSACTIONAL_ENGINES = new Set(['innodb', 'ndb', 'ndbcluster']);
+
 export interface TableRef {
   schema: string | null;
   name: string;

@@ -951,6 +951,9 @@ export class ExecutionService {
                 timeoutMs: remaining,
                 signal,
                 batchSize: sink.batchSize,
+                // Reaching the capture limit may end a read, never a statement that changes data:
+                // a procedure that returns rows and then writes must still finish.
+                onStop: st.kind === 'read' ? 'cancel' : 'drain',
               });
             } finally {
               // SET, user variables (SELECT @v := …) and the like stay on a pooled session: discard
