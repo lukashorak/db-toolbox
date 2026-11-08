@@ -85,14 +85,28 @@ const NAME_POSITIONS = new Set(['WITH', 'RECURSIVE', 'INTO', 'TABLE', 'UPDATE', 
 function isFunctionCall(tokens: Token[], i: number): boolean {
   if (tokens[i]?.kind !== 'word' || tokens[i + 1]?.text !== '(') return false;
   if (NAME_POSITIONS.has(word(tokens[i - 1]))) return false;
-  // A CTE after a comma: `…), get_lock (x) AS (…)`. Its column list is followed by AS.
+  // A later CTE of a WITH list: `…), get_lock (x) AS (…)`. It sits at the top level of the statement
+  // after a comma, and its column list is followed by `AS (`. A call inside parentheses, such as
+  // CAST(get_lock('n', 0) AS UNSIGNED), is never one.
+  if (tokens[i - 1]?.text !== ',' || depthAt(tokens, i) !== 0) return true;
   let depth = 0;
   for (let j = i + 1; j < tokens.length; j++) {
     const text = tokens[j]?.text;
     if (text === '(') depth++;
-    else if (text === ')' && --depth === 0) return word(tokens[j + 1]) !== 'AS';
+    else if (text === ')' && --depth === 0)
+      return !(word(tokens[j + 1]) === 'AS' && tokens[j + 2]?.text === '(');
   }
   return true;
+}
+
+/** Parentheses open before tokens[i]. */
+function depthAt(tokens: Token[], i: number): number {
+  let depth = 0;
+  for (let j = 0; j < i; j++) {
+    if (tokens[j]?.text === '(') depth++;
+    else if (tokens[j]?.text === ')') depth = Math.max(0, depth - 1);
+  }
+  return depth;
 }
 
 /** `name` or `schema.name` starting at tokens[i]. */

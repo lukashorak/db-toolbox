@@ -91,6 +91,20 @@ describe('statement classification', () => {
       assert.deepEqual([cte.readOnlySafe, cte.changesSession], [true, false], sql);
     }
     assert.equal((await analyzeStatement("select 1, get_lock('a', 1)", 'mysql')).readOnlySafe, false);
+    // A call followed by AS inside parentheses (CAST) is still a call.
+    for (const sql of [
+      "values row(cast(get_lock('name', 0) as unsigned))",
+      "select cast(get_lock('name', 0) as unsigned) as got",
+      "select 1, get_lock('a', 0) as got",
+    ]) {
+      const call = await analyzeStatement(sql, 'mysql');
+      assert.deepEqual([call.readOnlySafe, call.changesSession], [false, true], sql);
+    }
+    const readOnly = await preflight(
+      await analyzeScript("values row(cast(get_lock('name', 0) as unsigned))", 'mysql'),
+      { engine: 'mysql', transactionMode: 'per_statement', readOnly: true },
+    );
+    assert.equal(readOnly[0]?.code, 'read_only_violation');
     assert.equal(
       (await analyzeStatement('do $$ begin perform 1; end $$', 'postgresql')).changesSession,
       true,
