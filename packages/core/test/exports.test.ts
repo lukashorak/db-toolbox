@@ -281,6 +281,26 @@ describe('result deletion and retention', () => {
     core.close();
   });
 
+  it('releases the space of a result once when two deletions overlap', async () => {
+    const { core, id } = await fixture();
+    core.db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, more_available, completeness, expires_at)
+       VALUES (:id, 1, 0, :columns, 1, 100, 0, 'complete', '2027-01-01T00:00:00Z')`,
+      { id, columns: JSON.stringify(COLUMNS) },
+    );
+    core.executions.reconcile();
+    // An export, so each deletion waits on removing its file before changing the database.
+    await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    const freed = await Promise.all([
+      core.exports.deleteResults(writer, id, 0),
+      core.exports.deleteResults(writer, id, 0),
+    ]);
+    assert.deepEqual(freed.sort(), [0, 400]);
+    assert.equal(core.executions.storedBytes, 100, 'the other result is still counted');
+    core.close();
+  });
+
   it('cleanup removes export files and chunks after retention and keeps metadata', async () => {
     const { core, id, dir } = await fixture();
     const created = await core.exports.create(writer, id, 0, { format: 'json' });

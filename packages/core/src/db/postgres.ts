@@ -195,6 +195,22 @@ export class PostgresAdapter implements DbAdapter {
   }
 }
 
+/** True if the promise settles (either way) within `ms`. */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    promise.then(
+      () => true,
+      () => true,
+    ),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+    }),
+  ]);
+  clearTimeout(timer);
+  return settled;
+}
+
 /** Command tags of statements that change rows; with RETURNING, each returned row is a changed row. */
 const CHANGES_ROWS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
 
@@ -297,10 +313,12 @@ class PostgresSession implements DbSession {
     this.client.on('notice', onNotice);
 
     let interrupted: 'timeout' | 'cancelled' | null = null;
+    /** The cancel request: it must settle before this backend runs anything else. */
+    let cancelling: Promise<unknown> | null = null;
     const interrupt = (why: 'timeout' | 'cancelled') => {
       if (interrupted) return;
       interrupted = why;
-      void this.adapter.cancel(this.backendId);
+      cancelling = this.adapter.cancel(this.backendId);
     };
     // statement_timeout ends the statement on the server; this backstop covers a server that does not answer.
     const timer = setTimeout(() => interrupt('timeout'), timeout + 2000);
@@ -403,6 +421,11 @@ class PostgresSession implements DbSession {
       options.signal?.removeEventListener('abort', onAbort);
       this.client.removeListener('notice', onNotice);
       if (interrupted && !this.#inTransaction) this.markDirty(`statement ${interrupted}`);
+      // A cancel request still on its way could stop the next statement on this backend. Wait for
+      // it (pg_cancel_backend has no effect on an idle backend); if it does not settle, discard it.
+      if (cancelling && !(await settlesWithin(cancelling, 5000))) {
+        this.markDirty('a cancel request did not settle');
+      }
     }
   }
 

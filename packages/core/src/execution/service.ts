@@ -13,7 +13,8 @@ import type { DatabaseService } from '../services/databases.js';
 import type { ProfileService } from '../services/profiles.js';
 import type { SettingsService } from '../services/settings.js';
 import { parseInput } from '../services/validation.js';
-import { analyzeScript } from '../sql/analyze.js';
+import { analyzeScript, analyzeStatement } from '../sql/analyze.js';
+import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW } from '../sql/types.js';
 import { preflight, type PreflightProblem } from '../sql/preflight.js';
 import type { StatementKind } from '../sql/types.js';
 import { bool, int, type Row } from '../store/database.js';
@@ -910,6 +911,8 @@ export class ExecutionService {
     };
 
     let skippedForCancel = false;
+    /** MySQL: the database a USE in this script switched to, for unqualified names. */
+    let database: string | null = null;
     try {
       await adapter.withSession(async (session: DbSession) => {
         await session.tag(id);
@@ -963,6 +966,9 @@ export class ExecutionService {
               if (bool(st.changes_session)) session.markDirty('session state may have changed');
             }
             if (!atomic && readOnly) await session.commit();
+            if (row.engine === 'mysql' && String(st.command).toUpperCase() === 'USE') {
+              database = (await analyzeStatement(String(st.sql), 'mysql')).usesDatabase ?? database;
+            }
             sink.finish('complete', expiresAt());
             resultIndex += sink.count;
             const txOutcome: TransactionOutcome = atomic
@@ -999,9 +1005,18 @@ export class ExecutionService {
                     : 'failed';
             if (!atomic && readOnly)
               await session.rollback().catch(() => session.markDirty('rollback failed'));
+            // Per statement, a failed write rolls back only if every table it writes can roll back.
+            const uncertain =
+              lost ||
+              mayCommit ||
+              (row.engine === 'mysql' &&
+                !atomic &&
+                writes &&
+                !readOnly &&
+                !(await this.#failedWriteRolledBack(adapter, String(st.sql), database)));
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
-              : (lost || mayCommit) && writes && !readOnly
+              : uncertain && writes && !readOnly
                 ? 'unknown'
                 : writes && !readOnly
                   ? 'rolled_back'
@@ -1146,6 +1161,29 @@ export class ExecutionService {
    * After a restart: work that was running is marked interrupted and never replayed. Queued work
    * stays queued and is authorized again when it starts.
    */
+  /**
+   * MySQL, per statement: whether a write that failed is known to have changed nothing. InnoDB
+   * undoes a failed statement; MyISAM and other non-transactional tables keep the rows written
+   * before the error (a multi-row INSERT that hits a duplicate key half way).
+   */
+  async #failedWriteRolledBack(adapter: DbAdapter, sql: string, database: string | null): Promise<boolean> {
+    const analysis = await analyzeStatement(sql, 'mysql');
+    if (analysis.writeTargetsUnknown) return false;
+    const declared = analysis.declaredEngine?.toLowerCase();
+    if (declared && !TRANSACTIONAL_ENGINES.has(declared)) return false;
+    for (const table of analysis.writesTables) {
+      let engine: string | null;
+      try {
+        engine = await adapter.tableEngine({ schema: table.schema ?? database, name: table.name });
+      } catch {
+        return false;
+      }
+      if (engine === UNRESOLVED_VIEW || (engine && !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())))
+        return false;
+    }
+    return true;
+  }
+
   reconcile(): { interrupted: number; queued: number } {
     const now = isoNow(this.ctx);
     const inFlight = this.ctx.db.all(

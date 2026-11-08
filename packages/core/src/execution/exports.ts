@@ -253,17 +253,24 @@ export class ExportService {
          ${resultIndex === undefined ? '' : 'AND result_index = :index'}`,
       { id: executionId, ...(resultIndex === undefined ? {} : { index: resultIndex }) },
     );
-    for (const set of sets) await this.#removeResult(executionId, Number(set.result_index), 'deleted');
-    if (sets.length) {
+    let freed = 0;
+    const removed: number[] = [];
+    for (const set of sets) {
+      const bytes = await this.#removeResult(executionId, Number(set.result_index), 'deleted');
+      freed += bytes;
+      // An overlapping request may have removed it in the meantime; that one records it.
+      if (bytes || Number(set.byte_count) === 0) removed.push(Number(set.result_index));
+    }
+    if (removed.length) {
       this.ctx.audit.record({
         actor,
         action: 'result.delete',
         target: { type: 'execution', id: executionId },
         outcome: 'succeeded',
-        details: { resultSets: sets.map((s) => Number(s.result_index)) },
+        details: { resultSets: removed },
       });
     }
-    return sets.reduce((sum, s) => sum + Number(s.byte_count), 0);
+    return freed;
   }
 
   /**
@@ -393,18 +400,15 @@ export class ExportService {
     if (row.file_name) await rm(join(folder, String(row.file_name)), { force: true });
   }
 
+  /**
+   * Removes one result set's rows and export files. Returns the bytes this call released: 0 when
+   * retention or an overlapping call removed it first.
+   */
   async #removeResult(
     executionId: string,
     index: number,
     completeness: 'deleted' | 'expired',
-  ): Promise<void> {
-    const set = this.ctx.db.get(
-      'SELECT byte_count, completeness FROM result_sets WHERE execution_id = :id AND result_index = :index',
-      { id: executionId, index },
-    );
-    // Retention already released the bytes of an expired result; release only what is still counted.
-    const counted = set && set.completeness !== 'expired' && set.completeness !== 'deleted';
-    const bytes = counted ? Number(set.byte_count ?? 0) : 0;
+  ): Promise<number> {
     for (const x of this.ctx.db.all(
       'SELECT * FROM exports WHERE execution_id = :id AND result_index = :index',
       {
@@ -414,7 +418,14 @@ export class ExportService {
     )) {
       await this.#removeFile(x);
     }
-    this.ctx.db.transaction(() => {
+    // Decided in one synchronous transaction after the awaits, so of two overlapping calls only the
+    // one that changes a still-counted result releases its bytes.
+    const bytes = this.ctx.db.transaction(() => {
+      const set = this.ctx.db.get(
+        'SELECT byte_count, completeness FROM result_sets WHERE execution_id = :id AND result_index = :index',
+        { id: executionId, index },
+      );
+      const counted = set && set.completeness !== 'expired' && set.completeness !== 'deleted';
       this.ctx.db.run(
         "UPDATE exports SET status = :status WHERE execution_id = :id AND result_index = :index AND status NOT IN ('deleted', 'expired')",
         { id: executionId, index, status: completeness },
@@ -436,8 +447,10 @@ export class ExportService {
           WHERE execution_id = :id AND result_index = :index AND status IN ('pending', 'active')`,
         { id: executionId, index },
       );
+      return counted ? Number(set.byte_count ?? 0) : 0;
     });
-    this.ctx.onResultBytesFreed?.(bytes);
+    if (bytes) this.ctx.onResultBytesFreed?.(bytes);
+    return bytes;
   }
 
   #changed(id: string): void {

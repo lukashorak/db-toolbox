@@ -233,12 +233,15 @@
         : { sql: tab.sql.slice(target.from, target.to), base: target.from, scope: target.scope });
     if (!part.sql.trim()) return;
     rejected = null;
+    // The tab this run belongs to, even if the person switches tabs before the answer arrives.
+    const origin = tab;
+    const connectionId = tab.connectionId;
     // Set before the first await, so a second call in the meantime returns above.
     const tabId = tab.id;
     submitting.add(tabId);
     try {
       const view = await api<ExecutionView>('POST', '/executions', {
-        connectionId: tab.connectionId,
+        connectionId,
         sql: part.sql,
         title: tab.title,
         scope: part.scope,
@@ -251,14 +254,19 @@
       });
       bases.set(view.id, part.base);
       views[view.id] = view;
-      tab.runs = [view.id, ...(tab.runs ?? [])].slice(0, 20);
-      shownRun = view.id;
+      origin.runs = [view.id, ...(origin.runs ?? [])].slice(0, 20);
+      if (workbench.active === tabId) shownRun = view.id;
     } catch (e) {
-      if (e instanceof ApiError && (e.code === 'read_only_policy' || e.code === 'preflight_rejected')) {
+      if (workbench.active !== tabId) {
+        toast(`${origin.title}: ${e instanceof Error ? e.message : String(e)}`, 'danger');
+      } else if (
+        e instanceof ApiError &&
+        (e.code === 'read_only_policy' || e.code === 'preflight_rejected')
+      ) {
         const statements =
           (
             await api<Omit<NonNullable<typeof checked>, 'for'>>('POST', '/sql/check', {
-              connectionId: tab.connectionId,
+              connectionId,
               sql: part.sql,
             }).catch(() => null)
           )?.statements ?? [];

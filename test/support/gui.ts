@@ -52,7 +52,9 @@ export type Page = Locator & {
     handler: (route: { request(): RequestInfo; continue(): Promise<void> }) => unknown,
   ): Promise<void>;
   unroute(url: string): Promise<void>;
-  waitForResponse(predicate: (response: { request(): RequestInfo }) => boolean): Promise<unknown>;
+  waitForResponse(
+    predicate: (response: { request(): RequestInfo }) => boolean,
+  ): Promise<{ json(): Promise<unknown> }>;
   addScriptTag(options: { path: string }): Promise<unknown>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   setViewportSize(size: { width: number; height: number }): Promise<void>;

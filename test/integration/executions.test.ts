@@ -539,6 +539,29 @@ for (const { engine, variable, prepare } of engines) {
         assert.deepEqual(core.executions.rows(writer, view.id, 1).rows, [['2', 'x']]);
       });
 
+      it('reports an unknown outcome when a write to a non-transactional table fails half way', async () => {
+        assert.equal(
+          (await run("INSERT INTO wb_legacy VALUES (60, 'first')", { connectionId: writable })).status,
+          'succeeded',
+        );
+        // MyISAM keeps row 61 when the duplicate 60 fails the statement.
+        const half = await run("INSERT INTO wb_legacy VALUES (61, 'kept'), (60, 'duplicate')", {
+          connectionId: writable,
+        });
+        assert.deepEqual(
+          [half.status, half.statements[0]?.transactionOutcome, half.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+        // InnoDB undoes the failed statement: that is still a rollback.
+        const inno = await run("INSERT INTO wb_items (name) VALUES ('run-inno-ok'), ('alpha')", {
+          connectionId: writable,
+        });
+        assert.deepEqual(
+          [inno.status, inno.statements[0]?.transactionOutcome, inno.transactionOutcome],
+          ['failed', 'rolled_back', 'none'],
+        );
+      });
+
       it('reports an unknown outcome, not a rollback, when a procedure fails after committing', async () => {
         const view = await run('CALL wb_commit_then_fail()', { connectionId: writable });
         assert.equal(view.status, 'failed');

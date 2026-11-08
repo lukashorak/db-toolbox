@@ -174,6 +174,30 @@ describe(
       assert.equal(submissions - before, 1, 'one submission');
     });
 
+    it('keeps a run with the tab it was started in when the tab changes before the answer', async () => {
+      await setSql("INSERT INTO wb_items (name) VALUES ('gui-origin-tab')");
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const isSubmit = (r: { method(): string; url(): string }) =>
+        r.method() === 'POST' && /\/api\/v1\/executions$/.test(r.url());
+      await page.route('**/api/v1/executions', async (route) => {
+        if (isSubmit(route.request())) await held;
+        await route.continue();
+      });
+      const answered = page.waitForResponse((r) => isSubmit(r.request()));
+      await page.getByRole('button', { name: 'Run script' }).click();
+      // Another tab, while the submission is on its way.
+      await page.getByRole('button', { name: 'New tab' }).click();
+      release();
+      const { id } = (await (await answered).json()) as { id: string };
+      await page.unroute('**/api/v1/executions');
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(await results().count(), 0, 'the new tab shows no run');
+      await page.getByRole('tablist', { name: 'Query tabs' }).getByRole('tab').first().click();
+      await page.locator(`[data-testid="results"][data-execution-id="${id}"]`).waitFor();
+      await finished('succeeded');
+    });
+
     it('never runs a statement range of an earlier text', async () => {
       // A long first text: its statement range would cover both statements of the shorter next one.
       await setSql('SELECT 1 AS a_first_text_that_is_longer_than_the_next_one');

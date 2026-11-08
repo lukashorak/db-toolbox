@@ -388,6 +388,44 @@ for (const { engine, variable, prepare } of engines) {
         });
       }
 
+      if (engine === 'postgresql') {
+        it('lets a slow cancel request settle before the backend runs anything else', async () => {
+          // The control connection answers late: the cancelled read stops at a batch boundary first.
+          const original = adapter.cancel.bind(adapter);
+          adapter.cancel = (id: number) =>
+            new Promise((resolve) => setTimeout(() => resolve(original(id)), 1500));
+          try {
+            const next = await adapter.withSession(async (s) => {
+              await s.begin({ readOnly: true });
+              const controller = new AbortController();
+              let batches = 0;
+              const sink: ResultSink = {
+                start: () => undefined,
+                rows: () => {
+                  if (++batches === 2) controller.abort();
+                },
+              };
+              await assert.rejects(
+                s.execute('SELECT n FROM generate_series(1, 1000000) n', sink, {
+                  timeoutMs: 30_000,
+                  batchSize: 100,
+                  signal: controller.signal,
+                }),
+                { category: 'cancelled' },
+              );
+              await s.rollback();
+              // Would be cancelled by the late request if it reached this statement.
+              const after = collect();
+              await s.execute('SELECT pg_sleep(2), 7', after.sink, { timeoutMs: 10_000 });
+              return after.sets[0]?.rows[0]?.[1];
+            });
+            assert.equal(next, '7');
+          } finally {
+            adapter.cancel = original;
+          }
+        });
+      }
+
       it('reports affected rows of writes', async () => {
         const { outcome } = await run("UPDATE wb_items SET name = name WHERE name = 'alpha'", {
           readOnly: false,
