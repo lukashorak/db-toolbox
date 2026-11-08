@@ -145,10 +145,14 @@ describe('MCP disclosure', () => {
         core.db.get('SELECT bytes_returned FROM mcp_usage WHERE execution_id = :id', { id })
           ?.bytes_returned ?? 0,
       );
+    // An allowance that fits the message once, not twice: the execution's copy of the statement's
+    // error is the same message, counted once.
+    core.profiles.update(admin, profile.id, { previewBytes: Buffer.byteLength(leaked) + 10 });
     const shown = core.disclosure.diagnostics(mcp, core.executions.get(mcp, id));
     assert.equal(shown.statements[0]?.error?.message, leaked);
+    assert.equal(shown.error?.message, `Statement 1: ${leaked}`);
     const charged = usedBytes();
-    assert.equal(charged, Buffer.byteLength(leaked) + Buffer.byteLength(`Statement 1: ${leaked}`));
+    assert.equal(charged, Buffer.byteLength(leaked));
     // Shown again without being charged again.
     core.disclosure.diagnostics(mcp, core.executions.get(mcp, id));
     assert.equal(usedBytes(), charged);

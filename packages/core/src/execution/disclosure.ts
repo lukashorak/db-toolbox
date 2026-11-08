@@ -531,11 +531,21 @@ export class DisclosureService {
       error && fromDatabase(error)
         ? { ...error, message: this.#diagnostic(actor, view.id, profile, item, error.message) }
         : error;
-    return {
-      ...view,
-      error: reveal('execution', view.error),
-      statements: view.statements.map((s) => ({ ...s, error: reveal(`statement:${s.ordinal}`, s.error) })),
-    };
+    const statements = view.statements.map((s) => ({
+      ...s,
+      error: reveal(`statement:${s.ordinal}`, s.error),
+    }));
+    // The execution's error is usually a failed statement's, as "Statement N: …": one message,
+    // shown (or withheld) as the statement's and counted once.
+    let error = view.error;
+    const copied = error ? /^Statement (\d+): ([\s\S]*)$/.exec(error.message) : null;
+    const ordinal = copied ? Number(copied[1]) - 1 : -1;
+    const source = view.statements.find((s) => s.ordinal === ordinal);
+    if (error && copied && source?.error?.message === copied[2]) {
+      const shown = statements.find((s) => s.ordinal === ordinal)?.error?.message ?? copied[2];
+      error = { ...error, message: `Statement ${copied[1]}: ${shown}` };
+    } else error = reveal('execution', error);
+    return { ...view, error, statements };
   }
 
   #diagnostic(
