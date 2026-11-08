@@ -901,11 +901,16 @@ class MysqlSession implements DbSession {
       outcome.resultSets === 0 &&
       (outcome.affectedRows ?? 0) > 0 &&
       SINGLE_DML.has(analyzeMysql(sql).command.toUpperCase());
+    // Any other statement the server ended without an error stays interrupted: an interrupted
+    // SLEEP() ends that way, but so does one that finished just before the cancel or time limit
+    // reached it, and outside a transaction the writes of the functions it called have committed.
+    // The two cannot be told apart, so the error says the server did not report an interruption.
+    const finished = !this.#inTransaction;
     if (interrupted === 'timeout' && !committed) {
-      throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`);
+      throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`, { finished });
     }
     if (interrupted === 'cancelled' && !committed)
-      throw new DbError('cancelled', 'The statement was cancelled.');
+      throw new DbError('cancelled', 'The statement was cancelled.', { finished });
     // Result sets carry their warning count in the EOF packet, which mysql2 does not surface, so ask.
     if (!this.dirty) {
       try {

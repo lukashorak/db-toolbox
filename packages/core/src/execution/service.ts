@@ -1242,10 +1242,12 @@ export class ExecutionService {
             // A failure that is not the database's (capturing the rows, storing the result) can come
             // after the statement committed: a write's outcome is then unknown, never rolled back.
             const notFromDatabase = !(error instanceof DbError);
+            // A cancel or time limit the server did not report: the statement may have finished.
+            const mayHaveFinished = error instanceof DbError && error.finished;
             const uncertain =
               lost ||
               mayCommit ||
-              (notFromDatabase && !atomic && writes && !readOnly) ||
+              ((notFromDatabase || mayHaveFinished) && !atomic && writes && !readOnly) ||
               (row.engine === 'mysql' &&
                 !atomic &&
                 writes &&

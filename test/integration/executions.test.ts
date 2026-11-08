@@ -556,6 +556,31 @@ for (const { engine, variable, prepare } of engines) {
     });
 
     it(
+      'a read whose function wrote, when a cancel reaches it too late, reports an unknown outcome',
+      { skip: engine !== 'mysql' },
+      async () => {
+        // The cancel has no effect on the server (as when it lands just after the statement
+        // finished): SELECT wb_fn_inno() wrote to InnoDB and committed, and answers without an error.
+        const adapter = await core.databases.adapter(writer, writable);
+        const cancel = adapter.cancel.bind(adapter);
+        adapter.cancel = async () => true;
+        try {
+          const view = await submit('SELECT wb_fn_inno(), SLEEP(1)');
+          await until(() => core.executions.view(view.id).statements[0]?.status === 'running');
+          await new Promise((r) => setTimeout(r, 300));
+          core.executions.cancel(writer, view.id);
+          const done = await settle(core, view.id);
+          assert.deepEqual(
+            [done.status, done.statements[0]?.transactionOutcome, done.transactionOutcome],
+            ['cancelled', 'unknown', 'unknown'],
+          );
+        } finally {
+          adapter.cancel = cancel;
+        }
+      },
+    );
+
+    it(
       'a COMMIT already under way when a cancel arrives completes and is reported as committed',
       { skip: engine !== 'postgresql' },
       async () => {

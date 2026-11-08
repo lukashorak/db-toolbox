@@ -54,11 +54,19 @@ export class DbError extends Error {
    * raise any SQLSTATE with any text). False for messages this tool or a driver wrote.
    */
   readonly server: boolean;
+  /**
+   * A cancel or time limit that the server did not report: it ended the statement without an
+   * error, so the statement may have finished (outside a transaction, committed what it wrote)
+   * before the interruption reached it. Only our interruption makes it a failure.
+   */
+  readonly finished: boolean;
 
   constructor(
     category: DbErrorCategory,
     message: string,
-    extra: Partial<Pick<DbError, 'sqlState' | 'code' | 'detail' | 'hint' | 'position' | 'server'>> = {},
+    extra: Partial<
+      Pick<DbError, 'sqlState' | 'code' | 'detail' | 'hint' | 'position' | 'server' | 'finished'>
+    > = {},
   ) {
     super(message);
     this.name = 'DbError';
@@ -69,6 +77,7 @@ export class DbError extends Error {
     this.hint = extra.hint ?? null;
     this.position = extra.position ?? null;
     this.server = extra.server ?? false;
+    this.finished = extra.finished ?? false;
   }
 
   toJSON() {
