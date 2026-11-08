@@ -1191,7 +1191,13 @@ export class ExecutionService {
               },
             );
           } catch (error) {
-            sink.finish('interrupted', expiresAt());
+            // When storing the result is what failed, closing it can fail the same way: keep what
+            // was stored and go on, so the statement's outcome is still recorded.
+            try {
+              sink.finish('interrupted', expiresAt());
+            } catch {
+              sink.abandon(expiresAt());
+            }
             resultIndex += sink.count;
             const e = describe(error);
             const category = error instanceof DbError ? error.category : 'other';

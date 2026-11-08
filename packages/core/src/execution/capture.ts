@@ -174,6 +174,32 @@ export class ResultCapture implements ResultSink {
     set.bufferBytes = 0;
   }
 
+  /**
+   * After storing the result failed: keeps what was stored, marked interrupted, and drops the rows
+   * not stored yet (giving their bytes back). Best effort: the database may refuse this too; a set
+   * left `capturing` is then closed by restart recovery.
+   */
+  abandon(expiresAt: string | null): void {
+    for (const set of this.#sets.values()) {
+      const dropped = set.bufferBytes;
+      set.rows -= set.buffer.length;
+      set.bytes -= dropped;
+      set.buffer = [];
+      set.bufferBytes = 0;
+      this.options.budget.release(dropped);
+      this.options.executionBytes.used = Math.max(0, this.options.executionBytes.used - dropped);
+      try {
+        this.db.run(
+          `UPDATE result_sets SET row_count = :rows, byte_count = :bytes, more_available = 1, completeness = 'interrupted',
+             expires_at = :expires WHERE execution_id = :id AND result_index = :index`,
+          { id: this.executionId, index: set.index, rows: set.rows, bytes: set.bytes, expires: expiresAt },
+        );
+      } catch {
+        // See above.
+      }
+    }
+  }
+
   /** Closes all result sets: `complete` when the statement finished, `interrupted` otherwise. */
   finish(ended: 'complete' | 'interrupted', expiresAt: string | null): void {
     for (const set of this.#sets.values()) {

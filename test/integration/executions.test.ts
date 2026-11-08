@@ -363,6 +363,22 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(done.statements[0]?.transactionOutcome, 'unknown');
           assert.equal(done.transactionOutcome, 'unknown');
           assert.equal(await count("name = 'run-capture-failed'"), 1, 'the row was committed');
+
+          // Storing the rows keeps failing, also while the result is closed after the failure.
+          db.run = (sql: string, params?: unknown) => {
+            if (sql.includes('INSERT INTO result_chunks')) throw new Error('database or disk is full');
+            return run(sql, params);
+          };
+          const again = await submit("INSERT INTO wb_items (name) VALUES ('run-chunks-failed') RETURNING id");
+          const settled = await settle(core, again.id);
+          assert.deepEqual(
+            [settled.status, settled.statements[0]?.status, settled.statements[0]?.transactionOutcome],
+            ['failed', 'failed', 'unknown'],
+          );
+          assert.equal(settled.transactionOutcome, 'unknown');
+          assert.equal(settled.resultSets[0]?.completeness, 'interrupted');
+          db.run = run; // counting stores its own result
+          assert.equal(await count("name = 'run-chunks-failed'"), 1, 'the row was committed');
         } finally {
           db.run = run;
         }
