@@ -6,6 +6,8 @@ import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import Monitoring from '../src/pages/Monitoring.svelte';
 import Explorer from '../src/pages/Explorer.svelte';
+import Executions from '../src/pages/Executions.svelte';
+import { navigate, route } from '../src/lib/router.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
 import { columnComparator } from '../src/lib/compare';
@@ -570,6 +572,135 @@ describe('explorer', () => {
       expect(screen.queryByText('alpha_schema')).toBeNull();
     } finally {
       if (original) api.mockImplementation(original);
+    }
+  });
+});
+
+describe('execution history', () => {
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await tick();
+    }
+  };
+  const executionOf = (id: string, title: string) => ({
+    id,
+    title,
+    source: 'gui',
+    clientId: 'web',
+    profile: null,
+    connection: { id: 'con_1', name: 'Shop', engine: 'postgresql' },
+    requestKey: `key_${id}`,
+    sql: 'SELECT n FROM numbers',
+    scope: 'Script',
+    captureMode: 'preview',
+    transactionMode: 'per_statement',
+    continueOnError: false,
+    timeoutMs: 30_000,
+    retention: 'working',
+    readOnly: false,
+    policySources: [],
+    status: 'succeeded',
+    statusNote: null,
+    transactionOutcome: 'none',
+    submittedAt: '2026-01-01T00:00:00.000Z',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    finishedAt: '2026-01-01T00:00:01.000Z',
+    cancelRequestedAt: null,
+    error: null,
+    queue: null,
+    statements: [
+      {
+        ordinal: 0,
+        sql: 'SELECT n FROM numbers',
+        kind: 'read',
+        command: 'SELECT',
+        range: { start: 0, end: 21, startLine: 1, startColumn: 1, endLine: 1, endColumn: 22 },
+        status: 'succeeded',
+        transactionOutcome: 'none',
+        affectedRows: null,
+        error: null,
+        notices: [],
+        startedAt: null,
+        durationMs: 1,
+      },
+    ],
+    resultSets: [
+      {
+        index: 0,
+        statement: 0,
+        columns: [{ name: 'n', type: 'int4', binary: false }],
+        rowCount: 1000,
+        byteCount: 10,
+        moreAvailable: true,
+        completeness: 'preview_limited',
+        expiresAt: null,
+      },
+    ],
+    resultExpiresAt: null,
+  });
+
+  it('never shows one execution’s detail after another was opened', async () => {
+    const original = api.getMockImplementation();
+    let answerAlpha: (value: unknown) => void = () => undefined;
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/executions/exe_a') return new Promise((r) => (answerAlpha = r));
+      if (url === '/executions/exe_b') return executionOf('exe_b', 'Beta run');
+      if (url.endsWith('/exports') || url === '/approvals' || url === '/connections') return [];
+      return { rows: [['1']] };
+    }) as never);
+    try {
+      navigate('/executions/exe_a');
+      render(Executions);
+      await settle();
+      navigate('/executions/exe_b');
+      await settle();
+      expect(screen.getAllByText('Beta run').length).toBeGreaterThan(0);
+      answerAlpha(executionOf('exe_a', 'Alpha run'));
+      await settle();
+      expect(screen.queryByText('Alpha run')).toBeNull();
+      expect(screen.getAllByText('Beta run').length).toBeGreaterThan(0);
+    } finally {
+      if (original) api.mockImplementation(original);
+      navigate('/');
+    }
+  });
+
+  it('runs the full result from history and opens the new execution', async () => {
+    const original = api.getMockImplementation();
+    const posted: unknown[] = [];
+    api.mockImplementation((async (method: string, url: string, body?: unknown) => {
+      if (method === 'POST' && url === '/executions') {
+        posted.push(body);
+        return executionOf('exe_full', 'Full run');
+      }
+      if (url.startsWith('/executions/exe_')) {
+        if (url.endsWith('/exports')) return [];
+        if (url.includes('/rows')) return { rows: [['1']] };
+        return executionOf(url.slice('/executions/'.length), 'Preview run');
+      }
+      if (url === '/approvals' || url === '/connections') return [];
+      return { rows: [] };
+    }) as never);
+    try {
+      navigate('/executions/exe_preview');
+      render(Executions);
+      await settle();
+      await fireEvent.click(screen.getByRole('button', { name: 'Run full result' }));
+      await settle();
+      const confirm = screen.getAllByRole('button', { name: 'Run full result' }).at(-1) as HTMLElement;
+      await fireEvent.click(confirm);
+      await settle();
+      expect(posted).toHaveLength(1);
+      expect(posted[0]).toMatchObject({
+        connectionId: 'con_1',
+        sql: 'SELECT n FROM numbers',
+        captureMode: 'full',
+      });
+      expect(route.path).toBe('/executions/exe_full');
+    } finally {
+      if (original) api.mockImplementation(original);
+      navigate('/');
     }
   });
 });

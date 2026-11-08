@@ -201,9 +201,14 @@ function expandExecutableComments(text: string): string {
  * UPDATE also updates, and REPLACE deletes the row it replaces.
  */
 function tablesWritten(tableList: string[], text: string): TableRef[] {
-  const upsert = /\bON\s+DUPLICATE\s+KEY\s+UPDATE\b/i.test(text);
+  // From the significant tokens, so comments between the keywords change nothing.
+  const words = significant([...tokenize(text, 'mysql')]).map(word);
+  const upsert = words.some(
+    (w, i) =>
+      w === 'ON' && words[i + 1] === 'DUPLICATE' && words[i + 2] === 'KEY' && words[i + 3] === 'UPDATE',
+  );
   // The parser reports REPLACE INTO as an insert.
-  const replace = /^\s*REPLACE\b/i.test(text);
+  const replace = words[0] === 'REPLACE';
   const eventsOf = (op: string): TriggerEvent[] => {
     switch (op.toLowerCase()) {
       case 'insert':

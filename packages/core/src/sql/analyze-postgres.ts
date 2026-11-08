@@ -70,6 +70,14 @@ export const WRITING_BUILT_INS: Record<string, string> = {
   lo_truncate64: 'changes a large object',
   lo_unlink: 'deletes a large object',
 };
+/** Functions that run SQL over another connection, which commits there on its own. */
+const REMOTE_FUNCTIONS = new Set([
+  'dblink',
+  'dblink_exec',
+  'dblink_send_query',
+  'dblink_open',
+  'dblink_fetch',
+]);
 /** Functions that write, rename or delete files on the database server. */
 const FILE_FUNCTIONS = new Set(['lo_export', 'pg_file_write', 'pg_file_rename', 'pg_file_unlink']);
 
@@ -225,6 +233,9 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       const inCatalog = called.length === 1 || called.at(-2) === 'pg_catalog';
       if (inCatalog && Object.hasOwn(WRITING_BUILT_INS, exact))
         analysis.builtinWrite ??= `${exact}() ${WRITING_BUILT_INS[exact]}`;
+      // What runs over another connection commits there, whatever this transaction does.
+      if (REMOTE_FUNCTIONS.has(name))
+        analysis.irreversible ??= `${name}() runs SQL over another connection, which commits on its own`;
       // Files on the server outlive any rollback.
       if (FILE_FUNCTIONS.has(name)) analysis.irreversible = `${name}() changes files on the database server`;
       // Session-level advisory locks outlive the transaction: the connection must not be reused.

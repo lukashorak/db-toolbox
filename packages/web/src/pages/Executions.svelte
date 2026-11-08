@@ -45,17 +45,50 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+  // A load belongs to the execution it asked about and is superseded by a newer one: answers (and
+  // failures) that arrive after another execution was opened are dropped, and the detail, its
+  // exports and approvals are shown together, so actions stay attached to the execution shown.
+  let detailLoad = 0;
   async function loadDetail(executionId: string) {
+    const mine = ++detailLoad;
+    const current = () => mine === detailLoad && id === executionId;
     try {
-      detail = await api<ExecutionView>('GET', `/executions/${executionId}`);
-      exports = await api<ExportView[]>('GET', `/executions/${executionId}/exports`);
-      approvals = (
-        await api<typeof approvals & { executionId: string }[]>('GET', '/approvals').catch(() => [])
-      ).filter((a) => (a as unknown as { executionId: string }).executionId === executionId);
+      const [loaded, loadedExports, loadedApprovals] = await Promise.all([
+        api<ExecutionView>('GET', `/executions/${executionId}`),
+        api<ExportView[]>('GET', `/executions/${executionId}/exports`),
+        api<typeof approvals & { executionId: string }[]>('GET', '/approvals').catch(() => []),
+      ]);
+      if (!current()) return;
+      detail = loaded;
+      exports = loadedExports;
+      approvals = loadedApprovals.filter(
+        (a) => (a as unknown as { executionId: string }).executionId === executionId,
+      );
       error = null;
     } catch (e) {
+      if (!current()) return;
       detail = null;
       error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Runs the statement again with full capture, on the connection of the result shown, and opens it. */
+  async function runFull(sql: string) {
+    const shown = detail;
+    if (!shown) return;
+    try {
+      const view = await api<ExecutionView>('POST', '/executions', {
+        connectionId: shown.connection.id,
+        sql,
+        title: `${shown.title} (full)`,
+        scope: 'Full result',
+        requestKey: crypto.randomUUID(),
+        captureMode: 'full',
+        transactionMode: shown.transactionMode,
+      });
+      navigate(`/executions/${encodeURIComponent(view.id)}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'danger');
     }
   }
 
@@ -270,13 +303,7 @@
         </ul>
       </section>
     </div>
-    <ResultsPanel
-      execution={detail}
-      onRunFull={(sql) => (
-        openTab({ title: `${detail?.title} (full)`, sql, connectionId: detail?.connection.id }),
-        navigate('/workbench')
-      )}
-    />
+    <ResultsPanel execution={detail} onRunFull={(sql) => void runFull(sql)} />
   </div>
   <ConfirmPanel
     open={confirmDelete}

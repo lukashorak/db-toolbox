@@ -263,6 +263,11 @@ describe('preflight', () => {
       ['t', ['INSERT', 'UPDATE']],
     ]);
     assert.deepEqual(await events('replace into t values (1)'), [['t', ['INSERT', 'DELETE']]]);
+    // Comments between or before the keywords change nothing.
+    assert.deepEqual(await events('insert into t values (1) on /* hint */ duplicate key update v = 2'), [
+      ['t', ['INSERT', 'UPDATE']],
+    ]);
+    assert.deepEqual(await events('/* first */ replace into t values (1)'), [['t', ['INSERT', 'DELETE']]]);
     assert.deepEqual(await events('update t set v = 1'), [['t', ['UPDATE']]]);
     assert.deepEqual(await events('delete from t where v = 1'), [['t', ['DELETE']]]);
     assert.deepEqual(await events("load data infile '/tmp/x' replace into table t"), [
@@ -440,6 +445,9 @@ describe('preflight', () => {
       "copy (select 1) to program 'cat'",
       "select lo_export(1, '/tmp/export.bin')",
       "select pg_file_write('/tmp/x', 'data', false)",
+      // Over another connection, which commits there on its own.
+      "select dblink_exec('dbname=other', 'insert into audit values (1)')",
+      "select * from dblink('dbname=other', 'insert into audit values (1) returning 1') as t (n int)",
     ]) {
       const copy = await run(sql, 'postgresql', { transactionMode: 'atomic' });
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
