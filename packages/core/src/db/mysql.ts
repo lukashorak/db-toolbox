@@ -125,8 +125,8 @@ function routineEffects(body: string): RoutineEffects | null {
   return effects;
 }
 
-/** Statements whose OK answer counts everything they changed. */
-const SINGLE_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE']);
+/** Statements whose OK answer counts everything they changed (an import counts the rows it loaded). */
+const SINGLE_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'LOAD DATA', 'LOAD XML']);
 
 const BINARY_CHARSET = 63;
 const TYPE_NAMES = new Map<number, string>(
@@ -887,7 +887,7 @@ class MysqlSession implements DbSession {
     // without an error of its own, but the result is incomplete and must not pass as finished.
     if (failed) throw failed;
     // An interrupted SLEEP() or BENCHMARK() ends without an error; the interruption still counts.
-    // But a single INSERT, UPDATE, DELETE or REPLACE that the server answered with rows changed has
+    // But a single INSERT, UPDATE, DELETE, REPLACE or import that the server answered with rows changed has
     // finished: outside a transaction (autocommit) it has committed, so a cancel or time limit that
     // came too late does not make it read as rolled back. Inside one the interruption stands, and
     // the transaction is rolled back. A CALL's answer counts only its last inner statement, so it

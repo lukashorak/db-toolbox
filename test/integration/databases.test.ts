@@ -295,6 +295,28 @@ for (const { engine, variable, prepare } of engines) {
               );
           });
           assert.equal(call, 'cancelled', 'a CALL stays interrupted');
+          // An import's answer counts every row it loaded: finished, like a single INSERT.
+          await run('CREATE TABLE IF NOT EXISTS wb_load_late (v int) ENGINE=InnoDB');
+          const file = `/var/lib/mysql-files/wb_load_late_${Date.now()}.csv`;
+          await run(
+            `SELECT a.n FROM wb_numbers a CROSS JOIN wb_numbers b WHERE b.n <= 100 INTO OUTFILE '${file}'`,
+          );
+          const imported = await adapter.withSession(async (s) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 200);
+            return s
+              .execute(`LOAD DATA INFILE '${file}' INTO TABLE wb_load_late (v)`, collect().sink, {
+                timeoutMs: 60_000,
+                signal: controller.signal,
+              })
+              .then(
+                (o) => o.affectedRows,
+                (e: { category?: string }) => e.category,
+              );
+          });
+          assert.equal(imported, 500_000, 'the import finished');
+          assert.deepEqual((await run('SELECT count(*) FROM wb_load_late')).sets[0]?.rows, [['500000']]);
+          await run('DROP TABLE wb_load_late');
           const rows = await run("SELECT name FROM wb_items WHERE name LIKE 'late-%' ORDER BY name");
           assert.deepEqual(rows.sets[0]?.rows, [['late-autocommit-0'], ['late-procedure']]);
         } finally {
