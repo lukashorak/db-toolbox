@@ -199,6 +199,10 @@ for (const { engine, variable, prepare } of [
             assert.equal(stats.availability, 'available', String(stats.reason));
             assert.ok(stats.items.some((s) => /wb_items/.test(String(s.text)) && s.calls >= 3));
             assert.ok(stats.items.every((s) => s.calls > 0 && s.totalMs >= 0));
+            // A connection set to another schema still finds the extension's views.
+            const elsewhere = connect('Other schema', { schema: 'wb_elsewhere' });
+            const fromThere = await core.monitoring.statements(operator, elsewhere, 100);
+            assert.equal(fromThere.availability, 'available', String(fromThere.reason));
           } finally {
             // Later suites (the GUI's unavailable state) expect the extension to be absent again.
             await client.query('DROP EXTENSION pg_stat_statements');

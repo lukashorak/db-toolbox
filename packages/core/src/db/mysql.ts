@@ -93,6 +93,8 @@ export function triggerVisible(lines: string[], db: string, table: string, parti
 interface RoutineEffects {
   tables: TableRef[];
   functions: TableRef[];
+  /** Tables and views the body names: a view among them can call functions that write. */
+  relations: TableRef[];
 }
 
 /**
@@ -101,13 +103,14 @@ interface RoutineEffects {
  */
 function routineEffects(body: string): RoutineEffects | null {
   const block = /^\s*BEGIN\b([\s\S]*)\bEND\s*$/i.exec(body);
-  const effects: RoutineEffects = { tables: [], functions: [] };
+  const effects: RoutineEffects = { tables: [], functions: [], relations: [] };
   for (const statement of splitStatements(block ? (block[1] ?? '') : body, 'mysql')) {
     // RETURN expr evaluates expr, like SELECT expr.
     const text = statement.text.replace(/^\s*RETURN\b/i, 'SELECT');
     const a = analyzeMysql(text);
     // Expressions anywhere (SET NEW.v = f(), DEFAULT f(), RETURN f()) may call stored functions.
     effects.functions.push(...(a.callsFunctions ?? []));
+    effects.relations.push(...(a.referencesTables ?? []));
     if (a.kind === 'read' && !a.irreversible) continue;
     if (a.kind === 'session' && a.command === 'SET') continue;
     if (/^\s*DECLARE\b/i.test(text) && !/\b(HANDLER|CURSOR)\b/i.test(text)) continue;
@@ -411,6 +414,13 @@ export class MysqlAdapter implements DbAdapter {
       if (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return base;
       found ??= base;
     }
+    for (const named of effects.relations) {
+      const reached = await this.#viewEngineOf(named.schema ?? db, named.name, path, known, signal);
+      if (reached === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+      const base = reached?.split(' ')[0] ?? null;
+      if (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return base;
+      found ??= base;
+    }
     return found;
   }
 
@@ -496,7 +506,13 @@ export class MysqlAdapter implements DbAdapter {
       else {
         const path = [...ancestors, key];
         const calls = analyzeMysql(String(row.body)).callsFunctions ?? [];
-        engine = await this.#effectsEngine({ tables: [], functions: calls }, db, path, known, signal);
+        engine = await this.#effectsEngine(
+          { tables: [], functions: calls, relations: [] },
+          db,
+          path,
+          known,
+          signal,
+        );
         if (!bad(engine)) {
           const nested = await this.#metaQuery(
             `SELECT u.TABLE_SCHEMA AS db, u.TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE u

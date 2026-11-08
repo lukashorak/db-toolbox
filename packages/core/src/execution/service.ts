@@ -1404,6 +1404,15 @@ export class ExecutionService {
           // 'unknown' was written just before COMMIT; otherwise the server rolled the transaction back.
           outcome = e.transaction_outcome === 'unknown' ? 'unknown' : 'rolled_back';
         } else if (running && running.kind !== 'read') outcome = 'unknown';
+        // A statement that already ended uncertain (a procedure that failed after committing) keeps
+        // the execution uncertain, whatever was running when the server stopped.
+        else if (
+          this.ctx.db.get(
+            "SELECT 1 AS found FROM statements WHERE execution_id = :id AND transaction_outcome = 'unknown'",
+            { id },
+          )
+        )
+          outcome = 'unknown';
         else outcome = committed > 0 ? 'partial_commit' : 'none';
         this.ctx.db.run(
           `UPDATE statements SET status = 'interrupted', transaction_outcome = CASE WHEN kind = 'read' THEN 'none' ELSE 'unknown' END

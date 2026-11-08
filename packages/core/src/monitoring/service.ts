@@ -242,7 +242,12 @@ export class MonitoringService {
     limit: number,
   ): Promise<Omit<StatementsSnapshot, 'connectionId' | 'engine' | 'capturedAt'>> {
     const q = (sql: string, params?: unknown[]) => adapter.monitorQuery(sql, params);
-    const [ext] = await q("SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_statements'");
+    // Its views live in the schema the extension was created in, which need not be on the
+    // connection's search path (a connection set to an application schema).
+    const [ext] = await q(
+      `SELECT e.extversion, n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+        WHERE e.extname = 'pg_stat_statements'`,
+    );
     if (!ext) {
       return {
         availability: 'unavailable',
@@ -252,6 +257,7 @@ export class MonitoringService {
         items: [],
       };
     }
+    const schema = `"${String(ext.schema).replace(/"/g, '""')}"`;
     try {
       const [who] = await q(`SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
           OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') AS full_view`);
@@ -259,11 +265,13 @@ export class MonitoringService {
       const rows = await q(
         `SELECT queryid::text AS id, CASE WHEN query = '<insufficient privilege>' THEN NULL ELSE left(query, 2000) END AS text,
                 calls, total_exec_time, mean_exec_time, rows
-           FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+           FROM ${schema}.pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
           ORDER BY total_exec_time DESC LIMIT $1`,
         [limit],
       );
-      const info = await q('SELECT stats_reset::text AS since FROM pg_stat_statements_info').catch(() => []);
+      const info = await q(`SELECT stats_reset::text AS since FROM ${schema}.pg_stat_statements_info`).catch(
+        () => [],
+      );
       return {
         availability: full ? 'available' : 'limited',
         reason: full

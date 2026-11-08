@@ -307,6 +307,8 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(await fn('wb_fn_inno'), 'InnoDB');
           assert.equal(await fn('wb_item_count'), null);
           assert.equal(await fn('wb_fn_branch'), 'unresolved view');
+          // A body that reads a view: the view's function writes MyISAM.
+          assert.equal(await fn('wb_fn_reads_view'), 'MyISAM');
           assert.equal(await fn('now'), null);
           // Views: what the functions in their definitions write, through nested views too.
           const view = (name: string) => adapter.viewEngine({ schema: null, name });

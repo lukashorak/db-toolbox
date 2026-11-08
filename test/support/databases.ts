@@ -246,6 +246,9 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE VIEW wb_v_fn_inno_nested AS SELECT v FROM wb_v_fn_inno;
       CREATE VIEW wb_v_fn_legacy AS SELECT wb_fn_legacy() AS v;
       CREATE VIEW wb_v_fn_legacy_nested AS SELECT v FROM wb_v_fn_legacy;
+      -- A function that only reads, but from a view whose function writes MyISAM.
+      CREATE FUNCTION wb_fn_reads_view() RETURNS int DETERMINISTIC MODIFIES SQL DATA
+        RETURN (SELECT v FROM wb_v_fn_legacy LIMIT 1);
       -- An InnoDB table whose trigger reaches MyISAM only through a function in an expression.
       CREATE TABLE wb_fn_trig (id int PRIMARY KEY, v int) ENGINE=InnoDB;
       CREATE TRIGGER wb_fn_trig_set BEFORE INSERT ON wb_fn_trig FOR EACH ROW SET NEW.v = wb_fn_legacy();

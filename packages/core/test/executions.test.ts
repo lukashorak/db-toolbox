@@ -236,6 +236,32 @@ describe('restart reconciliation and retention', () => {
     core.close();
   });
 
+  it('keeps an execution uncertain when an earlier statement ended uncertain', async () => {
+    const { core, connection } = pausedCore();
+    const view = await core.executions.submit(writer, {
+      connectionId: connection,
+      sql: 'call p(); select * from t',
+      continueOnError: true,
+    });
+    core.db.run("UPDATE executions SET status = 'running' WHERE id = :id", { id: view.id });
+    // The procedure failed after committing; the read after it was running when the server stopped.
+    core.db.run(
+      "UPDATE statements SET status = 'failed', transaction_outcome = 'unknown' WHERE execution_id = :id AND ordinal = 0",
+      { id: view.id },
+    );
+    core.db.run("UPDATE statements SET status = 'running' WHERE execution_id = :id AND ordinal = 1", {
+      id: view.id,
+    });
+    core.executions.reconcile();
+    const after = core.executions.view(view.id);
+    assert.deepEqual([after.status, after.transactionOutcome], ['interrupted', 'unknown']);
+    assert.deepEqual(
+      after.statements.map((s) => s.transactionOutcome),
+      ['unknown', 'none'],
+    );
+    core.close();
+  });
+
   it('keeps chunks captured before a crash countable, readable and expiring', async () => {
     const { core, connection } = pausedCore();
     const view = await core.executions.submit(writer, { connectionId: connection, sql: 'SELECT n FROM t' });
