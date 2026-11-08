@@ -200,6 +200,18 @@ for (const { engine, variable, prepare } of engines) {
           new Promise((r) => setTimeout(() => r('still waiting'), 5000)),
         ]);
         assert.equal(outcome, 'cancelled');
+        // A single batch timing out during the wait is a timeout, not a success.
+        const single = adapter.withSession(async (s) => {
+          const { sink } = collect();
+          return s.execute('SELECT 1 AS n', sink, { timeoutMs: 300, batchSize: 100 }).then(
+            () => 'finished',
+            (e: unknown) => (e as { category?: string }).category,
+          );
+        });
+        assert.equal(
+          await Promise.race([single, new Promise((r) => setTimeout(() => r('still waiting'), 8000))]),
+          'timeout',
+        );
       } finally {
         pg.typeNames = typeNames;
       }

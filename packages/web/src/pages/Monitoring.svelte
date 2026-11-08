@@ -77,12 +77,13 @@
   // database still gets its answers shown. An older answer never replaces a newer one.
   let sequence = 0;
   let accepted = 0;
-  let running: string | null = null;
+  /** The refresh in flight: its connection and its number, so only it clears the marker. */
+  let running: { id: string; sequence: number } | null = null;
   async function refresh() {
     const id = connectionId;
-    if (!id || running === id) return;
+    if (!id || running?.id === id) return;
     const mine = ++sequence;
-    running = id;
+    running = { id, sequence: mine };
     const usable = () => connectionId === id && mine >= accepted;
     try {
       const next = await api<Snapshot>('GET', `/connections/${id}/monitoring/activity`);
@@ -98,7 +99,7 @@
     } catch (e) {
       if (usable()) failure = e instanceof Error ? e.message : String(e);
     } finally {
-      if (running === id) running = null;
+      if (running?.sequence === mine) running = null;
     }
   }
 

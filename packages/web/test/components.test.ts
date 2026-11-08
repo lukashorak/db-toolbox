@@ -353,6 +353,45 @@ describe('monitoring', () => {
     }
   });
 
+  it('keeps one refresh per connection in flight across connection switches', async () => {
+    const original = api.getMockImplementation();
+    const alpha: ((value: unknown) => void)[] = [];
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections')
+        return [
+          { id: 'a', name: 'Alpha', enabled: true },
+          { id: 'b', name: 'Beta', enabled: true },
+        ];
+      if (url === '/settings/execution') return { monitoringRefreshSeconds: 15 };
+      if (url.includes('/statements'))
+        return { availability: 'available', reason: null, statsSince: null, items: [] };
+      if (url === '/connections/a/monitoring/activity') return new Promise((r) => alpha.push(r));
+      return snapshotOf('beta_account');
+    }) as never);
+    try {
+      render(Monitoring);
+      await settle();
+      const select = screen.getByLabelText('Connection');
+      // Alpha's first request is pending; Beta, then Alpha again (a second Alpha request).
+      await fireEvent.change(select, { target: { value: 'b' } });
+      await settle();
+      await fireEvent.change(select, { target: { value: 'a' } });
+      await settle();
+      expect(alpha).toHaveLength(2);
+      // The first Alpha request ends; the second is still running, so Refresh starts no third.
+      alpha[0]?.(snapshotOf('alpha_first'));
+      await settle();
+      await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await settle();
+      expect(alpha).toHaveLength(2);
+      alpha[1]?.(snapshotOf('alpha_second'));
+      await settle();
+      expect(screen.getByTestId('sample-time').textContent).toMatch(/account alpha_second/);
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
   it('never shows one connection’s numbers under another', async () => {
     const original = api.getMockImplementation();
     let answerAlpha: (value: unknown) => void = () => undefined;

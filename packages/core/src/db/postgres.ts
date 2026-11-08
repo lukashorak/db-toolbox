@@ -18,6 +18,9 @@ import type {
   StatementOutcome,
 } from './types.js';
 
+/** Metadata lookups end on the server after this long. */
+const METADATA_TIMEOUT_MS = 30_000;
+
 /** Keep every value in PostgreSQL's text form: lossless for numeric, int8, dates, arrays and JSON. */
 const TEXT_TYPES = { getTypeParser: () => (value: string) => value };
 
@@ -104,20 +107,28 @@ export class PostgresAdapter implements DbAdapter {
 
   constructor(target: ConnectionTarget, endpoint: Endpoint, options: PostgresOptions) {
     const base = postgresClientConfig(target, endpoint, options.connectTimeoutMs, options.applicationName);
-    const pool = (max: number, name: string, account?: { username: string; password: string } | null) => {
+    const pool = (
+      max: number,
+      name: string,
+      account?: { username: string; password: string } | null,
+      extra: pg.PoolConfig = {},
+    ) => {
       const p = new pg.Pool({
         ...base,
         ...(account ? { user: account.username, password: account.password } : {}),
         application_name: `${options.applicationName} (${name})`,
         max,
         idleTimeoutMillis: 30_000,
+        ...extra,
       });
       // Errors on idle clients (server restart, network) must not crash the process.
       p.on('error', () => undefined);
       return p;
     };
     this.#work = pool(options.sizes.work, 'work');
-    this.#meta = pool(options.sizes.metadata, 'metadata');
+    // Metadata lookups end on the server after 30 s, so one that stalls (even one a statement no
+    // longer waits for) cannot hold the metadata connection.
+    this.#meta = pool(options.sizes.metadata, 'metadata', null, { statement_timeout: METADATA_TIMEOUT_MS });
     this.#control = pool(options.sizes.control, 'control');
     this.#monitor = pool(options.sizes.monitor ?? 1, 'monitor', target.monitor);
     this.monitorAccount = target.monitor?.username ?? target.username;
@@ -462,6 +473,16 @@ class PostgresSession implements DbSession {
               .typeNames(result.fields.map((f) => f.dataTypeID))
               .then(resolve, () => resolve(new Map()));
           }).finally(() => (onInterrupt = null));
+          // Interrupted meanwhile: stop here, even if this was the last batch.
+          if (interrupted) {
+            await cursor.close().catch(() => undefined);
+            throw new DbError(
+              interrupted,
+              interrupted === 'timeout'
+                ? `The statement exceeded its time limit of ${timeout} ms.`
+                : 'The statement was cancelled.',
+            );
+          }
           const columns: ColumnInfo[] = result.fields.map((f) => ({
             name: f.name,
             type: names.get(f.dataTypeID) ?? String(f.dataTypeID),
