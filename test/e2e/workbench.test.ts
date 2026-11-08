@@ -352,6 +352,54 @@ describe(
       await finished('succeeded');
     });
 
+    it('cancels a run whose status has not loaded yet', async () => {
+      await setSql('SELECT pg_sleep(4), 8 AS eight');
+      await page.getByTestId('run-target').click();
+      await finished('running');
+      const status = '**/api/v1/executions/*';
+      await page.route(status, (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"internal"}' })
+          : route.continue(),
+      );
+      try {
+        // After a reload the run is known only by its ID: its status cannot be loaded.
+        await page.reload();
+        await page.getByRole('button', { name: 'Cancel run' }).click();
+      } finally {
+        await page.unroute(status);
+      }
+      await finished('cancelled');
+    });
+
+    it('does not run a write twice when the answer to its submission was lost', async () => {
+      const sql = "INSERT INTO wb_items (name) VALUES ('gui-lost-answer')";
+      await setSql(sql);
+      let lose = true;
+      await page.route('**/api/v1/executions', async (route) => {
+        if (route.request().method() === 'POST' && lose) {
+          lose = false;
+          await route.fetch(); // the server accepts and starts it…
+          await route.abort('failed'); // …but its answer never arrives
+          return;
+        }
+        await route.continue();
+      });
+      try {
+        await page.getByTestId('run-target').click();
+        await page
+          .getByText(/Failed to fetch/)
+          .first()
+          .waitFor();
+        await page.getByTestId('run-target').click();
+        await finished();
+      } finally {
+        await page.unroute('**/api/v1/executions');
+      }
+      const stored = env.core.db.get('SELECT count(*) AS n FROM executions WHERE sql = :sql', { sql });
+      assert.equal(Number(stored?.n), 1, 'one execution on the server');
+    });
+
     it('recovers a running execution after a reload and in a new browser (AC7)', async () => {
       await setSql('SELECT pg_sleep(4), 42 AS answer');
       await page.getByTestId('run-target').click();

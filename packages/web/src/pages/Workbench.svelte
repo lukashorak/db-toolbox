@@ -54,6 +54,12 @@
   );
   /** Tabs whose submission is on its way: a second Run (double click, repeated shortcut) waits. */
   const submitting = new SvelteSet<string>();
+  /**
+   * Per tab, the request key of a submission whose answer was lost (the network, a server error): it
+   * may have reached the server. The next Run there sends the same key, so the server returns that
+   * execution instead of starting the same SQL twice, or says it exists (idempotency_conflict).
+   */
+  const pendingKeys = new SvelteMap<string, string>();
   const busy = $derived(active || (tab ? submitting.has(tab.id) : false));
 
   /** The analysis of exactly what the editor holds now; null while the text is being checked again. */
@@ -253,25 +259,51 @@
     // Set before the first await, so a second call in the meantime returns above.
     const tabId = tab.id;
     submitting.add(tabId);
+    const requestKey = pendingKeys.get(tabId) ?? crypto.randomUUID();
     try {
       const view = await api<ExecutionView>('POST', '/executions', {
         connectionId,
         sql: part.sql,
         title: tab.title,
         scope: part.scope,
-        requestKey: crypto.randomUUID(),
+        requestKey,
         captureMode: sqlOverride?.captureMode ?? settings.captureMode,
         transactionMode: settings.transactionMode,
         continueOnError: settings.transactionMode === 'per_statement' && settings.continueOnError,
         ...(settings.timeoutSeconds ? { timeoutMs: settings.timeoutSeconds * 1000 } : {}),
         ...(settings.retainDays ? { retention: 'retained', retainDays: settings.retainDays } : {}),
       });
+      pendingKeys.delete(tabId);
       bases.set(view.id, part.base);
       views[view.id] = view;
       origin.runs = [view.id, ...(origin.runs ?? [])].slice(0, 20);
       if (workbench.active === tabId) shownRun = view.id;
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      // Without an answer from the server, the submission may have started there: keep its key.
+      const uncertain = !(e instanceof ApiError) || e.status >= 500;
+      if (uncertain) pendingKeys.set(tabId, requestKey);
+      else pendingKeys.delete(tabId);
+      if (
+        e instanceof ApiError &&
+        e.code === 'idempotency_conflict' &&
+        typeof e.details?.executionId === 'string'
+      ) {
+        // The earlier submission did reach the server: show it; the next Run starts this one.
+        const earlier = e.details.executionId;
+        origin.runs = [earlier, ...(origin.runs ?? []).filter((r) => r !== earlier)].slice(0, 20);
+        void load(earlier);
+        if (workbench.active === tabId) shownRun = earlier;
+        toast(
+          'Your previous run reached the server after all and is shown here. Run again to start this one.',
+          'info',
+        );
+        return;
+      }
+      const message = uncertain
+        ? `${e instanceof Error ? e.message : String(e)} The run may have started: Run again to check, without starting it twice.`
+        : e instanceof Error
+          ? e.message
+          : String(e);
       // Rejection marks belong to exactly the text that was submitted, in the tab it came from:
       // after a tab switch or an edit, the reason is shown as a message instead.
       // A rerun's SQL is not the editor's text, so its rejection is never marked there.
@@ -301,8 +333,18 @@
   }
 
   async function cancel() {
-    const id = runs.find((r) => views[r] && !TERMINAL.has(views[r].status));
-    if (id) views[id] = await api<ExecutionView>('POST', `/executions/${id}/cancel`);
+    // Also a run whose status could not be loaded yet: the cancel needs only its ID.
+    const id = runs.find((r) => unsure.has(r) || (views[r] && !TERMINAL.has(views[r].status)));
+    if (!id) return;
+    try {
+      views[id] = await api<ExecutionView>('POST', `/executions/${id}/cancel`);
+      unsure.delete(id);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        unsure.delete(id);
+        if (tab) tab.runs = (tab.runs ?? []).filter((r) => r !== id);
+      } else toast(`The cancel could not be sent: ${e instanceof Error ? e.message : String(e)}`, 'danger');
+    }
   }
 </script>
 

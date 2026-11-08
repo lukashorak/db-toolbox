@@ -53,6 +53,8 @@ export type Page = Locator & {
       request(): RequestInfo;
       continue(): Promise<void>;
       fulfill(response: { status: number; contentType?: string; body?: string }): Promise<void>;
+      fetch(): Promise<unknown>;
+      abort(errorCode?: string): Promise<void>;
     }) => unknown,
   ): Promise<void>;
   unroute(url: string): Promise<void>;
