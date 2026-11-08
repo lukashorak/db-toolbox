@@ -158,6 +158,29 @@ describe('export rules', () => {
     core.close();
   });
 
+  it('gives a regenerated export the result’s current deadline', async () => {
+    const { core, id } = await fixture();
+    const made = await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    // It failed, and the result was retained longer afterwards (retain() moves only live exports).
+    const later = '2099-01-01T00:00:00.000Z';
+    core.db.run(
+      "UPDATE exports SET status = 'failed', expires_at = '2000-01-01T00:00:00.000Z' WHERE id = :id",
+      {
+        id: made.id,
+      },
+    );
+    core.db.run('UPDATE result_sets SET expires_at = :later WHERE execution_id = :id', { id, later });
+    await core.exports.regenerate(writer, made.id);
+    await core.exports.idle();
+    assert.deepEqual(
+      [core.exports.get(writer, made.id).status, core.exports.get(writer, made.id).expiresAt],
+      ['ready', later],
+    );
+    assert.equal(await readFile((await core.exports.download(writer, made.id)).path, 'utf8'), CSV);
+    core.close();
+  });
+
   it('reuses the export of the same result, format and scope instead of writing more files', async () => {
     const { core, id, dir } = await fixture();
     const first = await core.exports.create(writer, id, 0, { format: 'csv' });

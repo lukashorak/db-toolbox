@@ -190,10 +190,11 @@ export class ExportService {
       this.#writing.delete(id);
       throw error;
     }
+    // The result's deadline as it is now: retention may have changed since this export was made.
     this.ctx.db.run(
       `UPDATE exports SET status = 'generating', file_name = NULL, error_code = NULL, error_message = NULL, completed_at = NULL,
-         row_count = 0, byte_count = 0 WHERE id = :id`,
-      { id },
+         row_count = 0, byte_count = 0, expires_at = :expires WHERE id = :id`,
+      { id, expires: (set.expires_at as string | null) ?? null },
     );
     this.ctx.audit.record({
       actor,

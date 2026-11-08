@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import DataGrid from '../src/components/DataGrid.svelte';
 import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
+import Monitoring from '../src/pages/Monitoring.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
 import { columnComparator } from '../src/lib/compare';
@@ -307,5 +308,51 @@ describe('result sorting', () => {
     expect(sorted(['2', '10', '1A'])).toEqual(['10', '1A', '2']);
     expect(sorted(['1A', '2', '10'])).toEqual(['10', '1A', '2']);
     expect(sorted(['beta', 'alpha', '10'])).toEqual(['10', 'alpha', 'beta']);
+  });
+});
+
+describe('monitoring', () => {
+  const snapshotOf = (account: string) => ({
+    capturedAt: '2026-01-01T00:00:00.000Z',
+    account,
+    sessions: { availability: 'available', reason: null, items: [] },
+    lockWaits: { availability: 'available', reason: null, items: [] },
+    counters: { availability: 'available', reason: null, data: null },
+  });
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await tick();
+    }
+  };
+
+  it('never shows one connection’s numbers under another', async () => {
+    const original = api.getMockImplementation();
+    let answerAlpha: (value: unknown) => void = () => undefined;
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections')
+        return [
+          { id: 'a', name: 'Alpha', enabled: true },
+          { id: 'b', name: 'Beta', enabled: true },
+        ];
+      if (url === '/settings/execution') return { monitoringRefreshSeconds: 15 };
+      if (url.includes('/statements'))
+        return { availability: 'available', reason: null, statsSince: null, items: [] };
+      // Alpha answers slowly; Beta at once.
+      if (url === '/connections/a/monitoring/activity') return new Promise((r) => (answerAlpha = r));
+      return snapshotOf('beta_account');
+    }) as never);
+    try {
+      render(Monitoring);
+      await settle();
+      await fireEvent.change(screen.getByLabelText('Connection'), { target: { value: 'b' } });
+      await settle();
+      expect(screen.getByTestId('sample-time').textContent).toMatch(/account beta_account/);
+      answerAlpha(snapshotOf('alpha_account'));
+      await settle();
+      expect(screen.getByTestId('sample-time').textContent).toMatch(/account beta_account/);
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
   });
 });

@@ -71,18 +71,27 @@
   let failure = $state<string | null>(null);
   let refreshSeconds = $state(15);
 
+  // Each refresh belongs to the connection it asked about: an answer that arrives after another
+  // connection was picked, or after a newer refresh started, is dropped, so one database's numbers
+  // are never shown under another's name.
+  let generation = 0;
   async function refresh() {
-    if (!connectionId) return;
+    const id = connectionId;
+    if (!id) return;
+    const mine = ++generation;
+    const current = () => mine === generation && connectionId === id;
     try {
-      snapshot = await api<Snapshot>('GET', `/connections/${connectionId}/monitoring/activity`);
-      if (tab === 'statements' || !statements)
-        statements = await api<Statements>(
-          'GET',
-          `/connections/${connectionId}/monitoring/statements?limit=25`,
-        );
+      const next = await api<Snapshot>('GET', `/connections/${id}/monitoring/activity`);
+      if (!current()) return;
+      snapshot = next;
+      if (tab === 'statements' || !statements) {
+        const stats = await api<Statements>('GET', `/connections/${id}/monitoring/statements?limit=25`);
+        if (!current()) return;
+        statements = stats;
+      }
       failure = null;
     } catch (e) {
-      failure = e instanceof Error ? e.message : String(e);
+      if (current()) failure = e instanceof Error ? e.message : String(e);
     }
   }
 
