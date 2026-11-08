@@ -62,6 +62,17 @@ const ADMIN = new Set([
   'CHANGE',
   'STOP',
 ]);
+/**
+ * Administrative commands that act outside the transaction without committing it: a rollback does
+ * not undo what they did. (The other ones commit implicitly, which single-transaction mode refuses.)
+ */
+const ADMIN_EFFECTS: Record<string, string> = {
+  KILL: 'ends another session or its running statement',
+  PURGE: 'deletes binary log files on the database server',
+  SHUTDOWN: 'stops the database server',
+  RESTART: 'restarts the database server',
+  CLONE: 'copies or replaces data files on the database server',
+};
 const READ_ONLY_VARIABLES = /^(@@(session\.|local\.)?)?(transaction_read_only|tx_read_only)$/i;
 const GLOBAL_SCOPE = /^(global|persist|persist_only)$|^@@(global|persist|persist_only)\./i;
 
@@ -671,7 +682,14 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       return a;
     }
     default:
-      if (ADMIN.has(first)) return write(`${first}${second ? ` ${second}` : ''}`, 'administrative command');
+      if (ADMIN.has(first)) {
+        const a = write(`${first}${second ? ` ${second}` : ''}`, 'administrative command');
+        if (ADMIN_EFFECTS[first]) a.irreversible = ADMIN_EFFECTS[first];
+        // BINLOG replays binary log events that cannot be checked here: DDL or COMMIT among them
+        // commit implicitly.
+        if (first === 'BINLOG') a.mayCommit = true;
+        return a;
+      }
       if (tokens[0]?.text === '(') return analyzeQuery(text);
       return unsafe(baseAnalysis('unknown', first || 'UNKNOWN'), 'unrecognized statement');
   }

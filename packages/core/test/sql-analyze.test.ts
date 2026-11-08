@@ -503,6 +503,32 @@ describe('preflight', () => {
         sql,
       );
     }
+    // MySQL administrative commands that act at once without committing: ending another session
+    // or its statement, deleting binary logs, stopping or restarting the server, cloning data.
+    for (const sql of [
+      'kill connection 12345',
+      'kill query 12345',
+      'kill 12345',
+      "purge binary logs to 'binlog.000010'",
+      'shutdown',
+      'restart',
+      "clone local data directory = '/tmp/clone'",
+    ]) {
+      const problems = await run(`insert into a values (1); ${sql}; select missing_column`, 'mysql', {
+        transactionMode: 'atomic',
+      });
+      assert.deepEqual(
+        problems.map((p) => [p.code, p.statement]),
+        [['irreversible_effect', 1]],
+        sql,
+      );
+    }
+    assert.match(
+      String((await run('kill connection 12345', 'mysql', { transactionMode: 'atomic' }))[0]?.message),
+      /\(KILL CONNECTION\) ends another session or its running statement, which a rollback does not undo/,
+    );
+    // Per statement, each statement's outcome is reported as it is.
+    assert.deepEqual(await run('kill query 12345', 'mysql'), []);
     // Server configuration is not transactional; PERSIST also writes it to disk.
     for (const sql of [
       'set global max_connections = 250',
@@ -596,6 +622,15 @@ describe('preflight', () => {
       [['routine_may_commit', 2]],
     );
     assert.match(String(prepared[0]?.message), /prepared statement/);
+    // BINLOG replays events that cannot be checked; DDL or COMMIT among them commit implicitly.
+    const replay = await run("insert into a values (1); binlog 'AAAA'", 'mysql', {
+      transactionMode: 'atomic',
+    });
+    assert.deepEqual(
+      replay.map((p) => [p.code, p.statement]),
+      [['routine_may_commit', 1]],
+    );
+    assert.match(String(replay[0]?.message), /binary log events/);
     // In PostgreSQL a procedure that commits inside a transaction block fails, so CALL may stay.
     assert.equal(
       (await run('call p()', 'postgresql', { transactionMode: 'atomic' })).some(

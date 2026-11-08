@@ -126,7 +126,9 @@ export async function preflight(
         message:
           a.command === 'EXECUTE'
             ? `${label(s)} (EXECUTE) runs a prepared statement that cannot be checked; it can commit implicitly in MySQL, so the script cannot be promised to run as one transaction.`
-            : `${label(s)} (${a.command}) runs a procedure, which can commit on its own in MySQL, so the script cannot be promised to run as one transaction.`,
+            : a.command === 'BINLOG'
+              ? `${label(s)} (BINLOG) replays binary log events that cannot be checked; they can commit implicitly in MySQL, so the script cannot be promised to run as one transaction.`
+              : `${label(s)} (${a.command}) runs a procedure, which can commit on its own in MySQL, so the script cannot be promised to run as one transaction.`,
         hint: 'Use per-statement mode.',
       });
     }
