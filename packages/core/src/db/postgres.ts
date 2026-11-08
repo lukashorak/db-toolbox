@@ -1,6 +1,6 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
-import { DbError, mapPostgresError } from './errors.js';
+import { afterInterruption, DbError, mapPostgresError } from './errors.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
 import { analyzeStatement } from '../sql/analyze.js';
@@ -515,21 +515,9 @@ class PostgresSession implements DbSession {
       // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
       // and every later query on this connection would wait behind it.
       await this.#closeCursor(cursor);
-      const mapped = mapPostgresError(error);
-      if (interrupted === 'cancelled' && mapped.category !== 'connectivity') {
-        throw new DbError('cancelled', 'The statement was cancelled.', {
-          sqlState: mapped.sqlState,
-          code: mapped.code,
-        });
-      }
-      if (interrupted === 'timeout' || mapped.category === 'timeout') {
-        throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`, {
-          sqlState: mapped.sqlState,
-          code: mapped.code,
-        });
-      }
-      if (mapped.category === 'connectivity') this.markDirty('connection lost');
-      throw mapped;
+      const final = afterInterruption(mapPostgresError(error), interrupted, timeout);
+      if (final.category === 'connectivity') this.markDirty('connection lost');
+      throw final;
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', onAbort);

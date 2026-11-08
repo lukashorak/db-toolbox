@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { mapMysqlError, mapPostgresError } from '../src/db/errors.js';
+import { afterInterruption, DbError, mapMysqlError, mapPostgresError } from '../src/db/errors.js';
 import { describeTls, mysqlTls, mysqlVerifyFullProblem, postgresTls } from '../src/db/tls.js';
 import { triggerVisible } from '../src/db/mysql.js';
 import { AppError } from '../src/domain/errors.js';
@@ -216,5 +216,28 @@ describe('MySQL TRIGGER visibility from SHOW GRANTS', () => {
     assert.equal(triggerVisible(grant, 'app_1', 't', true), false);
     assert.equal(triggerVisible([`GRANT TRIGGER ON \`app\\_1\`.* TO ${user}`], 'appx1', 't'), false);
     assert.equal(triggerVisible([`GRANT TRIGGER ON \`app\\_1\`.* TO ${user}`], 'app_1', 't', true), true);
+  });
+});
+
+describe('errors after a cancel or the time limit', () => {
+  const lost = new DbError('connectivity', 'Connection lost', { code: 'ECONNRESET' });
+  const failed = new DbError('syntax', 'Syntax error', { code: '42601', sqlState: '42601' });
+  it('keeps a lost connection, whichever came first: the statement may have committed', () => {
+    for (const interrupted of ['cancelled', 'timeout', null] as const) {
+      assert.equal(afterInterruption(lost, interrupted, 1000).category, 'connectivity', String(interrupted));
+    }
+  });
+
+  it('reports a confirmed cancel or timeout otherwise, keeping the engine code', () => {
+    const cancelled = afterInterruption(failed, 'cancelled', 1000);
+    assert.deepEqual([cancelled.category, cancelled.code], ['cancelled', '42601']);
+    const timedOut = afterInterruption(failed, 'timeout', 1000);
+    assert.deepEqual(
+      [timedOut.category, timedOut.message],
+      ['timeout', 'The statement exceeded its time limit of 1000 ms.'],
+    );
+    // The server's own timeout counts as one too; anything else is left as it was.
+    assert.equal(afterInterruption(new DbError('timeout', 'statement timeout'), null, 5).category, 'timeout');
+    assert.equal(afterInterruption(failed, null, 1000), failed);
   });
 });

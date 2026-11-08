@@ -65,6 +65,25 @@ export class DbError extends Error {
   }
 }
 
+/**
+ * The error a statement ends with when it failed during or after a cancel or its time limit. A lost
+ * connection stays a lost connection, whichever came first: the statement may have committed
+ * before its answer was lost, so it must not read as a confirmed cancel or timeout (which promise
+ * nothing was written).
+ */
+export function afterInterruption(
+  mapped: DbError,
+  interrupted: 'cancelled' | 'timeout' | null,
+  timeoutMs: number,
+): DbError {
+  if (mapped.category === 'connectivity') return mapped;
+  const extra = { sqlState: mapped.sqlState, code: mapped.code };
+  if (interrupted === 'cancelled') return new DbError('cancelled', 'The statement was cancelled.', extra);
+  if (interrupted === 'timeout' || mapped.category === 'timeout')
+    return new DbError('timeout', `The statement exceeded its time limit of ${timeoutMs} ms.`, extra);
+  return mapped;
+}
+
 const NETWORK_CODES = new Set([
   'ECONNREFUSED',
   'ECONNRESET',

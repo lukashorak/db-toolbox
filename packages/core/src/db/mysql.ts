@@ -2,7 +2,7 @@ import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptio
 import { analyzeMysql } from '../sql/analyze-mysql.js';
 import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
-import { DbError, mapMysqlError } from './errors.js';
+import { afterInterruption, DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
 import type {
@@ -807,26 +807,15 @@ class MysqlSession implements DbSession {
       });
     } catch (error) {
       const mapped = mapMysqlError(error);
-      // A lost connection stays one, even when a cancel or the time limit came first: the
-      // statement may have committed before its answer was lost (our cancel never closes it).
-      if (mapped.category === 'connectivity') {
-        this.markDirty('connection lost');
-        throw mapped;
-      }
-      if (interrupted === 'stopped' && (mapped.code === '1317' || mapped.code === '3024')) {
-        // The sink stopped reading and the server ended the statement on request.
-      } else if (interrupted === 'cancelled') {
-        throw new DbError('cancelled', 'The statement was cancelled.', {
-          code: mapped.code,
-          sqlState: mapped.sqlState,
-        });
-      } else if (interrupted === 'timeout') {
-        throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`, {
-          code: mapped.code,
-          sqlState: mapped.sqlState,
-        });
-      } else {
-        throw mapped;
+      const stoppedOnRequest =
+        interrupted === 'stopped' && (mapped.code === '1317' || mapped.code === '3024');
+      // Otherwise (the sink stopped reading and the server ended the statement on request), the
+      // statement failed; a lost connection stays one even after a cancel or the time limit (our
+      // cancel never closes the connection).
+      if (!stoppedOnRequest) {
+        const final = afterInterruption(mapped, interrupted === 'stopped' ? null : interrupted, timeout);
+        if (final.category === 'connectivity') this.markDirty('connection lost');
+        throw final;
       }
     } finally {
       if (lost) {
