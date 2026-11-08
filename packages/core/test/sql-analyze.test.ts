@@ -462,6 +462,8 @@ describe('preflight', () => {
       'set persist_only max_connections = 250',
       'set @@global.max_connections = 250',
       'set @@persist.max_connections = 250',
+      'set global transaction isolation level read committed',
+      'set global transaction read only',
     ]) {
       const problems = await run(`${sql}; select 1 / missing_column`, 'mysql', { transactionMode: 'atomic' });
       assert.deepEqual(
@@ -471,6 +473,12 @@ describe('preflight', () => {
       );
     }
     assert.deepEqual(await run('set session sql_mode = ""', 'mysql', { transactionMode: 'atomic' }), []);
+    assert.deepEqual(
+      await run('set session transaction isolation level read committed', 'mysql', {
+        transactionMode: 'atomic',
+      }),
+      [],
+    );
   });
 
   it('refuses reading a view whose definition does what a direct call may not', async () => {

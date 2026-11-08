@@ -401,6 +401,8 @@ function analyzeSet(tokens: Token[]): StatementAnalysis {
     if (second === 'GLOBAL') {
       a.kind = 'write';
       unsafe(a, 'changes server configuration');
+      // The default for future sessions: no rollback undoes it.
+      a.irreversible = 'changes server configuration';
     }
     if (/READ\s+WRITE/.test(text)) unsafe(a, 'READ WRITE would disable read-only mode');
     return a;
