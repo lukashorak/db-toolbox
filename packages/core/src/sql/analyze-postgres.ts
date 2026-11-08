@@ -95,7 +95,17 @@ const SERVER_ACTIONS: Record<string, string> = {
   pg_create_restore_point: 'creates a restore point',
   pg_create_physical_replication_slot: 'creates a replication slot',
   pg_create_logical_replication_slot: 'creates a replication slot',
+  pg_copy_physical_replication_slot: 'creates a replication slot',
+  pg_copy_logical_replication_slot: 'creates a replication slot',
   pg_drop_replication_slot: 'drops a replication slot',
+  pg_replication_slot_advance: 'advances a replication slot',
+  pg_logical_slot_get_changes: 'consumes changes from a replication slot',
+  pg_logical_slot_get_binary_changes: 'consumes changes from a replication slot',
+  pg_replication_origin_advance: 'advances a replication origin',
+  pg_backup_start: 'starts a backup',
+  pg_backup_stop: 'stops a backup',
+  pg_wal_replay_pause: 'pauses recovery',
+  pg_wal_replay_resume: 'resumes recovery',
 };
 
 /** Visits every node of the parse tree as (type, body). */

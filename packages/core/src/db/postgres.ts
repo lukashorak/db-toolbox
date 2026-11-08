@@ -523,10 +523,15 @@ class PostgresSession implements DbSession {
     };
     const connection = (this.client as unknown as { connection: NodeJS.EventEmitter }).connection;
     connection.on('parameterStatus', onParameter);
-    /** Not the database's error: the statement finished (and may have committed) before it. */
-    let encodingChanged: SessionUnusableError | null = null;
     /** A COPY that exchanges data with the client, which the workbench does not do. */
     let copy: string | null = null;
+    // pg leaves CopyOutResponse unhandled: it marks COPY TO STDOUT even when no row follows.
+    const onCopyOut = () => {
+      copy = 'COPY TO STDOUT is not supported here. Use SELECT and export the result.';
+    };
+    connection.on('copyOutResponse', onCopyOut);
+    /** Not the database's error: the statement finished (and may have committed) before it. */
+    let encodingChanged: SessionUnusableError | null = null;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       await guard.wait(
@@ -662,6 +667,7 @@ class PostgresSession implements DbSession {
       options.signal?.removeEventListener('abort', onAbort);
       this.client.removeListener('notice', onNotice);
       connection.removeListener('parameterStatus', onParameter);
+      connection.removeListener('copyOutResponse', onCopyOut);
       if (encoding) this.markDirty('client_encoding changed');
       if (interrupted && !this.#inTransaction) this.markDirty(`statement ${interrupted}`);
       // A cancel request still on its way could stop the next statement on this backend. Wait for

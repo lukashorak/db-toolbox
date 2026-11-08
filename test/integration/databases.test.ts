@@ -820,6 +820,8 @@ for (const { engine, variable, prepare } of engines) {
           for (const [sql, message] of [
             ['COPY wb_items (name) FROM STDIN', /COPY FROM STDIN is not supported/],
             ['COPY (SELECT 1) TO STDOUT', /COPY TO STDOUT is not supported/],
+            // No row follows: the server's CopyOutResponse alone marks it.
+            ['COPY (SELECT 1 WHERE false) TO STDOUT', /COPY TO STDOUT is not supported/],
           ] as const) {
             const error = await run(sql).then(
               () => null,

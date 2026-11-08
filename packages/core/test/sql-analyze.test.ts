@@ -462,6 +462,9 @@ describe('preflight', () => {
       'select pg_reload_conf()',
       'select pg_stat_reset()',
       "select pg_drop_replication_slot('slot')",
+      "select pg_replication_slot_advance('slot', '0/1000000')",
+      "select * from pg_logical_slot_get_changes('slot', null, null)",
+      "select pg_copy_logical_replication_slot('slot', 'copy')",
     ]) {
       const copy = await run(sql, 'postgresql', { transactionMode: 'atomic' });
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
