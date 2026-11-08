@@ -233,7 +233,7 @@ function tablesWritten(tableList: string[], text: string): TableRef[] {
  * (a CTE's own definition sees only the CTEs before it, or all of them in WITH RECURSIVE), and
  * every name some WITH defines.
  */
-function cteScopes(asts: unknown, recursive: boolean): { outside: Set<string>; defined: Set<string> } {
+function cteScopes(asts: unknown): { outside: Set<string>; defined: Set<string> } {
   const outside = new Set<string>();
   const defined = new Set<string>();
   const visit = (value: unknown, scope: ReadonlySet<string>): void => {
@@ -252,7 +252,9 @@ function cteScopes(asts: unknown, recursive: boolean): { outside: Set<string>; d
       for (const child of Object.values(node)) visit(child, scope);
       return;
     }
-    const ctes = node.with as { name?: { value?: unknown } }[];
+    const ctes = node.with as { name?: { value?: unknown }; recursive?: unknown }[];
+    // Each WITH is recursive or not on its own: a nested WITH RECURSIVE changes nothing outside it.
+    const recursive = ctes.some((w) => w?.recursive === true);
     const names = ctes.map((w) => (typeof w?.name?.value === 'string' ? w.name.value.toLowerCase() : ''));
     for (const name of names) if (name) defined.add(name);
     ctes.forEach((w, i) => visit(w, new Set([...scope, ...(recursive ? names : names.slice(0, i))])));
@@ -268,8 +270,8 @@ function cteScopes(asts: unknown, recursive: boolean): { outside: Set<string>; d
  * out only when every unqualified reference to it lies within that WITH: an inner CTE does not hide
  * an outer view of the same name.
  */
-function tablesReferenced(tableList: string[], asts: unknown, text: string): TableRef[] {
-  const { outside, defined } = cteScopes(asts, /\bWITH\s+RECURSIVE\b/i.test(text));
+function tablesReferenced(tableList: string[], asts: unknown): TableRef[] {
+  const { outside, defined } = cteScopes(asts);
   const seen = new Map<string, TableRef>();
   for (const [, schema, name] of tableList.map((entry) => entry.split('::'))) {
     if (!name || name === 'null') continue;
@@ -313,7 +315,7 @@ function analyzeQuery(text: string): StatementAnalysis {
   const asts = Array.isArray(parsed.ast) ? parsed.ast : [parsed.ast];
   const root = asts[0] ?? {};
   const type = String(root.type ?? '').toLowerCase();
-  const referenced = tablesReferenced(parsed.tableList, asts, text);
+  const referenced = tablesReferenced(parsed.tableList, asts);
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
     a.writesTables = tablesWritten(parsed.tableList, text);
@@ -527,7 +529,7 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       try {
         const { tableList, ast } = parser.parse(text, OPTIONS);
         a.writesTables = tablesWritten(tableList, text);
-        const referenced = tablesReferenced(tableList, ast, text);
+        const referenced = tablesReferenced(tableList, ast);
         if (referenced.length) a.referencesTables = referenced;
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');

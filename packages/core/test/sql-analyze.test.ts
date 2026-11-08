@@ -373,6 +373,16 @@ describe('preflight', () => {
       );
       // A CTE's own definition still means the real relation of that name (it is not recursive).
       assert.deepEqual(await named('with v as (select a from v) select * from v', engine), ['.v'], engine);
+      // A nested WITH RECURSIVE does not make the outer, non-recursive WITH recursive: b in a's
+      // definition is still the real relation b.
+      assert.deepEqual(
+        await named(
+          'with a as (select x from b), b as (select 1 as x) select * from a where x in (with recursive r (n) as (select 1 union all select n + 1 from r where n < 2) select n from r)',
+          engine,
+        ),
+        ['.b'],
+        engine,
+      );
     }
   });
 

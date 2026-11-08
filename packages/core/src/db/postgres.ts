@@ -392,10 +392,13 @@ class PostgresSession implements DbSession {
     let interrupted: 'timeout' | 'cancelled' | null = null;
     /** The cancel request: it must settle before this backend runs anything else. */
     let cancelling: Promise<unknown> | null = null;
+    /** Called once when the statement is interrupted (a wait elsewhere stops waiting). */
+    let onInterrupt: (() => void) | null = null;
     const interrupt = (why: 'timeout' | 'cancelled') => {
       if (interrupted) return;
       interrupted = why;
       cancelling = this.adapter.cancel(this.backendId);
+      onInterrupt?.();
     };
     // statement_timeout ends the statement on the server; this backstop covers a server that does not answer.
     const timer = setTimeout(() => interrupt('timeout'), timeout + 2000);
@@ -450,7 +453,15 @@ class PostgresSession implements DbSession {
               : null;
         }
         if (outcome.resultSets === 0 && result.fields.length) {
-          const names = await this.adapter.typeNames(result.fields.map((f) => f.dataTypeID));
+          // Type names come from the metadata connection, which a cancel of this backend does not
+          // reach: an interruption stops the wait, the OIDs stand in, and the next read stops.
+          const names = await new Promise<Map<number, string>>((resolve) => {
+            if (interrupted) return resolve(new Map());
+            onInterrupt = () => resolve(new Map());
+            this.adapter
+              .typeNames(result.fields.map((f) => f.dataTypeID))
+              .then(resolve, () => resolve(new Map()));
+          }).finally(() => (onInterrupt = null));
           const columns: ColumnInfo[] = result.fields.map((f) => ({
             name: f.name,
             type: names.get(f.dataTypeID) ?? String(f.dataTypeID),

@@ -129,6 +129,82 @@ for (const { engine, variable, prepare } of engines) {
       }
     });
 
+    it(
+      'reports a lost connection, not a cancel, when the connection drops after a cancel',
+      {
+        skip: engine !== 'mysql',
+      },
+      async () => {
+        // The cancel request is sent but has no effect yet; then the connection is killed.
+        const cancel = adapter.cancel.bind(adapter);
+        adapter.cancel = async () => true;
+        const u = new URL(url);
+        const root = await mysql.createConnection({
+          host: u.hostname,
+          port: Number(u.port),
+          user: decodeURIComponent(u.username),
+          password: decodeURIComponent(u.password),
+          ssl: { rejectUnauthorized: false },
+        });
+        try {
+          const controller = new AbortController();
+          const error = await adapter.withSession(async (s) => {
+            const { sink } = collect();
+            // Handled at once: it fails while the connection is being killed.
+            const running = s
+              .execute('SELECT SLEEP(5)', sink, {
+                timeoutMs: 20_000,
+                batchSize: 100,
+                signal: controller.signal,
+              })
+              .then(
+                () => null,
+                (e: unknown) => e,
+              );
+            await new Promise((r) => setTimeout(r, 300));
+            controller.abort();
+            await root.query(`KILL ${s.backendId}`);
+            return running;
+          });
+          // The statement may have committed before its answer was lost: not a confirmed cancel.
+          assert.equal((error as { category?: string } | null)?.category, 'connectivity');
+        } finally {
+          adapter.cancel = cancel;
+          await root.end();
+        }
+      },
+    );
+
+    it('stops waiting for result type names when cancelled', { skip: engine !== 'postgresql' }, async () => {
+      // The metadata connection never answers; a cancel of the work backend does not reach it.
+      const pg = adapter as unknown as { typeNames: (oids: number[]) => Promise<Map<number, string>> };
+      const typeNames = pg.typeNames.bind(adapter);
+      pg.typeNames = () => new Promise(() => undefined);
+      try {
+        const controller = new AbortController();
+        const settled = adapter.withSession(async (s) => {
+          const { sink } = collect();
+          const running = s.execute('SELECT n FROM generate_series(1, 5000) AS n', sink, {
+            timeoutMs: 20_000,
+            batchSize: 100,
+            signal: controller.signal,
+          });
+          setTimeout(() => controller.abort(), 300);
+          return running.then(
+            () => 'finished',
+            (e: unknown) => (e as { category?: string }).category,
+          );
+        });
+        const outcome = await Promise.race([
+          settled,
+          new Promise((r) => setTimeout(() => r('still waiting'), 5000)),
+        ]);
+        assert.equal(outcome, 'cancelled');
+      } finally {
+        pg.typeNames = typeNames;
+      }
+    });
+
     describe('connection test', () => {
       it('succeeds with verify-full against the custom CA and reports capabilities', async () => {
         const report = await registry.test(target());

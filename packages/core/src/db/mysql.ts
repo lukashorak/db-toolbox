@@ -807,6 +807,12 @@ class MysqlSession implements DbSession {
       });
     } catch (error) {
       const mapped = mapMysqlError(error);
+      // A lost connection stays one, even when a cancel or the time limit came first: the
+      // statement may have committed before its answer was lost (our cancel never closes it).
+      if (mapped.category === 'connectivity') {
+        this.markDirty('connection lost');
+        throw mapped;
+      }
       if (interrupted === 'stopped' && (mapped.code === '1317' || mapped.code === '3024')) {
         // The sink stopped reading and the server ended the statement on request.
       } else if (interrupted === 'cancelled') {
@@ -820,7 +826,6 @@ class MysqlSession implements DbSession {
           sqlState: mapped.sqlState,
         });
       } else {
-        if (mapped.category === 'connectivity') this.markDirty('connection lost');
         throw mapped;
       }
     } finally {
