@@ -579,4 +579,53 @@ describe('preflight', () => {
     assert.equal((await run("select 'open", 'mysql'))[0]?.code, 'incomplete_statement');
     assert.equal((await run(' -- nothing', 'mysql'))[0]?.code, 'empty_script');
   });
+
+  it('refuses changing the client encoding to anything but UTF-8, which the drivers exchange text in', async () => {
+    const refused = async (sql: string, engine: 'postgresql' | 'mysql') =>
+      (await run(sql, engine)).map((p) => [p.code, p.statement]);
+    for (const sql of [
+      "SET client_encoding TO 'LATIN1'; SELECT chr(233)",
+      "SET NAMES 'LATIN1'",
+      'SET LOCAL client_encoding = SQL_ASCII',
+      "SELECT set_config('client_encoding', 'WIN1252', false)",
+      "SELECT pg_catalog.set_config('CLIENT_ENCODING', 'LATIN1', true)",
+    ]) {
+      assert.deepEqual(await refused(sql, 'postgresql'), [['unsupported_statement', 0]], sql);
+    }
+    assert.match(
+      String((await run("SET NAMES 'LATIN1'", 'postgresql'))[0]?.message),
+      /client_encoding \(SET NAMES\) is not supported/,
+    );
+    for (const sql of [
+      "SET client_encoding TO 'UTF8'",
+      "SET NAMES 'utf-8'",
+      "SET client_encoding = 'Unicode'",
+      'SET client_encoding TO DEFAULT',
+      'RESET client_encoding',
+      "SELECT set_config('application_name', 'x', false)",
+    ]) {
+      assert.deepEqual(await refused(sql, 'postgresql'), [], sql);
+    }
+    for (const sql of [
+      'SET NAMES latin1',
+      "SET NAMES 'latin1' COLLATE 'latin1_swedish_ci'",
+      'SET CHARACTER SET latin1',
+      'SET CHARSET cp1250',
+      'SET character_set_client = latin1',
+      "SET @@session.character_set_client = 'latin1', sql_mode = ''",
+      'SET NAMES DEFAULT',
+    ]) {
+      assert.deepEqual(await refused(sql, 'mysql'), [['unsupported_statement', 0]], sql);
+    }
+    for (const sql of [
+      'SET NAMES utf8mb4',
+      "SET NAMES 'utf8mb4' COLLATE utf8mb4_bin",
+      'SET CHARACTER SET utf8mb4',
+      'SET character_set_client = utf8mb4',
+      // Results arrive in their own character set, which the adapter decodes.
+      'SET character_set_results = latin1',
+    ]) {
+      assert.deepEqual(await refused(sql, 'mysql'), [], sql);
+    }
+  });
 });

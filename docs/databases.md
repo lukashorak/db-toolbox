@@ -84,17 +84,17 @@ How read-only is enforced, and where each engine's limits are: [decision 0022](d
 
 `preflight()` checks a whole script before anything runs. Any problem blocks the run.
 
-| Code                       | When                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `empty_script`             | No statements                                                                                        |
-| `incomplete_statement`     | A string, identifier or comment is not closed                                                        |
-| `parse_error`              | Under a read-only policy, a statement cannot be parsed                                               |
-| `read_only_violation`      | Under a read-only policy, a statement is not read-only safe. The message names the policy source     |
-| `transaction_control`      | `BEGIN`, `COMMIT`, `SAVEPOINT`, `SET autocommit`, `LOCK TABLES` … in an automatic mode               |
-| `implicit_commit`          | Single-transaction mode, MySQL statement that commits implicitly                                     |
-| `no_transaction_block`     | Single-transaction mode, PostgreSQL `VACUUM`, `CREATE INDEX CONCURRENTLY` …                          |
-| `non_transactional_engine` | Single-transaction mode, MySQL write to a MyISAM, MEMORY … table, or `ENGINE=` that cannot roll back |
-| `unsupported_statement`    | `COPY`, cursors, two-phase commit, XA, `HANDLER`                                                     |
+| Code                       | When                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `empty_script`             | No statements                                                                                                                                                                                                                                                                                                                            |
+| `incomplete_statement`     | A string, identifier or comment is not closed                                                                                                                                                                                                                                                                                            |
+| `parse_error`              | Under a read-only policy, a statement cannot be parsed                                                                                                                                                                                                                                                                                   |
+| `read_only_violation`      | Under a read-only policy, a statement is not read-only safe. The message names the policy source                                                                                                                                                                                                                                         |
+| `transaction_control`      | `BEGIN`, `COMMIT`, `SAVEPOINT`, `SET autocommit`, `LOCK TABLES` … in an automatic mode                                                                                                                                                                                                                                                   |
+| `implicit_commit`          | Single-transaction mode, MySQL statement that commits implicitly                                                                                                                                                                                                                                                                         |
+| `no_transaction_block`     | Single-transaction mode, PostgreSQL `VACUUM`, `CREATE INDEX CONCURRENTLY` …                                                                                                                                                                                                                                                              |
+| `non_transactional_engine` | Single-transaction mode, MySQL write to a MyISAM, MEMORY … table, or `ENGINE=` that cannot roll back                                                                                                                                                                                                                                     |
+| `unsupported_statement`    | `COPY`, cursors, two-phase commit, XA, `HANDLER`, changing the client encoding to anything but UTF-8 (PostgreSQL `SET client_encoding`, `SET NAMES` and `set_config('client_encoding', …)`; MySQL `SET NAMES`, `SET CHARACTER SET` and `character_set_client` other than `utf8mb4`), since the drivers exchange SQL and results as UTF-8 |
 
 ## Execution primitives
 

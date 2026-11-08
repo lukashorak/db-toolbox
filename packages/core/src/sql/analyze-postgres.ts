@@ -163,6 +163,27 @@ function setsReadWrite(options: unknown): boolean {
 
 const READ_ONLY_SETTINGS = new Set(['transaction_read_only', 'default_transaction_read_only']);
 
+/**
+ * node-postgres signs in with client_encoding UTF8 and reads and writes text as UTF-8 only: another
+ * client encoding would garble results and the non-ASCII text of later statements.
+ */
+const CLIENT_ENCODING_REFUSED =
+  'Changing client_encoding (SET NAMES) is not supported: the workbench exchanges text with the server as UTF-8.';
+
+/** The string a constant holds, if the node is a string constant. */
+function constText(node: unknown): string | null {
+  const value = ((node as Node | undefined)?.A_Const as Node | undefined)?.sval as Node | undefined;
+  return typeof value?.sval === 'string' ? value.sval : null;
+}
+
+/** UTF8, in any spelling PostgreSQL accepts for it (UTF-8, utf8, Unicode). */
+function isUtf8(node: unknown): boolean {
+  const name = constText(node)
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  return name === 'utf8' || name === 'unicode';
+}
+
 function commandName(type: string, body: Node): string {
   switch (type) {
     case 'SelectStmt':
@@ -233,6 +254,11 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       const inCatalog = called.length === 1 || called.at(-2) === 'pg_catalog';
       if (inCatalog && Object.hasOwn(WRITING_BUILT_INS, exact))
         analysis.builtinWrite ??= `${exact}() ${WRITING_BUILT_INS[exact]}`;
+      if (inCatalog && exact === 'set_config') {
+        const [setting, value] = (body.args as unknown[] | undefined) ?? [];
+        if (constText(setting)?.toLowerCase() === 'client_encoding' && !isUtf8(value))
+          analysis.unsupported ??= CLIENT_ENCODING_REFUSED;
+      }
       // What runs over another connection commits there, whatever this transaction does.
       if (REMOTE_FUNCTIONS.has(name))
         analysis.irreversible ??= `${name}() runs SQL over another connection, which commits on its own`;
@@ -311,6 +337,13 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
       }
       if (body.kind === 'VAR_RESET_ALL')
         unsafe(a, 'RESET ALL would restore settings including read-only mode');
+      // SET NAMES is SET client_encoding. DEFAULT and RESET return to the UTF8 the driver signed in with.
+      if (
+        name === 'client_encoding' &&
+        body.kind === 'VAR_SET_VALUE' &&
+        !isUtf8((body.args as unknown[])?.[0])
+      )
+        a.unsupported = CLIENT_ENCODING_REFUSED;
       a.changesSession = !body.is_local;
       return a;
     }

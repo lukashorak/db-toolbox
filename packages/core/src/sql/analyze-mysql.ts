@@ -387,6 +387,19 @@ function setAssignments(tokens: Token[]): { name: string; scope: string; value: 
   return result;
 }
 
+/**
+ * The driver sends SQL as utf8mb4, the character set it signs in with: with another client
+ * character set the server would misread the non-ASCII text of later statements. (Results are
+ * decoded in whatever character set each column arrives in.)
+ */
+const CLIENT_CHARSET_REFUSED =
+  'Changing the client character set (SET NAMES, SET CHARACTER SET, character_set_client) is not supported: the workbench sends SQL as utf8mb4.';
+const isUtf8mb4 = (value: string) =>
+  value
+    .trim()
+    .replace(/^['"`]|['"`]$/g, '')
+    .toLowerCase() === 'utf8mb4';
+
 function analyzeSet(tokens: Token[]): StatementAnalysis {
   const second = word(tokens[1]);
   const third = word(tokens[2]);
@@ -412,6 +425,12 @@ function analyzeSet(tokens: Token[]): StatementAnalysis {
     w.implicitCommit = second === 'PASSWORD';
     return w;
   }
+  if (second === 'NAMES' || second === 'CHARSET' || (second === 'CHARACTER' && third === 'SET')) {
+    a.command = second === 'NAMES' ? 'SET NAMES' : 'SET CHARACTER SET';
+    if (!isUtf8mb4(tokens[second === 'CHARACTER' ? 3 : 2]?.text ?? ''))
+      a.unsupported = CLIENT_CHARSET_REFUSED;
+    return a;
+  }
   for (const assignment of setAssignments(tokens)) {
     const { scope, value } = assignment;
     // `autocommit` and @@session.`autocommit` name the same variable as autocommit.
@@ -419,7 +438,11 @@ function analyzeSet(tokens: Token[]): StatementAnalysis {
     const plain = name
       .replace(/^@@(session\.|local\.|global\.|persist\.|persist_only\.)?/i, '')
       .toLowerCase();
-    if (GLOBAL_SCOPE.test(scope) || GLOBAL_SCOPE.test(name)) {
+    const globalScope = GLOBAL_SCOPE.test(scope) || GLOBAL_SCOPE.test(name);
+    // A global value is only a default: each connection signs in with utf8mb4.
+    if (plain === 'character_set_client' && !globalScope && !isUtf8mb4(value))
+      a.unsupported = CLIENT_CHARSET_REFUSED;
+    if (globalScope) {
       a.kind = 'write';
       unsafe(a, 'changes server configuration');
       // Server variables are not transactional; PERSIST also writes them to disk.
