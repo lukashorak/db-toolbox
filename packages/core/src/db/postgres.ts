@@ -1,5 +1,6 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
+import { AppError } from '../domain/errors.js';
 import { afterInterruption, DbError, mapPostgresError } from './errors.js';
 import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
@@ -513,6 +514,18 @@ class PostgresSession implements DbSession {
     };
     let discarding = false;
     let rowsRead = 0;
+    // node-postgres reads and writes text as UTF-8 only. The server reports every change of
+    // client_encoding, also one preflight cannot see (in a function, a DO block, a procedure, a
+    // computed set_config): the statement that made one fails, and the connection is closed.
+    let encoding: string | null = null;
+    const onParameter = (message: { parameterName?: string; parameterValue?: string }) => {
+      if (message.parameterName === 'client_encoding' && message.parameterValue?.toUpperCase() !== 'UTF8')
+        encoding ??= message.parameterValue ?? '?';
+    };
+    const connection = (this.client as unknown as { connection: NodeJS.EventEmitter }).connection;
+    connection.on('parameterStatus', onParameter);
+    /** Not the database's error: the statement finished (and may have committed) before it. */
+    let encodingChanged: AppError | null = null;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       await guard.wait(
@@ -606,8 +619,16 @@ class PostgresSession implements DbSession {
         }
         if (rows.length < batchSize) break;
       }
+      // The server reports a change before it says it is ready, which the last read waits for.
+      if (encoding) {
+        throw (encodingChanged = new AppError(
+          'database_error',
+          `The statement changed client_encoding to ${encoding}, but the workbench reads text as UTF-8 only: its result may be garbled. The script stops here.`,
+        ));
+      }
       return outcome;
     } catch (error) {
+      if (encodingChanged && error === encodingChanged) throw error;
       // An error outside the cursor (storing the rows, looking up types) leaves its portal open,
       // and every later query on this connection would wait behind it.
       if (opened) await this.#closeCursor(opened);
@@ -623,6 +644,8 @@ class PostgresSession implements DbSession {
       guard.stop();
       options.signal?.removeEventListener('abort', onAbort);
       this.client.removeListener('notice', onNotice);
+      connection.removeListener('parameterStatus', onParameter);
+      if (encoding) this.markDirty('client_encoding changed');
       if (interrupted && !this.#inTransaction) this.markDirty(`statement ${interrupted}`);
       // A cancel request still on its way could stop the next statement on this backend. Wait for
       // it (pg_cancel_backend has no effect on an idle backend); if it does not settle, discard it.

@@ -589,6 +589,8 @@ describe('preflight', () => {
       'SET LOCAL client_encoding = SQL_ASCII',
       "SELECT set_config('client_encoding', 'WIN1252', false)",
       "SELECT pg_catalog.set_config('CLIENT_ENCODING', 'LATIN1', true)",
+      "SELECT set_config('client_encoding'::text, 'LATIN1', false)",
+      "SELECT set_config('client_encoding', CAST('LATIN1' AS text), false)",
     ]) {
       assert.deepEqual(await refused(sql, 'postgresql'), [['unsupported_statement', 0]], sql);
     }
@@ -602,6 +604,7 @@ describe('preflight', () => {
       "SET client_encoding = 'Unicode'",
       'SET client_encoding TO DEFAULT',
       'RESET client_encoding',
+      "SELECT set_config('client_encoding'::text, 'UTF8'::text, false)",
       "SELECT set_config('application_name', 'x', false)",
     ]) {
       assert.deepEqual(await refused(sql, 'postgresql'), [], sql);

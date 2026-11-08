@@ -170,8 +170,10 @@ const READ_ONLY_SETTINGS = new Set(['transaction_read_only', 'default_transactio
 const CLIENT_ENCODING_REFUSED =
   'Changing client_encoding (SET NAMES) is not supported: the workbench exchanges text with the server as UTF-8.';
 
-/** The string a constant holds, if the node is a string constant. */
+/** The string a constant holds, if the node is a string constant (also cast: 'x'::text). */
 function constText(node: unknown): string | null {
+  const cast = (node as Node | undefined)?.TypeCast as Node | undefined;
+  if (cast) return constText(cast.arg);
   const value = ((node as Node | undefined)?.A_Const as Node | undefined)?.sval as Node | undefined;
   return typeof value?.sval === 'string' ? value.sval : null;
 }

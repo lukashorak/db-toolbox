@@ -427,6 +427,32 @@ for (const { engine, variable, prepare } of engines) {
       }
     });
 
+    it(
+      'stops a script at the statement that changed the client encoding where preflight cannot see it',
+      { skip: engine !== 'postgresql' },
+      async () => {
+        // In a function, and through a setting name preflight cannot read: the server reports it.
+        for (const change of [
+          "SELECT wb_set_encoding('LATIN1')",
+          "SELECT set_config('client' || '_encoding', 'WIN1252', false)",
+        ]) {
+          const done = await run(`${change}; SELECT 'é' AS e`);
+          assert.deepEqual(
+            [done.status, done.statements[0]?.status, done.statements[1]?.status],
+            ['failed', 'failed', 'not_run'],
+            change,
+          );
+          assert.match(
+            String(done.statements[0]?.error?.message),
+            /changed client_encoding to (LATIN1|WIN1252)/,
+          );
+        }
+        // The connection that changed was closed: the next run reads UTF-8 again.
+        const next = await run("SELECT 'é' AS e, current_setting('client_encoding')");
+        assert.deepEqual(core.executions.rows(writer, next.id, 0).rows, [['é', 'UTF8']]);
+      },
+    );
+
     it('a read-only connection rejects writes before running and runs reads read-only', async () => {
       const rejected = await core.executions.submit(writer, {
         connectionId: readOnly,

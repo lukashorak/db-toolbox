@@ -106,6 +106,9 @@ CREATE FUNCTION wb_elsewhere.wb_item_count() RETURNS bigint LANGUAGE sql VOLATIL
 -- Leaves a session setting and an advisory lock behind, out of sight of the statement analysis.
 CREATE FUNCTION wb_fn_leave_state() RETURNS int LANGUAGE sql AS
   'SELECT set_config(''wb.leak'', ''42'', false); SELECT pg_advisory_lock(4242); SELECT 1';
+-- Changes the session's client encoding, out of sight of the statement analysis.
+CREATE FUNCTION wb_set_encoding(e text) RETURNS text LANGUAGE sql AS
+  'SELECT set_config(''client_encoding'', e, false)';
 CREATE TABLE wb_numbers AS SELECT generate_series(1, 5000) AS n;
 -- COMMIT takes 1.5 s: a deferred constraint trigger sleeps when the transaction commits.
 CREATE TABLE wb_slow_commit (id int);
