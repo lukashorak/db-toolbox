@@ -406,6 +406,50 @@ describe(
       assert.equal(Number(stored?.n), 1, 'one execution on the server');
     });
 
+    it('keeps a lost submission’s key when a retry is refused before the key is checked', async () => {
+      const sql = "INSERT INTO wb_items (name) VALUES ('gui-lost-then-limited')";
+      await setSql(sql);
+      let posts = 0;
+      await page.route('**/api/v1/executions', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        posts += 1;
+        if (posts === 1) {
+          await route.fetch(); // the server accepts and starts it…
+          return route.abort('failed'); // …but its answer never arrives
+        }
+        if (posts === 2)
+          // The retry is refused before the server looks at its key: nothing about the first one.
+          return route.fulfill({
+            status: 429,
+            contentType: 'application/json',
+            body: '{"error":"rate_limited","message":"Too many requests. Try again in 1 s."}',
+          });
+        return route.continue();
+      });
+      try {
+        await page.getByTestId('run-target').click();
+        await page
+          .getByText(/Failed to fetch/)
+          .first()
+          .waitFor();
+        await page.getByTestId('run-target').click();
+        await page
+          .getByText(/Too many requests/)
+          .first()
+          .waitFor();
+        await page.getByTestId('run-target').click();
+        // A second INSERT would fail on the unique name: wait for either outcome, then count.
+        await page
+          .locator('[data-testid="results"]:is([data-status="succeeded"], [data-status="failed"])')
+          .waitFor({ timeout: 20_000 });
+      } finally {
+        await page.unroute('**/api/v1/executions');
+      }
+      assert.equal(posts, 3);
+      const stored = env.core.db.get('SELECT count(*) AS n FROM executions WHERE sql = :sql', { sql });
+      assert.equal(Number(stored?.n), 1, 'one execution on the server');
+    });
+
     it('recovers a running execution after a reload and in a new browser (AC7)', async () => {
       await setSql('SELECT pg_sleep(4), 42 AS answer');
       await page.getByTestId('run-target').click();

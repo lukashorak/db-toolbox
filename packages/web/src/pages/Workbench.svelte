@@ -277,9 +277,20 @@
       origin.runs = [view.id, ...(origin.runs ?? [])].slice(0, 20);
       if (workbench.active === tabId) shownRun = view.id;
     } catch (e) {
-      // Without an answer from the server, the submission may have started there: keep its key.
+      // Without an answer from the server, the submission may have started there.
       const uncertain = !(e instanceof ApiError) || e.status >= 500;
-      if (!uncertain) delete origin.pendingRequestKey;
+      // The key is dropped only when the server answered for it: it stored a rejected execution
+      // under it, or holds another one. Any other refusal (sign-in, permission, rate limit,
+      // validation) comes before the key is looked up, so an earlier submission with this key may
+      // still have started: the next Run must send it again. Keeping it is harmless when nothing
+      // was stored under it.
+      if (
+        e instanceof ApiError &&
+        (e.code === 'preflight_rejected' ||
+          e.code === 'read_only_policy' ||
+          e.code === 'idempotency_conflict')
+      )
+        delete origin.pendingRequestKey;
       if (
         e instanceof ApiError &&
         e.code === 'idempotency_conflict' &&
