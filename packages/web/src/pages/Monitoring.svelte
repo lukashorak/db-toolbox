@@ -72,26 +72,33 @@
   let refreshSeconds = $state(15);
 
   // Each refresh belongs to the connection it asked about: an answer that arrives after another
-  // connection was picked, or after a newer refresh started, is dropped, so one database's numbers
-  // are never shown under another's name.
-  let generation = 0;
+  // connection was picked is dropped, so one database's numbers are never shown under another's
+  // name. While a refresh of this connection is still running, another is not started: a slow
+  // database still gets its answers shown. An older answer never replaces a newer one.
+  let sequence = 0;
+  let accepted = 0;
+  let running: string | null = null;
   async function refresh() {
     const id = connectionId;
-    if (!id) return;
-    const mine = ++generation;
-    const current = () => mine === generation && connectionId === id;
+    if (!id || running === id) return;
+    const mine = ++sequence;
+    running = id;
+    const usable = () => connectionId === id && mine >= accepted;
     try {
       const next = await api<Snapshot>('GET', `/connections/${id}/monitoring/activity`);
-      if (!current()) return;
+      if (!usable()) return;
       snapshot = next;
+      accepted = mine;
       if (tab === 'statements' || !statements) {
         const stats = await api<Statements>('GET', `/connections/${id}/monitoring/statements?limit=25`);
-        if (!current()) return;
+        if (!usable()) return;
         statements = stats;
       }
       failure = null;
     } catch (e) {
-      if (current()) failure = e instanceof Error ? e.message : String(e);
+      if (usable()) failure = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (running === id) running = null;
     }
   }
 

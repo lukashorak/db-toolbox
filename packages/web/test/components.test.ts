@@ -326,6 +326,32 @@ describe('monitoring', () => {
     }
   };
 
+  it('shows a slow answer instead of starting the same refresh over', async () => {
+    const original = api.getMockImplementation();
+    const answers: ((value: unknown) => void)[] = [];
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections') return [{ id: 'a', name: 'Alpha', enabled: true }];
+      if (url === '/settings/execution') return { monitoringRefreshSeconds: 15 };
+      if (url.includes('/statements'))
+        return { availability: 'available', reason: null, statsSince: null, items: [] };
+      // Every activity answer is slow.
+      return new Promise((r) => answers.push(r));
+    }) as never);
+    try {
+      render(Monitoring);
+      await settle();
+      // Refresh while the first request is still running: it does not supersede it.
+      await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+      await settle();
+      expect(answers).toHaveLength(1);
+      answers[0]?.(snapshotOf('slow_account'));
+      await settle();
+      expect(screen.getByTestId('sample-time').textContent).toMatch(/account slow_account/);
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
   it('never shows one connection’s numbers under another', async () => {
     const original = api.getMockImplementation();
     let answerAlpha: (value: unknown) => void = () => undefined;

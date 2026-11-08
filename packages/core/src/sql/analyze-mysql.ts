@@ -228,19 +228,53 @@ function tablesWritten(tableList: string[], text: string): TableRef[] {
     .filter((t) => t.name && t.name !== 'null');
 }
 
-/** Every table or view the parser saw the statement name, once each; CTE names are not ones. */
-function tablesReferenced(tableList: string[], asts: unknown): TableRef[] {
-  const ctes = new Set<string>();
-  walk(asts, (node) => {
-    if (!Array.isArray(node.with)) return;
-    for (const w of node.with as { name?: { value?: unknown } }[]) {
-      if (typeof w?.name?.value === 'string') ctes.add(w.name.value.toLowerCase());
+/**
+ * Unqualified names the statement reads or writes outside the scope of any WITH that defines them
+ * (a CTE's own definition sees only the CTEs before it, or all of them in WITH RECURSIVE), and
+ * every name some WITH defines.
+ */
+function cteScopes(asts: unknown, recursive: boolean): { outside: Set<string>; defined: Set<string> } {
+  const outside = new Set<string>();
+  const defined = new Set<string>();
+  const visit = (value: unknown, scope: ReadonlySet<string>): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, scope);
+      return;
     }
-  });
+    if (!value || typeof value !== 'object') return;
+    const node = value as Node;
+    // A FROM item or a write target: { db, table, as }. Column references carry a table too.
+    if (typeof node.table === 'string' && 'db' in node && node.type !== 'column_ref' && !('column' in node)) {
+      const name = node.table.toLowerCase();
+      if (!node.db && !scope.has(name)) outside.add(name);
+    }
+    if (!Array.isArray(node.with)) {
+      for (const child of Object.values(node)) visit(child, scope);
+      return;
+    }
+    const ctes = node.with as { name?: { value?: unknown } }[];
+    const names = ctes.map((w) => (typeof w?.name?.value === 'string' ? w.name.value.toLowerCase() : ''));
+    for (const name of names) if (name) defined.add(name);
+    ctes.forEach((w, i) => visit(w, new Set([...scope, ...(recursive ? names : names.slice(0, i))])));
+    const { with: _defined, ...rest } = node;
+    for (const child of Object.values(rest)) visit(child, new Set([...scope, ...names]));
+  };
+  visit(asts, new Set());
+  return { outside, defined };
+}
+
+/**
+ * Every table or view the parser saw the statement name, once each. A name a WITH defines is left
+ * out only when every unqualified reference to it lies within that WITH: an inner CTE does not hide
+ * an outer view of the same name.
+ */
+function tablesReferenced(tableList: string[], asts: unknown, text: string): TableRef[] {
+  const { outside, defined } = cteScopes(asts, /\bWITH\s+RECURSIVE\b/i.test(text));
   const seen = new Map<string, TableRef>();
   for (const [, schema, name] of tableList.map((entry) => entry.split('::'))) {
     if (!name || name === 'null') continue;
-    if ((!schema || schema === 'null') && ctes.has(name.toLowerCase())) continue;
+    const unqualified = !schema || schema === 'null';
+    if (unqualified && defined.has(name.toLowerCase()) && !outside.has(name.toLowerCase())) continue;
     const ref = { schema: schema && schema !== 'null' ? schema : null, name };
     seen.set(`${ref.schema ?? ''}.${name}`, ref);
   }
@@ -279,7 +313,7 @@ function analyzeQuery(text: string): StatementAnalysis {
   const asts = Array.isArray(parsed.ast) ? parsed.ast : [parsed.ast];
   const root = asts[0] ?? {};
   const type = String(root.type ?? '').toLowerCase();
-  const referenced = tablesReferenced(parsed.tableList, asts);
+  const referenced = tablesReferenced(parsed.tableList, asts, text);
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
     a.writesTables = tablesWritten(parsed.tableList, text);
@@ -493,7 +527,7 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       try {
         const { tableList, ast } = parser.parse(text, OPTIONS);
         a.writesTables = tablesWritten(tableList, text);
-        const referenced = tablesReferenced(tableList, ast);
+        const referenced = tablesReferenced(tableList, ast, text);
         if (referenced.length) a.referencesTables = referenced;
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');

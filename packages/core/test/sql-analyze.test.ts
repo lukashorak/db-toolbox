@@ -362,6 +362,14 @@ describe('preflight', () => {
         ['.t', '.u', 'app.w'],
         engine,
       );
+      // An inner WITH does not hide an outer view of the same name.
+      assert.deepEqual(
+        await named('select * from v where x in (with v as (select 1 as x) select x from v)', engine),
+        ['.v'],
+        engine,
+      );
+      // A CTE's own definition still means the real relation of that name (it is not recursive).
+      assert.deepEqual(await named('with v as (select a from v) select * from v', engine), ['.v'], engine);
     }
   });
 

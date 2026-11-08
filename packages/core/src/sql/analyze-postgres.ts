@@ -88,6 +88,48 @@ function walk(value: unknown, visit: (type: string, body: Node) => void): void {
   }
 }
 
+/**
+ * Tables and views the statement names. An unqualified name that a WITH clause around it defines
+ * refers to that query, not to a relation; the same name outside that WITH still counts. A CTE's
+ * own definition sees only the CTEs before it, or all of them in WITH RECURSIVE.
+ */
+function relationsReferenced(tree: unknown): TableRef[] {
+  const found = new Map<string, TableRef>();
+  const visit = (value: unknown, scope: ReadonlySet<string>): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, scope);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value as Node)) {
+      if (!/^[A-Z]/.test(key) || !child || typeof child !== 'object' || Array.isArray(child)) {
+        visit(child, scope);
+        continue;
+      }
+      const body = child as Node;
+      if (key === 'RangeVar' && typeof body.relname === 'string') {
+        const schema = typeof body.schemaname === 'string' && body.schemaname ? body.schemaname : null;
+        if (schema !== null || !scope.has(body.relname))
+          found.set(`${schema ?? ''}.${body.relname}`, { schema, name: body.relname });
+      }
+      const withClause = body.withClause as Node | undefined;
+      if (!withClause) {
+        visit(body, scope);
+        continue;
+      }
+      const ctes = (Array.isArray(withClause.ctes) ? withClause.ctes : []) as Node[];
+      const names = ctes.map((c) => String((c.CommonTableExpr as Node | undefined)?.ctename ?? ''));
+      ctes.forEach((c, i) =>
+        visit(c, new Set([...scope, ...(withClause.recursive === true ? names : names.slice(0, i))])),
+      );
+      const { withClause: _defined, ...rest } = body;
+      visit(rest, new Set([...scope, ...names]));
+    }
+  };
+  visit(tree, new Set());
+  return [...found.values()];
+}
+
 const strings = (list: unknown): string[] =>
   Array.isArray(list)
     ? list.map((item) => String(((item as Node).String as Node | undefined)?.sval ?? '')).filter(Boolean)
@@ -159,15 +201,7 @@ function commandName(type: string, body: Node): string {
 
 function checkTree(analysis: StatementAnalysis, tree: unknown): void {
   const calls = new Map<string, TableRef>();
-  const relations = new Map<string, TableRef>();
-  const ctes = new Set<string>();
   walk(tree, (type, body) => {
-    if (type === 'CommonTableExpr' && typeof body.ctename === 'string') ctes.add(body.ctename);
-    // Views among them can call functions that write.
-    if (type === 'RangeVar' && typeof body.relname === 'string') {
-      const schema = typeof body.schemaname === 'string' && body.schemaname ? body.schemaname : null;
-      relations.set(`${schema ?? ''}.${body.relname}`, { schema, name: body.relname });
-    }
     if (WRITE_NODES.has(type)) {
       analysis.kind = 'write';
       unsafe(analysis, 'contains a data-modifying statement');
@@ -199,8 +233,8 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
     }
   });
   if (calls.size) analysis.callsFunctions = [...(analysis.callsFunctions ?? []), ...calls.values()];
-  // A name a WITH clause defines refers to that query, not to a view of the same name.
-  const named = [...relations.values()].filter((r) => r.schema !== null || !ctes.has(r.name));
+  // Views among them can call functions that write.
+  const named = relationsReferenced(tree);
   if (named.length) analysis.referencesTables = [...(analysis.referencesTables ?? []), ...named];
 }
 
