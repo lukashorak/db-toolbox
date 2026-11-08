@@ -453,6 +453,41 @@ for (const { engine, variable, prepare } of engines) {
       },
     );
 
+    it(
+      'gives up on a metadata lookup whose connection stops answering, and the next one gets a fresh connection',
+      { skip: engine !== 'postgresql', timeout: 40_000 },
+      async () => {
+        const real = target();
+        const proxy = await freezableProxy(real.host, real.port);
+        // A short server limit keeps the test fast; the client gives up the grace period later.
+        const proxied = new AdapterRegistry({
+          sizes: { work: 1, metadata: 1, control: 1 },
+          connectTimeoutMs: 5000,
+          metadataTimeoutMs: 1000,
+        });
+        try {
+          const via = await proxied.get({
+            ...target({ id: 'cn_meta_stall', host: '127.0.0.1', port: proxy.port, tlsMode: 'verify-ca' }),
+            updatedAt: 'v1',
+          });
+          assert.ok((await via.metadata.schemas()).items.length > 0);
+          assert.equal(proxy.connections(), 1, 'only the metadata connection is open');
+          proxy.freeze();
+          let started = Date.now();
+          await assert.rejects(via.metadata.schemas());
+          const waited = Date.now() - started;
+          assert.ok(waited >= 5000 && waited < 10_000, `gave up after ${waited} ms`);
+          // The stalled connection left the pool: the next lookup opens a new one and is answered.
+          started = Date.now();
+          assert.ok((await via.metadata.schemas()).items.length > 0);
+          assert.ok(Date.now() - started < 3000, 'answered at once');
+        } finally {
+          proxy.close();
+          await proxied.closeAll();
+        }
+      },
+    );
+
     it('stops waiting for result type names when cancelled', { skip: engine !== 'postgresql' }, async () => {
       // The metadata connection never answers; a cancel of the work backend does not reach it.
       const pg = adapter as unknown as { typeNames: (oids: number[]) => Promise<Map<number, string>> };

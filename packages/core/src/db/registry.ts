@@ -17,6 +17,8 @@ export interface RegistryOptions {
   sizes: PoolSizes;
   connectTimeoutMs?: number;
   applicationName?: string;
+  /** How long a PostgreSQL metadata lookup may run (default 30 s); tests lower it. */
+  metadataTimeoutMs?: number;
 }
 
 interface Entry {
@@ -45,6 +47,7 @@ export class AdapterRegistry {
         ? new PostgresAdapter(target, endpoint, {
             ...common,
             applicationName: this.options.applicationName ?? 'database-workbench',
+            ...(this.options.metadataTimeoutMs ? { metadataTimeoutMs: this.options.metadataTimeoutMs } : {}),
           })
         : new MysqlAdapter(target, endpoint, common);
     });

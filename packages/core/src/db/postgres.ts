@@ -1,7 +1,7 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import { afterInterruption, DbError, mapPostgresError, SessionUnusableError } from './errors.js';
-import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
+import { bounded, CONTROL_TIMEOUT_MS, settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
 import { analyzeStatement } from '../sql/analyze.js';
@@ -108,6 +108,8 @@ export interface PostgresOptions {
   sizes: PoolSizes;
   connectTimeoutMs: number;
   applicationName: string;
+  /** How long a metadata lookup may run on the server (default 30 s). */
+  metadataTimeoutMs?: number;
 }
 
 export function postgresClientConfig(
@@ -164,7 +166,14 @@ export class PostgresAdapter implements DbAdapter {
     this.#work = pool(options.sizes.work, 'work');
     // Metadata lookups end on the server after 30 s, so one that stalls (even one a statement no
     // longer waits for) cannot hold the metadata connection.
-    this.#meta = pool(options.sizes.metadata, 'metadata', null, { statement_timeout: METADATA_TIMEOUT_MS });
+    // A metadata connection that stops answering without closing loses the server's timeout answer
+    // too: the client gives up after the grace period as well, and the failed query takes the
+    // connection out of the pool.
+    const metadataTimeout = options.metadataTimeoutMs ?? METADATA_TIMEOUT_MS;
+    this.#meta = pool(options.sizes.metadata, 'metadata', null, {
+      statement_timeout: metadataTimeout,
+      query_timeout: metadataTimeout + STALL_GRACE_MS,
+    });
     // A cancel that is not answered fails and its client is removed from the pool (a query error
     // releases it as broken); waiting for a client is bounded by the connection timeout.
     this.#control = pool(options.sizes.control, 'control', null, { query_timeout: CONTROL_TIMEOUT_MS });
