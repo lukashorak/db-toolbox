@@ -27,6 +27,8 @@
     problems: Problem[];
     readOnly: boolean;
     policySources: string[];
+    /** The inputs this analysis is for: its ranges are valid only for exactly this text. */
+    for: { tab: string; sql: string; connectionId: string; mode: string };
   } | null>(null);
   let rejected = $state<{ problems: Problem[]; base: number; statements: CheckedStatement[] } | null>(null);
   let views = $state<Record<string, ExecutionView>>({});
@@ -44,12 +46,25 @@
   const current = $derived(shownRun && views[shownRun] ? views[shownRun] : runs[0] ? views[runs[0]] : null);
   const active = $derived(runs.some((id) => views[id] && !TERMINAL.has(views[id].status)));
 
+  /** The analysis of exactly what the editor holds now; null while the text is being checked again. */
+  const fresh = $derived(
+    checked &&
+      tab &&
+      checked.for.tab === tab.id &&
+      checked.for.sql === tab.sql &&
+      checked.for.connectionId === tab.connectionId &&
+      checked.for.mode === settings.transactionMode
+      ? checked
+      : null,
+  );
+
   /** What Run will execute: the selection, or the statement at the cursor. */
   const target = $derived.by(() => {
     if (!tab) return null;
     if (selection.to > selection.from)
       return { from: selection.from, to: selection.to, label: 'Run selection', scope: 'Selection' };
-    const statements = checked?.statements ?? [];
+    // Ranges from an older text could cover other statements of the new one: never use them.
+    const statements = fresh?.statements ?? [];
     const at =
       statements.find((s) => selection.from >= s.range.start && selection.from <= s.range.end) ??
       [...statements].reverse().find((s) => s.range.start <= selection.from) ??
@@ -132,22 +147,28 @@
 
   // Statement ranges and preflight problems, a moment after typing stops.
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Only the latest request may set `checked`; an older answer arriving late is dropped. */
+  let checkRequest = 0;
   $effect(() => {
     const sql = tab?.sql ?? '';
+    const tabId = tab?.id ?? '';
     const connectionId = tab?.connectionId;
     const mode = settings.transactionMode;
     clearTimeout(checkTimer);
+    const request = ++checkRequest;
     if (!connectionId || !sql.trim()) {
       checked = null;
       return;
     }
     checkTimer = setTimeout(() => {
-      void api<NonNullable<typeof checked>>('POST', '/sql/check', {
+      void api<Omit<NonNullable<typeof checked>, 'for'>>('POST', '/sql/check', {
         connectionId,
         sql,
         transactionMode: mode,
       })
-        .then((r) => (checked = r))
+        .then((r) => {
+          if (request === checkRequest) checked = { ...r, for: { tab: tabId, sql, connectionId, mode } };
+        })
         .catch(() => undefined);
     }, 350);
   });
@@ -230,7 +251,7 @@
       if (e instanceof ApiError && (e.code === 'read_only_policy' || e.code === 'preflight_rejected')) {
         const statements =
           (
-            await api<NonNullable<typeof checked>>('POST', '/sql/check', {
+            await api<Omit<NonNullable<typeof checked>, 'for'>>('POST', '/sql/check', {
               connectionId: tab.connectionId,
               sql: part.sql,
             }).catch(() => null)

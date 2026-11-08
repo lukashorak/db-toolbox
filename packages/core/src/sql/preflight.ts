@@ -12,6 +12,7 @@ export type PreflightCode =
   | 'implicit_commit'
   | 'no_transaction_block'
   | 'routine_may_commit'
+  | 'unchecked_write_target'
   | 'non_transactional_engine'
   | 'unsupported_statement';
 
@@ -126,7 +127,10 @@ export async function preflight(
 
   if (options.engine === 'mysql' && options.transactionMode === 'atomic') {
     const seen = new Map<string, string | null>();
+    // USE changes which database unqualified names refer to for the rest of the script.
+    let database: string | null = null;
     for (const s of statements) {
+      if (s.analysis.usesDatabase !== undefined) database = s.analysis.usesDatabase;
       const declared = s.analysis.declaredEngine?.toLowerCase();
       if (declared && !TRANSACTIONAL_ENGINES.has(declared)) {
         problems.push({
@@ -137,7 +141,16 @@ export async function preflight(
         });
       }
       if (!options.tableEngine) continue;
-      for (const table of s.analysis.writesTables) {
+      if (s.analysis.writeTargetsUnknown) {
+        problems.push({
+          code: 'unchecked_write_target',
+          statement: s.index,
+          message: `${label(s)} (${s.analysis.command}) writes to tables that could not be determined, so whether they can roll back cannot be checked.`,
+          hint: 'Use per-statement mode, which reports each statement’s outcome honestly.',
+        });
+      }
+      for (const written of s.analysis.writesTables) {
+        const table: TableRef = { schema: written.schema ?? database, name: written.name };
         const key = `${table.schema ?? ''}.${table.name}`.toLowerCase();
         if (!seen.has(key)) seen.set(key, await options.tableEngine(table));
         const engine = seen.get(key);

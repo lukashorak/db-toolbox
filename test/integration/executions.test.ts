@@ -267,6 +267,14 @@ for (const { engine, variable, prepare } of engines) {
         const legacy = await submit("INSERT INTO wb_legacy VALUES (99, 'x')", { transactionMode: 'atomic' });
         assert.equal(legacy.status, 'preflight_rejected');
         assert.match(String(legacy.error?.message), /MyISAM/);
+        // After USE, unqualified names are the other database's: its wb_items is MyISAM.
+        const moved = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-use'); USE workbench_it_other; INSERT INTO wb_items (id, name) VALUES (1, 'run-use')",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(moved.status, 'preflight_rejected');
+        assert.match(String(moved.error?.message), /workbench_it_other\.wb_items, a MyISAM table/);
+        assert.equal(await count("name = 'run-use'"), 0);
       }
     });
 
@@ -443,6 +451,20 @@ for (const { engine, variable, prepare } of engines) {
         assert.equal(view.status, 'succeeded');
         const value = single.executions.rows(writer, view.id, 0).rows[0]?.[0];
         assert.ok(value === null || value === '', `the next run saw ${JSON.stringify(value)}`);
+
+        // A temporary table lives with the session, and would shadow a permanent table of that name.
+        const temp =
+          engine === 'mysql'
+            ? "CREATE TEMPORARY TABLE wb_items (name TEXT); INSERT INTO wb_items VALUES ('temporary')"
+            : "CREATE TEMP TABLE wb_items (name TEXT); INSERT INTO wb_items VALUES ('temporary')";
+        assert.equal((await runOn(temp)).status, 'succeeded');
+        const next = await runOn("SELECT count(*) AS n FROM wb_items WHERE name = 'temporary'");
+        assert.equal(next.status, 'succeeded');
+        assert.equal(
+          single.executions.rows(writer, next.id, 0).rows[0]?.[0],
+          '0',
+          'the next run reads the permanent table, not the temporary one',
+        );
       } finally {
         await single.shutdown();
       }

@@ -2,13 +2,22 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import DataGrid from '../src/components/DataGrid.svelte';
+import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
 import { selectSql } from '../src/lib/sql';
 import { loadTabs, read, saveTabs, write } from '../src/lib/storage';
 import { toast } from '../src/lib/toasts.svelte';
+import type { ExecutionView } from '../src/lib/execution';
 import PanelHarness from './PanelHarness.svelte';
+
+const api = vi.hoisted(() =>
+  vi.fn(async (_method: string, url: string) => ({
+    rows: [[url.includes('/results/1/') ? 'second' : 'first']],
+  })),
+);
+vi.mock('../src/lib/api', () => ({ api, ApiError: class extends Error {} }));
 
 afterEach(cleanup);
 
@@ -148,5 +157,80 @@ describe('generated SQL', () => {
     expect(selectSql('postgresql', 'order', 'Users')).toBe('SELECT *\nFROM "order"."Users"\nLIMIT 100;');
     expect(selectSql('mysql', 'order', 'we`ird')).toBe('SELECT *\nFROM `order`.`we``ird`\nLIMIT 100;');
     expect(selectSql('postgresql', 'public', 'say "hi"')).toContain('"say ""hi"""');
+  });
+});
+
+describe('results panel', () => {
+  const statement = (ordinal: number, command: string, status: string) => ({
+    ordinal,
+    sql: command,
+    kind: 'read',
+    command,
+    range: { start: 0, end: 1, startLine: 1, startColumn: 1, endLine: 1, endColumn: 2 },
+    status,
+    transactionOutcome: 'none',
+    affectedRows: null,
+    error: status === 'failed' ? { code: '1146', message: 'Table missing' } : null,
+    notices: [],
+    startedAt: null,
+    durationMs: 1,
+  });
+  const resultSet = (index: number) => ({
+    index,
+    statement: 0,
+    columns: [{ name: 'v', type: 'text', binary: false }],
+    rowCount: 1,
+    byteCount: 10,
+    moreAvailable: false,
+    completeness: 'complete',
+    expiresAt: null,
+  });
+  const execution = {
+    id: 'exe_1',
+    title: 'Procedure',
+    connection: { id: 'con_1', name: 'Shop', engine: 'mysql' },
+    scope: 'Script',
+    transactionMode: 'per_statement',
+    readOnly: false,
+    policySources: [],
+    status: 'failed',
+    statusNote: null,
+    transactionOutcome: 'none',
+    queue: null,
+    error: null,
+    statements: [statement(0, 'CALL', 'succeeded'), statement(1, 'SELECT', 'failed')],
+    resultSets: [resultSet(0), resultSet(1)],
+  } as unknown as ExecutionView;
+  const settle = async () => {
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+  };
+
+  it('jumps to a failed statement once, then keeps the statement the person picks', async () => {
+    render(ResultsPanel, { execution, onRunFull: () => undefined });
+    await settle();
+    const tabs = () => screen.getByRole('tablist', { name: 'Statements' }).querySelectorAll('[role="tab"]');
+    expect(tabs()[1]?.getAttribute('aria-selected')).toBe('true');
+    await fireEvent.click(tabs()[0] as HTMLElement);
+    await settle();
+    expect(tabs()[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByText('first')).toBeTruthy();
+  });
+
+  it('shows every result set a statement returned', async () => {
+    render(ResultsPanel, { execution, onRunFull: () => undefined });
+    await settle();
+    await fireEvent.click(screen.getByRole('tablist', { name: 'Statements' }).querySelector('[role="tab"]')!);
+    await settle();
+    const sets = screen.getAllByTestId('result-set-tab');
+    expect(sets.map((t) => t.textContent?.trim().split(/\s+/).slice(0, 2).join(' '))).toEqual([
+      'Result 1',
+      'Result 2',
+    ]);
+    await fireEvent.click(sets[1] as HTMLElement);
+    await settle();
+    expect(screen.getByText('second')).toBeTruthy();
+    expect(sets[1]?.getAttribute('aria-selected')).toBe('true');
+    expect(api).toHaveBeenCalledWith('GET', '/executions/exe_1/results/1/rows?limit=1000');
   });
 });

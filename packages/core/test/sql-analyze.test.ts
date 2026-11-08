@@ -39,6 +39,22 @@ describe('statement classification', () => {
     assert.equal((await analyzeStatement('set search_path = x', 'postgresql')).changesSession, true);
     assert.equal((await analyzeStatement('set local search_path = x', 'postgresql')).changesSession, false);
     assert.equal((await analyzeStatement('use other', 'mysql')).changesSession, true);
+    // Temporary objects outlive the statement: the connection must not be reused by others.
+    for (const sql of ['create temporary table t (a int)', 'create temporary table `t` like base']) {
+      assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
+    }
+    for (const sql of [
+      'create temp table t (a int)',
+      'create temporary table t as select 1',
+      'select 1 as a into temp t',
+      'create table pg_temp.t (a int)',
+      'create temp view v as select 1',
+      'create function pg_temp.f() returns int language sql as $$ select 1 $$',
+    ]) {
+      assert.equal((await analyzeStatement(sql, 'postgresql')).changesSession, true, sql);
+    }
+    assert.equal((await analyzeStatement('create table t (a int)', 'postgresql')).changesSession, false);
+    assert.equal((await analyzeStatement('create table t (a int)', 'mysql')).changesSession, false);
     assert.equal((await analyzeStatement('savepoint a', 'postgresql')).transactionControl, 'savepoint');
     assert.equal(
       (await analyzeStatement('rollback to savepoint a', 'mysql')).transactionControl,
@@ -141,6 +157,52 @@ describe('preflight', () => {
       ),
       true,
     );
+  });
+
+  it('checks the tables a MySQL USE points unqualified names at', async () => {
+    const engines: Record<string, string> = { 'a.t': 'InnoDB', 'b.t': 'MyISAM' };
+    const asked: string[] = [];
+    const tableEngine = async (t: { schema: string | null; name: string }) => {
+      const key = `${t.schema ?? 'a'}.${t.name}`;
+      asked.push(key);
+      return engines[key] ?? null;
+    };
+    const script = 'insert into t values (1); use `b`; insert into t values (2); select 1 from missing';
+    const problems = await run(script, 'mysql', { transactionMode: 'atomic', tableEngine });
+    assert.deepEqual(asked, ['a.t', 'b.t']);
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [['non_transactional_engine', 2]],
+    );
+    assert.deepEqual(
+      await run('use b; insert into a.t values (1)', 'mysql', { transactionMode: 'atomic', tableEngine }),
+      [],
+    );
+  });
+
+  it('checks the target of MySQL LOAD DATA, and refuses writes whose targets are unknown, in single-transaction mode', async () => {
+    const tableEngine = async (t: { schema: string | null; name: string }) =>
+      t.name === 'legacy' ? 'MyISAM' : 'InnoDB';
+    const load = await analyzeStatement(
+      "load data infile '/tmp/x.csv' ignore into table `app`.`legacy` fields terminated by ','",
+      'mysql',
+    );
+    assert.deepEqual(load.writesTables, [{ schema: 'app', name: 'legacy' }]);
+    const problems = await run(
+      "insert into t values (1); load data infile '/tmp/x.csv' into table legacy; select 1 from missing",
+      'mysql',
+      { transactionMode: 'atomic', tableEngine },
+    );
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [['non_transactional_engine', 1]],
+    );
+    const unknown = await run("load data infile '/tmp/x.csv'", 'mysql', {
+      transactionMode: 'atomic',
+      tableEngine,
+    });
+    assert.equal(unknown[0]?.code, 'unchecked_write_target');
+    assert.deepEqual(await run("load data infile '/tmp/x.csv' into table t", 'mysql', { tableEngine }), []);
   });
 
   it('rejects MySQL procedure calls in single-transaction mode, because a procedure can commit', async () => {

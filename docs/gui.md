@@ -58,11 +58,11 @@ A Svelte 5 single-page app (`packages/web`) served by the API process. It talks 
 - **Workbench.**
   - Each tab has its own connection, SQL and run settings: capture (preview or full), transaction mode (per statement, optionally continuing after errors, or single transaction), timeout and how long to keep results. The settings are locked while the tab has a run going.
   - The CodeMirror 6 editor has the PostgreSQL or MySQL dialect, completion from the default schema's tables, formatting (`sql-formatter`), search and a shortcuts panel.
-  - The Run button names its target precisely: "Run statement 2 · line 5", or "Run selection". The target is highlighted in the editor. Statement ranges come from the server's own splitter through `POST /api/v1/sql/check`, so the editor and the executor never disagree.
+  - The Run button names its target precisely: "Run statement 2 · line 5", or "Run selection". The target is highlighted in the editor. Statement ranges come from the server's own splitter through `POST /api/v1/sql/check`, so the editor and the executor never disagree. Ranges apply only to exactly the text they were computed for: after an edit, Run statement waits for the new check (the shortcut says so) and never uses an older range.
   - Preflight problems, such as read-only violations, show before running. After a run, error positions are marked in the editor.
 - **Results.**
   - Separate badges for status, transaction outcome and capture, plus the policy.
-  - Statement tabs with command, line, affected rows, duration, errors and notices.
+  - Statement tabs with command, line, affected rows, duration, errors and notices. A failed statement is selected once, when it fails; the person's later choice stays. A statement that returned several result sets (a MySQL procedure) shows a tab per result set.
   - A grid with sorting and filtering, labelled as applying only to the rows shown, and a row inspector.
   - Actions that say why they are unavailable when they are:
     - **Run full result** — a new execution, for reads only;

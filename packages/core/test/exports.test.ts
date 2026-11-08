@@ -173,6 +173,43 @@ describe('export rules', () => {
     core.close();
   });
 
+  it('fails exports a restart interrupted, removes their partial files, and lets them be regenerated', async () => {
+    const { core, id, dir } = await fixture();
+    const { mkdir } = await import('node:fs/promises');
+    // Two records left `generating` by a process that stopped mid-write.
+    for (const x of ['exp_a', 'exp_b']) {
+      core.db.run(
+        `INSERT INTO exports (id, execution_id, result_index, format, preview_only, status, created_by, created_at)
+         VALUES (:x, :id, 0, 'csv', 0, 'generating', :by, '2026-11-07T10:00:00Z')`,
+        { x, id, by: writer.subject },
+      );
+    }
+    await mkdir(join(dir, id), { recursive: true });
+    await writeFile(join(dir, id, 'exp_a.part'), 'half a fi');
+    // Regenerating an abandoned record writes it again instead of waiting for a job that is gone.
+    await core.exports.regenerate(writer, 'exp_b');
+    await core.exports.idle();
+    assert.equal(core.exports.get(writer, 'exp_b').status, 'ready');
+    assert.equal(await core.exports.reconcile(), 1);
+    const failed = core.exports.get(writer, 'exp_a');
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.error?.code, 'interrupted');
+    assert.equal(existsSync(join(dir, id, 'exp_a.part')), false);
+    // Two regenerate calls at once write the file once.
+    await Promise.all([core.exports.regenerate(writer, 'exp_a'), core.exports.regenerate(writer, 'exp_a')]);
+    await core.exports.idle();
+    assert.equal(core.exports.get(writer, 'exp_a').status, 'ready');
+    assert.equal(await readFile((await core.exports.download(writer, 'exp_a')).path, 'utf8'), CSV);
+    assert.equal(
+      core.db.get(
+        "SELECT count(*) AS n FROM audit_events WHERE action = 'export.regenerate' AND target_id = 'exp_a'",
+      )?.n,
+      1,
+    );
+    assert.equal(await core.exports.reconcile(), 0);
+    core.close();
+  });
+
   it('maps disk-full and permission errors', () => {
     assert.equal(exportFailure(Object.assign(new Error('no space'), { code: 'ENOSPC' })).code, 'disk_full');
     assert.equal(
@@ -222,6 +259,25 @@ describe('result deletion and retention', () => {
     assert.equal(core.executions.view(id).status, 'succeeded');
     assert.throws(() => core.executions.rows(writer, id, 0), code('result_expired'));
     await assert.rejects(core.exports.regenerate(writer, created.id), code('result_expired'));
+    core.close();
+  });
+
+  it('does not give back the space of a result that retention already expired', async () => {
+    const { core, id } = await fixture();
+    core.db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, more_available, completeness, expires_at)
+       VALUES (:id, 1, 0, :columns, 1, 100, 0, 'complete', '2027-01-01T00:00:00Z')`,
+      { id, columns: JSON.stringify(COLUMNS) },
+    );
+    core.executions.reconcile();
+    assert.equal(core.executions.storedBytes, 500);
+    await core.cleanup(new Date('2026-11-09T00:00:00Z'));
+    assert.equal(core.executions.storedBytes, 100, 'retention released the expired result');
+    assert.equal(await core.exports.deleteResults(writer, id, 0), 0);
+    assert.equal(core.executions.storedBytes, 100, 'the live result is still counted');
+    assert.equal(core.executions.view(id).resultSets[0]?.completeness, 'expired');
+    assert.equal(await core.exports.deleteResults(writer, id), 100);
+    assert.equal(core.executions.storedBytes, 0);
     core.close();
   });
 

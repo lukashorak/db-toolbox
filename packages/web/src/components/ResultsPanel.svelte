@@ -22,6 +22,8 @@
   } = $props();
 
   let statementTab = $state(0);
+  /** Which of the statement's result sets is shown (a MySQL procedure can return several). */
+  let resultTab = $state(0);
   let rows = $state<(string | null)[][]>([]);
   let loadedFor = $state('');
   let sortBy = $state<{ column: number; dir: 1 | -1 } | null>(null);
@@ -35,7 +37,7 @@
 
   const statement = $derived(execution.statements[statementTab] ?? null);
   const sets = $derived(execution.resultSets.filter((r) => r.statement === statementTab));
-  const set = $derived(sets[0] ?? null);
+  const set = $derived(sets[resultTab] ?? sets[0] ?? null);
   const shown = $derived.by(() => {
     let list = rows.map((r, i) => ({ r, i }));
     if (filter)
@@ -63,10 +65,21 @@
     return list;
   });
 
+  function showStatement(i: number) {
+    statementTab = i;
+    resultTab = 0;
+  }
+
+  // Statement 1 by default; jump to a failed statement once, when it fails. Not reactive on purpose:
+  // the jump must not repeat when the person picks another statement afterwards.
+  let jumpedTo = '';
   $effect(() => {
-    // Statement 1 by default; jump to the first failed statement.
     const failed = execution.statements.findIndex((s) => s.status === 'failed');
-    if (failed !== -1 && loadedFor !== `${execution.id}:${execution.status}`) statementTab = failed;
+    const key = `${execution.id}:${failed}`;
+    if (failed !== -1 && key !== jumpedTo) {
+      jumpedTo = key;
+      showStatement(failed);
+    }
   });
   $effect(() => {
     const key = `${execution.id}:${set?.index}:${set?.completeness}:${set?.rowCount}`;
@@ -199,7 +212,7 @@
           aria-selected={statementTab === i}
           class:active={statementTab === i}
           class:failed={s.status === 'failed'}
-          onclick={() => (statementTab = i)}
+          onclick={() => showStatement(i)}
         >
           {i + 1} · {s.command} <small>{s.status.replace('_', ' ')}</small>
         </button>
@@ -228,6 +241,22 @@
       </Banner>
     {/if}
     {#each statement.notices as notice (notice)}<p class="note">{notice}</p>{/each}
+  {/if}
+
+  {#if sets.length > 1}
+    <div class="statement-tabs" role="tablist" aria-label="Result sets of this statement">
+      {#each sets as r, i (r.index)}
+        <button
+          role="tab"
+          aria-selected={set?.index === r.index}
+          class:active={set?.index === r.index}
+          data-testid="result-set-tab"
+          onclick={() => (resultTab = i)}
+        >
+          Result {i + 1} <small>{r.rowCount.toLocaleString()} rows</small>
+        </button>
+      {/each}
+    </div>
   {/if}
 
   {#if set}

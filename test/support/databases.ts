@@ -116,6 +116,10 @@ export async function prepareMysql(url: string): Promise<void> {
   try {
     await root.query(`
       DROP DATABASE IF EXISTS ${DATABASE};
+      DROP DATABASE IF EXISTS ${DATABASE}_other;
+      CREATE DATABASE ${DATABASE}_other;
+      -- Same table name as the main database's InnoDB table, but MyISAM (USE checks).
+      CREATE TABLE ${DATABASE}_other.wb_items (id int PRIMARY KEY, name varchar(100)) ENGINE=MyISAM;
       CREATE DATABASE ${DATABASE};
       USE ${DATABASE};
       CREATE TABLE wb_items (

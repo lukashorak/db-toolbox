@@ -79,6 +79,8 @@ const reconciled = core.executions.reconcile();
 if (reconciled.interrupted)
   logger.warn(reconciled, 'executions interrupted by the restart were not run again');
 core.executions.resume();
+const exportsInterrupted = await core.exports.reconcile();
+if (exportsInterrupted) logger.warn({ exportsInterrupted }, 'exports interrupted by the restart failed');
 // Retention: expire captured results and old execution metadata.
 const cleanup = setInterval(() => {
   core.cleanup().then(

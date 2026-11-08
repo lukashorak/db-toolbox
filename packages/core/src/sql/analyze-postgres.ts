@@ -318,6 +318,25 @@ function combine(parts: StatementAnalysis[]): StatementAnalysis {
   return result;
 }
 
+/**
+ * Creates or names a temporary object (CREATE TEMP TABLE, SELECT INTO TEMP, pg_temp.x). Temporary
+ * objects live as long as the connection and can shadow permanent ones, so the connection must not
+ * go back to the pool for someone else.
+ */
+function touchesTemporaryObjects(tree: unknown): boolean {
+  const isTempSchema = (name: unknown) => /^pg_temp/i.test(String(name ?? ''));
+  // Relations are not always wrapped in a typed node (CreateStmt.relation), so look at every object.
+  const visit = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(visit);
+    if (!value || typeof value !== 'object') return false;
+    const node = value as Node;
+    if (node.relpersistence === 't' || isTempSchema(node.schemaname)) return true;
+    if (Array.isArray(node.funcname) && isTempSchema(strings(node.funcname)[0])) return true;
+    return Object.values(node).some(visit);
+  };
+  return visit(tree);
+}
+
 /** Analyzes one PostgreSQL statement. Call `loadPostgresParser()` first. */
 export function analyzePostgres(text: string): StatementAnalysis {
   let parsed: { stmts?: { stmt: Node }[] };
@@ -336,7 +355,9 @@ export function analyzePostgres(text: string): StatementAnalysis {
   }
   const parts = (parsed.stmts ?? []).map(({ stmt }) => {
     const [type, body] = Object.entries(stmt)[0] ?? ['Unknown', {}];
-    return analyzeNode(type, body as Node);
+    const a = analyzeNode(type, body as Node);
+    if (touchesTemporaryObjects(stmt)) a.changesSession = true;
+    return a;
   });
   if (!parts.length) return unsafe(baseAnalysis('unknown', 'EMPTY'), 'no statement found');
   return combine(parts);

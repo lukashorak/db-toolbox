@@ -67,6 +67,23 @@ const GLOBAL_SCOPE = /^(global|persist|persist_only)$|^@@(global|persist|persist
 
 const word = (t: Token | undefined) => (t?.kind === 'word' ? t.text.toUpperCase() : '');
 
+/** An identifier token as a name: backtick quotes removed. Undefined for anything else. */
+function identifier(t: Token | undefined): string | undefined {
+  if (t?.kind === 'word') return t.text;
+  if (t?.kind === 'quoted_identifier' && t.text.startsWith('`') && !t.unterminated)
+    return t.text.slice(1, -1).replace(/``/g, '`');
+  return undefined;
+}
+
+/** `name` or `schema.name` starting at tokens[i]. */
+function qualifiedName(tokens: Token[], i: number): TableRef | undefined {
+  const first = identifier(tokens[i]);
+  if (first === undefined) return undefined;
+  if (tokens[i + 1]?.text !== '.') return { schema: null, name: first };
+  const second = identifier(tokens[i + 2]);
+  return second === undefined ? undefined : { schema: first, name: second };
+}
+
 /** Replaces `/*!NNNNN …*\/` with its content, which MySQL executes. */
 function expandExecutableComments(text: string): string {
   let out = '';
@@ -120,6 +137,7 @@ function analyzeQuery(text: string): StatementAnalysis {
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
     a.writesTables = tablesWritten(parsed.tableList);
+    if (!a.writesTables.length) a.writeTargetsUnknown = true;
     return a;
   }
   const a = baseAnalysis('read', 'SELECT');
@@ -311,6 +329,8 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
     case 'USE': {
       const a = baseAnalysis('session', 'USE');
       a.changesSession = true;
+      const database = identifier(tokens[1]);
+      if (database !== undefined) a.usesDatabase = database;
       return a;
     }
     case 'INSERT':
@@ -324,6 +344,7 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');
       }
+      if (!a.writesTables.length) a.writeTargetsUnknown = true;
       return a;
     }
     case 'CREATE':
@@ -335,6 +356,9 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
     case 'REVOKE': {
       const a = write(`${first} ${second}`.trim(), 'changes the database');
       if ((first === 'CREATE' || first === 'DROP') && second === 'TEMPORARY') a.implicitCommit = false;
+      // A temporary table lives as long as the connection, and can shadow a permanent table of the
+      // same name: the connection must not go back to the pool for someone else.
+      if (first === 'CREATE' && second === 'TEMPORARY') a.changesSession = true;
       const engineAt = words.indexOf('ENGINE');
       const engine = engineAt === -1 ? undefined : tokens.filter((t) => t.kind === 'word')[engineAt + 1];
       if (engine) a.declaredEngine = engine.text;
@@ -343,6 +367,13 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
     case 'LOAD': {
       const a = write(`LOAD ${second}`, second === 'INDEX' ? 'administrative command' : 'loads data');
       a.implicitCommit = second === 'INDEX';
+      if (second === 'DATA' || second === 'XML') {
+        // LOAD DATA … INTO TABLE name …: the table whose storage engine decides whether it rolls back.
+        const into = tokens.findIndex((t, i) => word(t) === 'INTO' && word(tokens[i + 1]) === 'TABLE');
+        const target = into === -1 ? undefined : qualifiedName(tokens, into + 2);
+        if (target) a.writesTables = [target];
+        else a.writeTargetsUnknown = true;
+      }
       return a;
     }
     case 'CALL': {

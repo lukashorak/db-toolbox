@@ -89,6 +89,8 @@ export class ExportService {
   /** `change` events ({ id, executionId, status }) for live status in the GUI. */
   readonly events = new EventEmitter();
   readonly #pending = new Set<Promise<void>>();
+  /** Exports whose file this process is writing now. */
+  readonly #writing = new Set<string>();
 
   constructor(
     private readonly ctx: ServiceContext,
@@ -154,11 +156,20 @@ export class ExportService {
     if (resultGone(set, this.ctx.clock.now())) {
       throw new AppError('result_expired', 'The captured result is no longer stored. Run the query again.');
     }
-    if (row.status === 'generating') return this.view(id);
+    // Being written by this process: nothing to do. A `generating` record without a job here was
+    // abandoned (a restart), and is written again.
+    if (this.#writing.has(id)) return this.view(id);
     if (row.status === 'deleted' || row.status === 'expired') {
       throw new AppError('result_expired', 'This export was removed with its result.');
     }
-    await this.#removeFile(row);
+    // Claimed before the first await, so a second call at the same time does not write it too.
+    this.#writing.add(id);
+    try {
+      await this.#removeFile(row);
+    } catch (error) {
+      this.#writing.delete(id);
+      throw error;
+    }
     this.ctx.db.run(
       `UPDATE exports SET status = 'generating', file_name = NULL, error_code = NULL, error_message = NULL, completed_at = NULL,
          row_count = 0, byte_count = 0 WHERE id = :id`,
@@ -238,7 +249,7 @@ export class ExportService {
   async deleteResults(actor: Actor, executionId: string, resultIndex?: number): Promise<number> {
     this.#execution(actor, executionId);
     const sets = this.ctx.db.all(
-      `SELECT result_index, byte_count FROM result_sets WHERE execution_id = :id AND completeness NOT IN ('deleted', 'capturing')
+      `SELECT result_index, byte_count FROM result_sets WHERE execution_id = :id AND completeness NOT IN ('expired', 'deleted', 'capturing')
          ${resultIndex === undefined ? '' : 'AND result_index = :index'}`,
       { id: executionId, ...(resultIndex === undefined ? {} : { index: resultIndex }) },
     );
@@ -286,6 +297,37 @@ export class ExportService {
             AND r.result_index = disclosure_approvals.result_index AND r.completeness IN ('expired', 'deleted'))`,
     );
     return rows.length;
+  }
+
+  /**
+   * At startup: exports still `generating` lost their job with the previous process. They become
+   * `failed` (with `interrupted`), so clients stop waiting and can regenerate them from the captured
+   * data. Leftover partial files are removed.
+   */
+  async reconcile(): Promise<number> {
+    const rows = this.ctx.db.all("SELECT * FROM exports WHERE status = 'generating'");
+    let count = 0;
+    for (const row of rows) {
+      const id = String(row.id);
+      if (this.#writing.has(id)) continue;
+      if (this.exportDir) await this.#removeFile(row);
+      const done = this.ctx.db.run(
+        `UPDATE exports SET status = 'failed', error_code = 'interrupted', completed_at = :now,
+           error_message = 'The server restarted while this file was being written. Regenerate it.'
+         WHERE id = :id AND status = 'generating'`,
+        { id, now: isoNow(this.ctx) },
+      );
+      if (Number(done.changes) === 0) continue;
+      count++;
+      this.ctx.audit.record({
+        actor: 'system',
+        action: 'export.fail',
+        target: { type: 'export', id },
+        outcome: 'failed',
+        details: { code: 'interrupted' },
+      });
+    }
+    return count;
   }
 
   /** Waits for background generation (tests and shutdown). */
@@ -356,15 +398,13 @@ export class ExportService {
     index: number,
     completeness: 'deleted' | 'expired',
   ): Promise<void> {
-    const bytes = Number(
-      this.ctx.db.get(
-        'SELECT byte_count FROM result_sets WHERE execution_id = :id AND result_index = :index',
-        {
-          id: executionId,
-          index,
-        },
-      )?.byte_count ?? 0,
+    const set = this.ctx.db.get(
+      'SELECT byte_count, completeness FROM result_sets WHERE execution_id = :id AND result_index = :index',
+      { id: executionId, index },
     );
+    // Retention already released the bytes of an expired result; release only what is still counted.
+    const counted = set && set.completeness !== 'expired' && set.completeness !== 'deleted';
+    const bytes = counted ? Number(set.byte_count ?? 0) : 0;
     for (const x of this.ctx.db.all(
       'SELECT * FROM exports WHERE execution_id = :id AND result_index = :index',
       {
@@ -407,8 +447,10 @@ export class ExportService {
   }
 
   #generate(id: string): void {
+    this.#writing.add(id);
     this.#changed(id);
     const job = this.#write(id).finally(() => {
+      this.#writing.delete(id);
       this.#pending.delete(job);
       try {
         this.#changed(id);

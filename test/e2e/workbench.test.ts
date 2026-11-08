@@ -67,10 +67,11 @@ describe(
 
     async function setSql(sql: string) {
       await page.getByTestId('sql-editor').fill(sql);
-      // Wait for the statement check, so Run targets the right range.
+      // Wait for the statement check of this text, so Run targets the right range. Ranges of an
+      // earlier text are never shown, so any statement label here belongs to this text.
       await page
         .getByTestId('run-target')
-        .getByText(/Run statement 1/)
+        .getByText(/Run statement \d+/)
         .waitFor();
     }
     const results = () => page.getByTestId('results');
@@ -145,6 +146,23 @@ describe(
         .first()
         .waitFor({ timeout: 20_000 });
       await page.getByLabel('Transaction').selectOption('per_statement');
+    });
+
+    it('never runs a statement range of an earlier text', async () => {
+      // A long first text: its statement range would cover both statements of the shorter next one.
+      await setSql('SELECT 1 AS a_first_text_that_is_longer_than_the_next_one');
+      const shown = async () =>
+        (await results().count()) ? await results().getAttribute('data-execution-id') : null;
+      const before = await shown();
+      // Run the statement at once, before the new text has been checked.
+      await page.getByTestId('sql-editor').fill('SELECT 2 AS one;\nSELECT 3 AS two');
+      await page.keyboard.press('Control+Enter');
+      await page.getByText('The statement at the cursor is still being checked').waitFor({ timeout: 5000 });
+      assert.equal(await shown(), before, 'nothing was submitted');
+      await page
+        .getByTestId('run-target')
+        .getByText(/Run statement 2/)
+        .waitFor();
     });
 
     it('recovers a running execution after a reload and in a new browser (AC7)', async () => {

@@ -35,6 +35,13 @@ export interface StatementAnalysis {
   unsupported?: string;
   /** Tables the statement inserts into, updates or deletes from (MySQL engine checks). */
   writesTables: TableRef[];
+  /**
+   * MySQL: the statement writes, but the tables it writes could not be determined (it did not
+   * parse), so their storage engines cannot be checked.
+   */
+  writeTargetsUnknown?: boolean;
+  /** MySQL `USE`: the database that later unqualified names in the session refer to. */
+  usesDatabase?: string;
   /** `ENGINE=` given in a MySQL CREATE or ALTER TABLE. */
   declaredEngine?: string;
   parseError?: { message: string; /** 0-based offset within the statement text. */ offset?: number };

@@ -24,13 +24,14 @@ A preview-only export says so in two places:
 - Failures:
   - `disk_full`;
   - `write_permission`;
-  - `generation_failed`, for any other error.
+  - `generation_failed`, for any other error;
+  - `interrupted`: the server stopped while the file was being written. At the next start such exports become `failed` and their partial files are removed.
 
   No partial file is left behind.
 
 - **Regenerate** rebuilds the file from the captured rows.
 - A download checks access and that the file exists (`export_missing`). It never regenerates the file.
-- Deleting a stored result removes its rows and export files, and revokes any pending or active disclosure. The execution and its statements stay in history.
+- Deleting a stored result removes its rows and export files, and revokes any pending or active disclosure. The execution and its statements stay in history. A result that retention already expired has nothing left to delete.
 
 ## CSV
 
