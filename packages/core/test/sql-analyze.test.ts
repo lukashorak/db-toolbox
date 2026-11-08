@@ -443,6 +443,8 @@ describe('preflight', () => {
     for (const sql of [
       "copy (select 1) to '/tmp/x.csv'",
       "copy (select 1) to program 'cat'",
+      // The program runs on the server whichever way the data goes; a rollback undoes only the rows.
+      "copy a from program 'touch /tmp/side-effect; printf 1'",
       "select lo_export(1, '/tmp/export.bin')",
       "select pg_file_write('/tmp/x', 'data', false)",
       // Over another connection, which commits there on its own.

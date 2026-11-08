@@ -334,7 +334,13 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
       return a;
     }
     case 'CopyStmt': {
-      if (body.is_from) return unsafe(kindOf('write'), 'COPY FROM loads data');
+      if (body.is_from) {
+        const a = unsafe(kindOf('write'), 'COPY FROM loads data');
+        // The program runs on the database server whichever way the data goes: a rollback undoes
+        // the rows it loaded, not what the program did.
+        if (body.is_program) a.irreversible = 'runs a program on the database server';
+        return a;
+      }
       if (body.filename || body.is_program) {
         const a = unsafe(kindOf('write'), 'COPY TO a file or program writes on the database server');
         a.irreversible = body.is_program
