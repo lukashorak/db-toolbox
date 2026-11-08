@@ -29,6 +29,7 @@ A preview-only export says so in two places:
 
   No partial file is left behind.
 
+- Exporting a result again in the same format and scope (full or preview-only) returns the existing export, written again if its file is gone. Files per result are bounded this way, so repeated exports cannot fill the disk.
 - **Regenerate** rebuilds the file from the captured rows.
 - A download checks access and that the file exists (`export_missing`). It never regenerates the file.
 - Deleting a stored result removes its rows and export files, and revokes any pending or active disclosure. The execution and its statements stay in history. A result that retention already expired has nothing left to delete.

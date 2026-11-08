@@ -596,6 +596,19 @@ for (const { engine, variable, prepare } of engines) {
       });
     }
 
+    if (engine === 'postgresql') {
+      it('reports an unknown outcome when a DO block fails after committing', async () => {
+        const view = await run(
+          "DO $$ BEGIN INSERT INTO wb_items (name) VALUES ('do-committed'); COMMIT; RAISE EXCEPTION 'after commit'; END $$",
+        );
+        assert.deepEqual(
+          [view.status, view.statements[0]?.transactionOutcome, view.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+        assert.equal(await count("name = 'do-committed'"), 1, 'the committed part stays');
+      });
+    }
+
     it('keeps results as long as Retain asked, even when chosen while the run was going', async () => {
       const started = await submit(`${sleep(1.5)}, 1 AS one`);
       await until(() => core.executions.view(started.id).status === 'running');

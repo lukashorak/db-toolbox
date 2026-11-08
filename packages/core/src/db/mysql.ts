@@ -1,7 +1,27 @@
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptions } from 'mysql2';
+import { analyzeMysql } from '../sql/analyze-mysql.js';
+import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
+
+/**
+ * Tables a trigger body writes, or null when they cannot be determined (compound statements, calls,
+ * anything but plain writes, reads and SET NEW.col = …).
+ */
+function triggerWrites(body: string): TableRef[] | null {
+  const block = /^\s*BEGIN\b([\s\S]*)\bEND\s*$/i.exec(body);
+  const tables: TableRef[] = [];
+  for (const statement of splitStatements(block ? (block[1] ?? '') : body, 'mysql')) {
+    const a = analyzeMysql(statement.text);
+    if (a.kind === 'read' && !a.irreversible) continue;
+    if (a.kind === 'session' && a.command === 'SET') continue;
+    if (a.kind !== 'write' || a.writeTargetsUnknown || a.mayCommit || a.irreversible) return null;
+    if (!a.writesTables.length) return null;
+    tables.push(...a.writesTables);
+  }
+  return tables;
+}
 import { DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
@@ -222,8 +242,37 @@ export class MysqlAdapter implements DbAdapter {
       signal,
     );
     if (!row) return null;
-    if (row.type !== 'VIEW') return row.engine ? String(row.engine) : null;
     const key = `${String(row.db)}.${name}`;
+    if (row.type !== 'VIEW') {
+      const engine = row.engine ? String(row.engine) : null;
+      if (!engine || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
+      // Triggers on the table write other tables in the same statement: those decide too.
+      const triggers = await this.#metaQuery(
+        `SELECT TRIGGER_SCHEMA AS db, ACTION_STATEMENT AS body FROM information_schema.TRIGGERS
+          WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?`,
+        [row.db, name],
+        signal,
+      );
+      if (!triggers.length) return engine;
+      if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
+      for (const trigger of triggers) {
+        const targets = triggerWrites(String(trigger.body));
+        if (!targets) return UNRESOLVED_VIEW;
+        for (const target of targets) {
+          const written = await this.#engineOf(
+            target.schema ?? String(trigger.db),
+            target.name,
+            [...ancestors, key],
+            known,
+            signal,
+          );
+          if (written === null || written === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+          const base = written.split(' ')[0] ?? written;
+          if (!TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return `${base} (written by a trigger)`;
+        }
+      }
+      return engine;
+    }
     if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
     const path = [...ancestors, key];
     const bases = await this.#metaQuery(

@@ -177,6 +177,14 @@ export async function prepareMysql(url: string): Promise<void> {
         INSERT INTO wb_items (name) VALUES ('proc-before-missing');
         SELECT * FROM wb_no_such_table;
       END;
+      -- InnoDB tables whose triggers write elsewhere: to MyISAM (cannot roll back) and to InnoDB.
+      CREATE TABLE wb_audit_log (id int) ENGINE=InnoDB;
+      CREATE TABLE wb_audited (id int PRIMARY KEY) ENGINE=InnoDB;
+      CREATE TRIGGER wb_audited_legacy AFTER INSERT ON wb_audited FOR EACH ROW
+        INSERT INTO wb_legacy VALUES (NEW.id + 1000, 'audited');
+      CREATE TABLE wb_audited_inno (id int PRIMARY KEY) ENGINE=InnoDB;
+      CREATE TRIGGER wb_audited_inno_log AFTER INSERT ON wb_audited_inno FOR EACH ROW
+        BEGIN INSERT INTO wb_audit_log VALUES (NEW.id); END;
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       -- Two branches that share one nested view: not a cycle.

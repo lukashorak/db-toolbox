@@ -40,6 +40,11 @@ export interface StatementAnalysis {
    * ROLLBACK on its own, so a single transaction around it cannot be promised.
    */
   mayCommit?: boolean;
+  /**
+   * An effect outside the database that no rollback undoes (a file written on the server), with
+   * what it does: such a statement cannot be part of a single transaction.
+   */
+  irreversible?: string;
   /** The workbench cannot execute this statement, with the reason. */
   unsupported?: string;
   /** Tables the statement inserts into, updates or deletes from (MySQL engine checks). */

@@ -41,6 +41,8 @@
   let host = $state<HTMLDivElement | null>(null);
   let view: EditorView | null = null;
   const language = new Compartment();
+  /** Undo history: replaced (emptied) whenever another document is loaded. */
+  const undoHistory = new Compartment();
   const setMarks = StateEffect.define<DecorationSet>();
   const markField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
@@ -74,7 +76,7 @@
         doc: value,
         extensions: [
           lineNumbers(),
-          history(),
+          undoHistory.of(history()),
           highlightActiveLine(),
           bracketMatching(),
           highlightSelectionMatches(),
@@ -106,10 +108,14 @@
     return () => view?.destroy();
   });
 
-  // Text changed outside the editor (another tab, a saved query): replace the document.
+  // Text changed outside the editor (another tab, a saved query): another document, with its own
+  // undo history. Undo must never bring back the previous document's text.
   $effect(() => {
     if (view && value !== view.state.doc.toString()) {
+      // Three steps: a history added in the same transaction as the change would record it.
+      view.dispatch({ effects: undoHistory.reconfigure([]) });
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+      view.dispatch({ effects: undoHistory.reconfigure(history()) });
     }
   });
   $effect(() => {

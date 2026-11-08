@@ -253,6 +253,23 @@ describe(
       await page.getByLabel('Connection').selectOption({ label: 'Fixture' });
     });
 
+    it('never undoes into another tab’s text', async () => {
+      await setSql('SELECT 1 AS only_in_the_first_tab');
+      // Past CodeMirror's grouping delay, so the tab switch is an undo step of its own.
+      await new Promise((r) => setTimeout(r, 700));
+      await page.getByRole('button', { name: 'New tab' }).click();
+      await page.getByTestId('sql-editor').click();
+      for (let press = 1; press <= 3; press++) {
+        await page.keyboard.press('Control+z');
+        assert.doesNotMatch(
+          String(await page.getByTestId('sql-editor').textContent()),
+          /only_in_the_first_tab/,
+          `after undo ${press}`,
+        );
+      }
+      await page.getByRole('tablist', { name: 'Query tabs' }).getByRole('tab').first().click();
+    });
+
     it('never runs a statement range of an earlier text', async () => {
       // A long first text: its statement range would cover both statements of the shorter next one.
       await setSql('SELECT 1 AS a_first_text_that_is_longer_than_the_next_one');

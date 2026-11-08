@@ -183,6 +183,7 @@ function analyzeQuery(text: string): StatementAnalysis {
       a.kind = 'write';
       a.returnsRows = false;
       unsafe(a, `SELECT … INTO ${keyword} writes a file on the database server`);
+      a.irreversible = 'writes a file on the database server';
     } else if (keyword === 'VAR') {
       a.returnsRows = false;
       a.changesSession = true;

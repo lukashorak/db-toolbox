@@ -120,6 +120,26 @@ export class ExportService {
       );
     }
     if (!this.exportDir) throw new AppError('exports_unavailable', 'No export folder is configured.');
+    // The same result, format and scope already has an export being written or ready: use it. Files
+    // per result are bounded this way, so repeated exports cannot fill the disk.
+    const same = this.ctx.db.get(
+      `SELECT * FROM exports WHERE execution_id = :execution AND result_index = :index AND format = :format
+         AND preview_only = :preview AND status IN ('generating', 'ready') ORDER BY created_at DESC, id DESC LIMIT 1`,
+      { execution: executionId, index: resultIndex, format: v.format, preview: v.previewOnly ? 1 : 0 },
+    );
+    if (same) {
+      const sameId = String(same.id);
+      if (same.status === 'generating' && this.#writing.has(sameId)) return this.view(sameId);
+      if (same.status === 'ready' && same.file_name) {
+        const present = await stat(join(this.#folder(executionId), String(same.file_name))).then(
+          () => true,
+          () => false,
+        );
+        if (present) return this.view(sameId);
+      }
+      // Abandoned or its file is gone: write it again rather than add another export.
+      return this.regenerate(actor, sameId);
+    }
     const id = newId('export', this.ctx.clock.now());
     this.ctx.db.transaction(() => {
       this.ctx.db.run(

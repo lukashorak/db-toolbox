@@ -244,7 +244,11 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
     case 'CopyStmt': {
       if (body.is_from) return unsafe(kindOf('write'), 'COPY FROM loads data');
       if (body.filename || body.is_program) {
-        return unsafe(kindOf('write'), 'COPY TO a file or program writes on the database server');
+        const a = unsafe(kindOf('write'), 'COPY TO a file or program writes on the database server');
+        a.irreversible = body.is_program
+          ? 'runs a program on the database server'
+          : 'writes a file on the database server';
+        return a;
       }
       const a = kindOf('read');
       a.unsupported = 'COPY is not supported here. Use SELECT and export the result.';
@@ -326,6 +330,8 @@ function combine(parts: StatementAnalysis[]): StatementAnalysis {
   result.noTransactionBlock = parts.some((p) => p.noTransactionBlock);
   result.transactionControl = parts.find((p) => p.transactionControl)?.transactionControl;
   result.unsupported = parts.find((p) => p.unsupported)?.unsupported;
+  const irreversible = parts.find((p) => p.irreversible)?.irreversible;
+  if (irreversible) result.irreversible = irreversible;
   return result;
 }
 

@@ -999,7 +999,11 @@ export class ExecutionService {
           // A procedure (or, in MySQL, a prepared statement, which may itself be a CALL or DDL) can
           // commit part of its work and then fail: its failure promises no rollback, whatever the error.
           const command = String(st.command).toUpperCase();
-          const mayCommit = command === 'CALL' || (row.engine === 'mysql' && command === 'EXECUTE');
+          const mayCommit =
+            command === 'CALL' ||
+            (row.engine === 'mysql' && command === 'EXECUTE') ||
+            // A top-level DO block may COMMIT (PostgreSQL allows transaction control there).
+            (row.engine === 'postgresql' && command === 'DO');
           const startedAt = isoNow(this.ctx);
           const t0 = performance.now();
           this.ctx.db.run(
@@ -1259,7 +1263,7 @@ export class ExecutionService {
    */
   async #failedWriteRolledBack(adapter: DbAdapter, sql: string, database: string | null): Promise<boolean> {
     const analysis = await analyzeStatement(sql, 'mysql');
-    if (analysis.writeTargetsUnknown || analysis.mayCommit) return false;
+    if (analysis.writeTargetsUnknown || analysis.mayCommit || analysis.irreversible) return false;
     const declared = analysis.declaredEngine?.toLowerCase();
     if (declared && !TRANSACTIONAL_ENGINES.has(declared)) return false;
     for (const table of analysis.writesTables) {

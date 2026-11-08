@@ -153,6 +153,27 @@ describe('export rules', () => {
     await core.exports.idle();
     assert.equal(await readFile((await core.exports.download(writer, first.id)).path, 'utf8'), CSV);
     assert.equal(core.db.get('SELECT count(*) AS n FROM executions')?.n, before);
+    // The repeat export was the same export: one CSV per result.
+    assert.equal(core.exports.list(writer, id).length, 1);
+    core.close();
+  });
+
+  it('reuses the export of the same result, format and scope instead of writing more files', async () => {
+    const { core, id, dir } = await fixture();
+    const first = await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    for (let i = 0; i < 5; i++) {
+      assert.equal((await core.exports.create(writer, id, 0, { format: 'csv' })).id, first.id);
+    }
+    const json = await core.exports.create(writer, id, 0, { format: 'json' });
+    assert.notEqual(json.id, first.id, 'another format is another export');
+    await core.exports.idle();
+    assert.equal((await readdir(join(dir, id))).length, 2);
+    // A ready export whose file is gone is written again, under the same ID.
+    await rm((await core.exports.download(writer, first.id)).path);
+    assert.equal((await core.exports.create(writer, id, 0, { format: 'csv' })).id, first.id);
+    await core.exports.idle();
+    assert.equal(await readFile((await core.exports.download(writer, first.id)).path, 'utf8'), CSV);
     assert.equal(core.exports.list(writer, id).length, 2);
     core.close();
   });

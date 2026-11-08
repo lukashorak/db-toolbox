@@ -290,6 +290,23 @@ describe('preflight', () => {
     assert.deepEqual(await run("load data infile '/tmp/x.csv' into table t", 'mysql', { tableEngine }), []);
   });
 
+  it('refuses statements with effects a rollback does not undo in single-transaction mode', async () => {
+    const outfile = await run(
+      "insert into a values (1); select * from a into outfile '/tmp/a.csv'; select 1 from missing",
+      'mysql',
+      { transactionMode: 'atomic' },
+    );
+    assert.deepEqual(
+      outfile.map((p) => [p.code, p.statement]),
+      [['irreversible_effect', 1]],
+    );
+    for (const sql of ["copy (select 1) to '/tmp/x.csv'", "copy (select 1) to program 'cat'"]) {
+      const copy = await run(sql, 'postgresql', { transactionMode: 'atomic' });
+      assert.equal(copy[0]?.code, 'irreversible_effect', sql);
+    }
+    assert.deepEqual(await run("select * from a into outfile '/tmp/a.csv'", 'mysql'), []);
+  });
+
   it('rejects MySQL procedure calls in single-transaction mode, because a procedure can commit', async () => {
     const script = 'insert into a values (1); call commits_inside(); select 1 from missing';
     assert.deepEqual(await run(script, 'mysql'), []);

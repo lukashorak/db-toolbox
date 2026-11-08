@@ -201,6 +201,12 @@ for (const { engine, variable, prepare } of engines) {
           // Views report their base tables' engine; a view reached twice is not a cycle.
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_legacy_notes' }), 'MyISAM');
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_v_both' }), 'InnoDB');
+          // A trigger's writes count: one into MyISAM cannot roll back, one into InnoDB can.
+          assert.equal(
+            await adapter.tableEngine({ schema: null, name: 'wb_audited' }),
+            'MyISAM (written by a trigger)',
+          );
+          assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_audited_inno' }), 'InnoDB');
           // A lookup whose signal has aborted starts no query.
           await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {
             name: 'AbortError',
@@ -223,7 +229,8 @@ for (const { engine, variable, prepare } of engines) {
             const before = await questions();
             assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_g5' }), 'InnoDB');
             const asked = (await questions()) - before - 1;
-            assert.ok(asked <= 2 * 16 + 1, `${asked} metadata queries`);
+            // Two queries per view, plus the base table and its triggers.
+            assert.ok(asked <= 2 * 16 + 2, `${asked} metadata queries`);
           } finally {
             await root.end();
           }
