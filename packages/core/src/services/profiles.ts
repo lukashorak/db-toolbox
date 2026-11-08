@@ -260,9 +260,10 @@ export class ProfileService {
         .map((c) => String(c.connection_id)),
       readOnly: bool(r.read_only),
       enabled: bool(r.enabled),
-      timeoutMs: Number(r.timeout_ms),
-      previewRows: Number(r.preview_rows),
-      previewBytes: Number(r.preview_bytes),
+      // Stored allowances never exceed the deployment's limits, also after those were lowered.
+      timeoutMs: Math.min(Number(r.timeout_ms), this.ctx.limits.fullTimeoutMaxMs),
+      previewRows: Math.min(Number(r.preview_rows), this.ctx.limits.mcpPreviewRows),
+      previewBytes: Math.min(Number(r.preview_bytes), this.ctx.limits.mcpPreviewBytes),
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
     };

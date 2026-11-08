@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { createCore } from '../src/core.js';
 import { AppError } from '../src/domain/errors.js';
-import { admin, adminWithoutWrite, insertExecution, limits, pgInput, testCore, writer } from './helpers.js';
+import {
+  admin,
+  adminWithoutWrite,
+  insertExecution,
+  limits,
+  pgInput,
+  TEST_KEY,
+  testCore,
+  writer,
+} from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof AppError && e.code === c;
 
@@ -19,6 +32,31 @@ function setup() {
 }
 
 describe('ProfileService', () => {
+  it('keeps stored allowances within the deployment limits after those are lowered', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-profiles-'));
+    try {
+      const file = join(dir, 'app.db');
+      const before = testCore(file);
+      const prod = before.connections.create(admin, pgInput).id;
+      before.profiles.create(admin, { name: 'Claude', clientId: 'workbench-mcp', connectionIds: [prod] });
+      before.close();
+      // The operator lowers the limits and restarts with the same application database.
+      const lowered = { ...limits, mcpPreviewRows: 10, mcpPreviewBytes: 1024, fullTimeoutMaxMs: 5000 };
+      const after = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits: lowered });
+      try {
+        const p = after.profiles.findByClientId('workbench-mcp');
+        assert.deepEqual([p?.previewRows, p?.previewBytes, p?.timeoutMs], [10, 1024, 5000]);
+        // Editing something else stores the lowered allowances, within the limits.
+        const renamed = after.profiles.update(admin, String(p?.id), { name: 'Claude Code' }).profile;
+        assert.deepEqual([renamed.previewRows, renamed.previewBytes], [10, 1024]);
+      } finally {
+        after.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('binds one OAuth client to one profile and defaults to read-only', () => {
     const { core, prod } = setup();
     const p = core.profiles.create(admin, {

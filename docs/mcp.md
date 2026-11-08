@@ -45,7 +45,7 @@ Errors come back as tool errors whose `code` is from the stable list in [api.md]
 
 ## Allowance and disclosure
 
-Each MCP profile has an allowance per execution: `previewRows` (default 1,000) and `previewBytes` (default 256 KiB). Both are capped by the deployment limits.
+Each MCP profile has an allowance per execution: `previewRows` (default 1,000) and `previewBytes` (default 256 KiB). Both are capped by the deployment limits, also for existing profiles once those limits are lowered (`MCP_PREVIEW_ROWS`, `MCP_PREVIEW_BYTES`; the profile timeout likewise by `FULL_TIMEOUT_MAX_MS`).
 
 - Every row `get_result` returns counts against the allowance, across result sets, pages and calls. Rows read again count again.
 - Error messages that the database composed count too, once each, whatever their SQLSTATE (a function can raise any code with any text): they can quote data (an invalid value, a duplicate key, text a function raised). One that the remaining allowance cannot cover is withheld; its error code stays, and the full message is in the GUI. Messages the workbench writes (time limits, cancellations, refusals) are not counted.
