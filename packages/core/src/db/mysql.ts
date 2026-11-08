@@ -884,10 +884,15 @@ class MysqlSession implements DbSession {
     // without an error of its own, but the result is incomplete and must not pass as finished.
     if (failed) throw failed;
     // An interrupted SLEEP() or BENCHMARK() ends without an error; the interruption still counts.
-    if (interrupted === 'timeout') {
+    // But a statement the server answered with rows changed has finished: outside a transaction
+    // (autocommit) it has committed, so a cancel or time limit that came too late does not make it
+    // read as rolled back. Inside one the interruption stands, and the transaction is rolled back.
+    const committed = !this.#inTransaction && outcome.resultSets === 0 && (outcome.affectedRows ?? 0) > 0;
+    if (interrupted === 'timeout' && !committed) {
       throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`);
     }
-    if (interrupted === 'cancelled') throw new DbError('cancelled', 'The statement was cancelled.');
+    if (interrupted === 'cancelled' && !committed)
+      throw new DbError('cancelled', 'The statement was cancelled.');
     // Result sets carry their warning count in the EOF packet, which mysql2 does not surface, so ask.
     if (!this.dirty) {
       try {

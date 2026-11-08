@@ -247,6 +247,47 @@ for (const { engine, variable, prepare } of engines) {
     });
 
     it(
+      'reports a MySQL write that committed before a late cancel as finished, and keeps it interrupted in a transaction',
+      { skip: engine !== 'mysql' },
+      async () => {
+        // The cancel arrives but has no effect on the server (as when it lands just after the
+        // write committed): the statement still answers OK with its changed row.
+        const cancel = adapter.cancel.bind(adapter);
+        adapter.cancel = async () => true;
+        const lateCancel = (inTransaction: boolean, name: string) =>
+          adapter.withSession(async (s) => {
+            if (inTransaction) await s.begin({ readOnly: false });
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 300);
+            try {
+              const outcome = await s.execute(
+                `INSERT INTO wb_items (name) SELECT CONCAT('${name}', SLEEP(1))`,
+                collect().sink,
+                { timeoutMs: 20_000, signal: controller.signal },
+              );
+              return outcome.affectedRows;
+            } catch (error) {
+              return (error as { category?: string }).category;
+            } finally {
+              if (inTransaction) await s.rollback().catch(() => undefined);
+            }
+          });
+        try {
+          assert.equal(await lateCancel(false, 'late-autocommit-'), 1, 'committed: reported as finished');
+          assert.equal(
+            await lateCancel(true, 'late-transaction-'),
+            'cancelled',
+            'in a transaction: interrupted',
+          );
+          const rows = await run("SELECT name FROM wb_items WHERE name LIKE 'late-%' ORDER BY name");
+          assert.deepEqual(rows.sets[0]?.rows, [['late-autocommit-0']]);
+        } finally {
+          adapter.cancel = cancel;
+        }
+      },
+    );
+
+    it(
       'closes a connection that stops answering after a cancel, so the statement cannot wait forever',
       { timeout: 30_000 },
       async () => {
