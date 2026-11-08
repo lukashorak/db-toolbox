@@ -183,6 +183,9 @@ export async function withinBounds<T>(
   }
 }
 
+/** A view whose effects could not be looked up: refused like one that cannot roll back. */
+const VIEW_UNCHECKED = 'what it does could not be checked (the lookup failed)';
+
 async function untilDone<T>(
   work: Promise<T>,
   signal: AbortSignal,
@@ -308,7 +311,7 @@ export class ExecutionService {
     const statements = await analyzeScript(v.sql, connection.engine);
     let problems: PreflightProblem[];
     const adapter =
-      connection.engine === 'mysql' && v.transactionMode === 'atomic'
+      v.transactionMode === 'atomic' && (connection.engine === 'mysql' || !policy.readOnly)
         ? await this.#adapter(connection.id)
         : null;
     problems = await preflight(statements, {
@@ -337,6 +340,13 @@ export class ExecutionService {
                 return await adapter.viewEngine(table);
               } catch {
                 return 'unknown (the storage engine could not be checked)';
+              }
+            },
+            viewEffects: async (table) => {
+              try {
+                return await adapter.viewEffects(table);
+              } catch {
+                return VIEW_UNCHECKED;
               }
             },
           }
@@ -991,12 +1001,12 @@ export class ExecutionService {
     // The storage engines were checked at submission against the connection as it was then. The
     // connection may point elsewhere now (another database or host), and tables may have changed:
     // check again against the adapter that will run the script.
-    if (atomic && !readOnly && row.engine === 'mysql') {
+    if (atomic && !readOnly) {
       // Bounded like the run itself: a cancel or the time limit ends it even if a lookup stalls, and
       // then stops the lookups too, so none is left waiting for the metadata connection.
       const lookups = new AbortController();
       const problems = await untilDone(
-        this.#engineProblems(adapter, String(row.sql), lookups.signal),
+        this.#engineProblems(adapter, row.engine as Engine, String(row.sql), lookups.signal),
         signal,
         deadline,
       );
@@ -1368,10 +1378,10 @@ export class ExecutionService {
    * stays queued and is authorized again when it starts.
    */
   /** MySQL single transaction: storage-engine problems of the script, checked through `adapter`. */
-  async #engineProblems(adapter: DbAdapter, sql: string, signal: AbortSignal) {
-    const statements = await analyzeScript(sql, 'mysql');
+  async #engineProblems(adapter: DbAdapter, engine: Engine, sql: string, signal: AbortSignal) {
+    const statements = await analyzeScript(sql, engine);
     const problems = await preflight(statements, {
-      engine: 'mysql',
+      engine,
       transactionMode: 'atomic',
       readOnly: false,
       tableEngine: async (table) => {
@@ -1398,9 +1408,21 @@ export class ExecutionService {
           return 'unknown (the storage engine could not be checked)';
         }
       },
+      viewEffects: async (table) => {
+        signal.throwIfAborted();
+        try {
+          return await adapter.viewEffects(table, signal);
+        } catch {
+          return VIEW_UNCHECKED;
+        }
+      },
     });
+    // What the database holds now; the script's own statements were checked at submission.
     return problems.filter(
-      (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
+      (p) =>
+        p.code === 'non_transactional_engine' ||
+        p.code === 'unchecked_write_target' ||
+        (p.code === 'irreversible_effect' && p.message.includes(' reads the view ')),
     );
   }
 

@@ -136,6 +136,12 @@ export interface DbAdapter {
    * when a definition cannot be read.
    */
   viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
+  /**
+   * PostgreSQL: what reading this relation does that a rollback cannot undo (dblink, files on the
+   * server), through every view beneath it; null for a base table or a view that does none. MySQL:
+   * always null (its views are checked through viewEngine).
+   */
+  viewEffects(table: TableRef, signal?: AbortSignal): Promise<string | null>;
   /** Sessions currently checked out. */
   activeSessions(): number;
   /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */

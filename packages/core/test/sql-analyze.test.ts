@@ -455,6 +455,50 @@ describe('preflight', () => {
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
     }
     assert.deepEqual(await run("select * from a into outfile '/tmp/a.csv'", 'mysql'), []);
+    // Server configuration is not transactional; PERSIST also writes it to disk.
+    for (const sql of [
+      'set global max_connections = 250',
+      'set persist max_connections = 250',
+      'set persist_only max_connections = 250',
+      'set @@global.max_connections = 250',
+      'set @@persist.max_connections = 250',
+    ]) {
+      const problems = await run(`${sql}; select 1 / missing_column`, 'mysql', { transactionMode: 'atomic' });
+      assert.deepEqual(
+        problems.map((p) => p.code),
+        ['irreversible_effect'],
+        sql,
+      );
+    }
+    assert.deepEqual(await run('set session sql_mode = ""', 'mysql', { transactionMode: 'atomic' }), []);
+  });
+
+  it('refuses reading a view with irreversible effects in single-transaction mode', async () => {
+    const looked: string[] = [];
+    const viewEffects = async (t: { schema: string | null; name: string }) => {
+      looked.push(`${t.schema ?? ''}.${t.name}`);
+      return t.name === 'remote_audit'
+        ? 'dblink_exec() runs SQL over another connection, which commits on its own'
+        : null;
+    };
+    const problems = await run(
+      'insert into a values (1); select * from app.remote_audit; select * from plain',
+      'postgresql',
+      { transactionMode: 'atomic', viewEffects },
+    );
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [['irreversible_effect', 1]],
+    );
+    assert.match(
+      String(problems[0]?.message),
+      /reads the view app\.remote_audit\. Through it, dblink_exec\(\)/,
+    );
+    // The relations it reads (an INSERT's target is written, not read through its definition).
+    assert.deepEqual(looked.sort(), ['.plain', 'app.remote_audit']);
+    // Per statement, and under a read-only policy (the transaction stops local writes; dblink is
+    // refused there on its own), the view is not looked up.
+    assert.deepEqual(await run('select * from app.remote_audit', 'postgresql', { viewEffects }), []);
   });
 
   it('rejects MySQL procedure calls in single-transaction mode, because a procedure can commit', async () => {

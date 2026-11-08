@@ -45,6 +45,8 @@ export interface PreflightOptions {
   functionEngine?: (fn: TableRef) => Promise<string | null>;
   /** MySQL atomic mode: what reading a named relation writes (see DbAdapter.viewEngine). */
   viewEngine?: (table: TableRef) => Promise<string | null>;
+  /** PostgreSQL atomic mode: what reading a named relation does that a rollback cannot undo. */
+  viewEffects?: (table: TableRef) => Promise<string | null>;
 }
 
 const label = (s: AnalyzedStatement) => `Statement ${s.index + 1} (line ${s.range.startLine})`;
@@ -139,6 +141,26 @@ export async function preflight(
         message: `${label(s)} (${a.command}) cannot run inside a transaction block.`,
         hint: 'Use per-statement mode, or run this statement separately.',
       });
+    }
+  }
+
+  // A view can call what no rollback undoes (dblink, files on the server): reading it is as
+  // irreversible as calling it directly.
+  if (options.transactionMode === 'atomic' && !options.readOnly && options.viewEffects) {
+    const seen = new Map<string, string | null>();
+    for (const s of statements) {
+      for (const table of s.analysis.referencesTables ?? []) {
+        const key = `${table.schema ?? ''}.${table.name}`;
+        if (!seen.has(key)) seen.set(key, await options.viewEffects(table));
+        const effect = seen.get(key);
+        if (!effect) continue;
+        problems.push({
+          code: 'irreversible_effect',
+          statement: s.index,
+          message: `${label(s)} reads the view ${table.schema ? `${table.schema}.` : ''}${table.name}. Through it, ${effect}: the script cannot be promised to run as one transaction.`,
+          hint: 'Use per-statement mode, or run this statement separately.',
+        });
+      }
     }
   }
 

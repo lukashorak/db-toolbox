@@ -493,6 +493,10 @@ export class MysqlAdapter implements DbAdapter {
     return engine;
   }
 
+  async viewEffects(): Promise<string | null> {
+    return null;
+  }
+
   async viewEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {
     return this.#viewEngineOf(table.schema, table.name, [], new Map(), signal, false);
   }

@@ -316,6 +316,31 @@ for (const { engine, variable, prepare } of engines) {
       }
     });
 
+    it(
+      'refuses single-transaction runs that read a view with irreversible effects',
+      { skip: engine !== 'postgresql' },
+      async () => {
+        const nested = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-export'); SELECT * FROM wb_v_export_nested",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(nested.status, 'preflight_rejected');
+        assert.match(
+          String(nested.error?.message),
+          /reads the view wb_v_export_nested\. Through it, lo_export\(\)/,
+        );
+        assert.equal(await count("name = 'run-export'"), 0);
+        // A view without such effects is fine.
+        const plain = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-plain-view'); SELECT count(*) FROM wb_v_lo LIMIT 0",
+          {
+            transactionMode: 'atomic',
+          },
+        );
+        assert.notEqual(plain.status, 'preflight_rejected');
+      },
+    );
+
     it('a read-only connection rejects writes before running and runs reads read-only', async () => {
       const rejected = await core.executions.submit(writer, {
         connectionId: readOnly,

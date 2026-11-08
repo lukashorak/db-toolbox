@@ -115,6 +115,9 @@ CREATE CONSTRAINT TRIGGER wb_slow_commit_tr AFTER INSERT ON wb_slow_commit
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION wb_sleep_at_commit();
 -- A view that creates a large object for every row it returns.
 CREATE VIEW wb_v_lo AS SELECT lo_create(0) AS v FROM wb_numbers;
+-- A view that writes a file on the server, beneath another view: no rollback undoes it.
+CREATE VIEW wb_v_export AS SELECT lo_export(0, '/tmp/wb-export.bin') AS done;
+CREATE VIEW wb_v_export_nested AS SELECT * FROM wb_v_export;
 INSERT INTO wb_items (name, price, payload, raw, big, tags) VALUES
   ('alpha', 12.50, '{"a": [1, 2]}', '\\x00ff10', 9007199254740993, '{x,"y z"}'),
   ('beta', NULL, NULL, NULL, NULL, NULL);
