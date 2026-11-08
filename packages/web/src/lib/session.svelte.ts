@@ -83,18 +83,31 @@ function advance(job: Job, update: Progress, newer: boolean): void {
   job.transactionOutcome = update.transactionOutcome;
 }
 
+/** Newest first, as the server lists them. */
+const newestFirst = (a: Job, b: Job) =>
+  b.submittedAt.localeCompare(a.submittedAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
 async function resync(): Promise<void> {
+  const known = new Set(jobs.items.map((j) => j.id));
   const list = await api<ExecutionSummary[]>('GET', '/executions?limit=20');
   // Events that arrived while the list loaded can be newer than it: keep the later status.
   const shown = new Map(
     jobs.items.map((j) => [j.id, { status: j.status, transactionOutcome: j.transactionOutcome }]),
   );
-  jobs.items = list.map((e) => {
-    const job = toJob(e);
-    const before = shown.get(e.id);
-    if (before) advance(job, before, false);
-    return job;
-  });
+  const listed = new Set(list.map((e) => e.id));
+  // Executions first seen in events while the list loaded can be missing from it: they stay.
+  const added = jobs.items.filter((j) => !known.has(j.id) && !listed.has(j.id)).map((j) => ({ ...j }));
+  jobs.items = [
+    ...added,
+    ...list.map((e) => {
+      const job = toJob(e);
+      const before = shown.get(e.id);
+      if (before) advance(job, before, false);
+      return job;
+    }),
+  ]
+    .sort(newestFirst)
+    .slice(0, 20);
   if (can('disclosure.decide')) {
     jobs.pendingApprovals = (await api<unknown[]>('GET', '/approvals?status=pending')).length;
   }

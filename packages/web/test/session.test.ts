@@ -21,17 +21,18 @@ vi.mock('../src/lib/live', () => ({
 }));
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-const summary = (status: string) => ({
-  id: 'ex_1',
+/** Executions `ex_1`, `ex_2`, … were submitted a minute apart, in that order. */
+const summary = (status: string, id = 'ex_1') => ({
+  id,
   title: 'Load',
   status,
   transactionOutcome: status === 'succeeded' ? 'committed' : 'not_started',
   connection: { name: 'app' },
-  submittedAt: '2026-11-08T10:00:00.000Z',
+  submittedAt: `2026-11-08T10:0${id.slice(3)}:00.000Z`,
 });
-const event = (status: string): LiveEvent => ({
+const event = (status: string, id = 'ex_1'): LiveEvent => ({
   type: 'execution',
-  data: { id: 'ex_1', status, transactionOutcome: summary(status).transactionOutcome },
+  data: { id, status, transactionOutcome: summary(status).transactionOutcome },
 });
 /** Answers the oldest open request for `url`. */
 async function answer(url: string, value: unknown) {
@@ -77,6 +78,34 @@ describe('shell job status', () => {
     await answer('/executions?limit=20', [summary('running')]);
     expect(jobs.items[0]?.status).toBe('succeeded');
     expect(jobs.items[0]?.transactionOutcome).toBe('committed');
+  });
+
+  it('keeps an execution first seen while the list loaded, though the list does not have it', async () => {
+    const handlers = live.handlers!;
+    handlers.onConnected?.();
+    await answer('/executions?limit=20', [summary('succeeded')]);
+    // A reconnect asks for the list; then a new execution starts, finishes and is looked up…
+    handlers.onConnected?.();
+    handlers.onEvent(event('queued', 'ex_2'));
+    handlers.onEvent(event('succeeded', 'ex_2'));
+    await answer('/executions/ex_2', summary('succeeded', 'ex_2'));
+    expect(jobs.items.map((j) => j.id)).toEqual(['ex_2', 'ex_1']);
+    // …before the list, taken earlier, arrives without it. No later event would bring it back.
+    await answer('/executions?limit=20', [summary('succeeded')]);
+    expect(jobs.items.map((j) => [j.id, j.status])).toEqual([
+      ['ex_2', 'succeeded'],
+      ['ex_1', 'succeeded'],
+    ]);
+  });
+
+  it('drops jobs that were shown before but the newer list no longer has', async () => {
+    const handlers = live.handlers!;
+    handlers.onConnected?.();
+    await answer('/executions?limit=20', [summary('succeeded', 'ex_2'), summary('succeeded')]);
+    handlers.onConnected?.();
+    // ex_1 fell out of the twenty newest since; it is not kept for having been shown before.
+    await answer('/executions?limit=20', [summary('succeeded', 'ex_3'), summary('succeeded', 'ex_2')]);
+    expect(jobs.items.map((j) => j.id)).toEqual(['ex_3', 'ex_2']);
   });
 
   it('still takes a later status from the list than the one shown', async () => {
