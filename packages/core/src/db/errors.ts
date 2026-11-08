@@ -36,11 +36,16 @@ export class DbError extends Error {
   readonly detail: string | null;
   readonly hint: string | null;
   readonly position: DbErrorPosition | null;
+  /**
+   * The database server wrote the message (it can quote data, whatever its category: a function can
+   * raise any SQLSTATE with any text). False for messages this tool or a driver wrote.
+   */
+  readonly server: boolean;
 
   constructor(
     category: DbErrorCategory,
     message: string,
-    extra: Partial<Pick<DbError, 'sqlState' | 'code' | 'detail' | 'hint' | 'position'>> = {},
+    extra: Partial<Pick<DbError, 'sqlState' | 'code' | 'detail' | 'hint' | 'position' | 'server'>> = {},
   ) {
     super(message);
     this.name = 'DbError';
@@ -50,6 +55,7 @@ export class DbError extends Error {
     this.detail = extra.detail ?? null;
     this.hint = extra.hint ?? null;
     this.position = extra.position ?? null;
+    this.server = extra.server ?? false;
   }
 
   toJSON() {
@@ -166,6 +172,7 @@ export function mapPostgresError(error: unknown): DbError {
     detail: e.detail ?? null,
     hint: e.hint ?? null,
     position: offset !== undefined && Number.isFinite(offset) ? { offset } : null,
+    server: true,
   });
 }
 
@@ -218,6 +225,7 @@ export function mapMysqlError(error: unknown): DbError {
     sqlState: e.sqlState ?? null,
     code: String(e.errno),
     position: line ? { line: Number(line) } : null,
+    server: true,
   });
 }
 

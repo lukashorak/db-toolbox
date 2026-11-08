@@ -250,6 +250,17 @@ describe('errors after a cancel or the time limit', () => {
     }
   });
 
+  it('marks messages the database server wrote, whatever their category', () => {
+    // A function can raise the query-cancelled SQLSTATE with any text.
+    const raised = mapPostgresError({ severity: 'ERROR', code: '57014', message: 'secret-1,secret-2' });
+    assert.deepEqual([raised.category, raised.server], ['cancelled', true]);
+    assert.equal(mapMysqlError({ errno: 1317, sqlMessage: 'secret', sqlState: '70100' }).server, true);
+    assert.equal(mapPostgresError({ code: 'ECONNRESET', message: 'read ECONNRESET' }).server, false);
+    // Messages this tool writes after a cancel or the time limit are its own.
+    assert.equal(afterInterruption(raised, 'cancelled', 1000).server, false);
+    assert.equal(afterInterruption(raised, null, 1000).server, true);
+  });
+
   it('reports a confirmed cancel or timeout otherwise, keeping the engine code', () => {
     const cancelled = afterInterruption(failed, 'cancelled', 1000);
     assert.deepEqual([cancelled.category, cancelled.code], ['cancelled', '42601']);

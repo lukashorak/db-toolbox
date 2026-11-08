@@ -48,7 +48,7 @@ Errors come back as tool errors whose `code` is from the stable list in [api.md]
 Each MCP profile has an allowance per execution: `previewRows` (default 1,000) and `previewBytes` (default 256 KiB). Both are capped by the deployment limits.
 
 - Every row `get_result` returns counts against the allowance, across result sets, pages and calls. Rows read again count again.
-- Error messages that the database composed count too, once each: they can quote data (an invalid value, a duplicate key, text a function raised). One that the remaining allowance cannot cover is withheld; its error code stays, and the full message is in the GUI. Messages the workbench writes (time limits, cancellations, refusals) are not counted.
+- Error messages that the database composed count too, once each, whatever their SQLSTATE (a function can raise any code with any text): they can quote data (an invalid value, a duplicate key, text a function raised). One that the remaining allowance cannot cover is withheld; its error code stays, and the full message is in the GUI. Messages the workbench writes (time limits, cancellations, refusals) are not counted.
 - When a page would go beyond the allowance, the response returns what fits and opens one pending request per result set and profile. A call that can return nothing fails with `approval_required` and the request ID.
 - Only the person who owns the execution can approve, signed in to the GUI (`POST /api/v1/approvals/{id}/approve`). The approval is scoped:
   - to one result set and one profile ([decision 0008](decisions/0008-disclosure-approval-scope.md));

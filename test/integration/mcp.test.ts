@@ -364,6 +364,24 @@ describe('MCP with PostgreSQL', { skip: skipUnless('POSTGRES_TEST_URL') }, () =>
       String(core.executions.view(leak.data.executionId).statements[0]?.error?.message),
       new RegExp(firstLabel),
     );
+    // Also when a function raises a SQLSTATE that looks like a cancel.
+    const setup = await core.executions.submit(alice, {
+      connectionId: ids.rw as string,
+      sql: `CREATE FUNCTION wb_raise_cancel() RETURNS int LANGUAGE plpgsql AS $$
+              BEGIN RAISE EXCEPTION USING ERRCODE = '57014', MESSAGE = (SELECT string_agg(label, ',') FROM wb_rows); END $$`,
+    });
+    while (!['succeeded', 'failed'].includes(core.executions.view(setup.id).status))
+      await new Promise((r) => setTimeout(r, 50));
+    assert.equal(core.executions.view(setup.id).status, 'succeeded');
+    const raised = await call('execute_sql', {
+      connectionId: ids.rw,
+      sql: 'SELECT wb_raise_cancel()',
+      requestKey: 'errtext-0000003',
+      transactionMode: 'per_statement',
+      captureMode: 'preview',
+    });
+    assert.equal(raised.data.statements[0].error.code, '57014');
+    assert.ok(!JSON.stringify(raised.data).includes(firstLabel), 'no label through a raised 57014');
   });
 
   it('exports without sending contents, and export downloads are closed to MCP tokens', async () => {

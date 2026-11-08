@@ -1634,6 +1634,7 @@ function describe(error: unknown): { code: string | null; message: string; detai
         detail: error.detail,
         hint: error.hint,
         position: error.position,
+        server: error.server,
       },
     };
   }

@@ -15,10 +15,14 @@ import { canSeeExecution } from './visibility.js';
 
 type ErrorView = ExecutionView['error'];
 
-/** An error message the database server composed (not one this tool wrote). */
+/**
+ * An error message the database server wrote, whatever its category (a function can raise any
+ * SQLSTATE with any text). Errors stored before the marker existed count when they have a SQLSTATE.
+ */
 function fromDatabase(error: NonNullable<ErrorView>): boolean {
-  const detail = error.detail as { sqlState?: unknown; category?: unknown } | null;
-  return typeof detail?.sqlState === 'string' && !['cancelled', 'timeout'].includes(String(detail.category));
+  const detail = error.detail as { sqlState?: unknown; server?: unknown } | null;
+  if (typeof detail?.server === 'boolean') return detail.server;
+  return typeof detail?.sqlState === 'string';
 }
 
 const decideSchema = z

@@ -168,6 +168,36 @@ describe('MCP disclosure', () => {
     assert.equal(withheld?.code, '22P02');
     assert.match(String(withheld?.message), /withheld/);
     assert.doesNotMatch(String(withheld?.message), /secret/);
+    // Whatever its category: a function can raise the query-cancelled SQLSTATE with data in it.
+    const raised = { category: 'cancelled', sqlState: '57014', server: true };
+    core.db.run(
+      `UPDATE statements SET error_code = '57014', error_message = :message, error_detail = :detail
+        WHERE execution_id = :id AND ordinal = 0`,
+      { id: second, message: leaked, detail: JSON.stringify(raised) },
+    );
+    core.db.run('DELETE FROM mcp_diagnostics WHERE execution_id = :id', { id: second });
+    assert.match(
+      String(
+        core.disclosure.diagnostics(mcp, core.executions.get(mcp, second)).statements[0]?.error?.message,
+      ),
+      /withheld/,
+    );
+    // The workbench's own cancel message keeps the SQLSTATE but is not the server's text.
+    core.db.run(
+      `UPDATE statements SET error_message = 'The statement was cancelled.', error_detail = :detail
+        WHERE execution_id = :id AND ordinal = 0`,
+      { id: second, detail: JSON.stringify({ ...raised, server: false }) },
+    );
+    core.db.run('DELETE FROM mcp_diagnostics WHERE execution_id = :id', { id: second });
+    assert.equal(
+      core.disclosure.diagnostics(mcp, core.executions.get(mcp, second)).statements[0]?.error?.message,
+      'The statement was cancelled.',
+    );
+    core.db.run(
+      `UPDATE statements SET error_message = :message, error_detail = :detail
+        WHERE execution_id = :id AND ordinal = 0`,
+      { id: second, message: leaked, detail },
+    );
     // The GUI keeps the full diagnostics; messages this tool wrote are not charged.
     assert.equal(core.executions.get(writer, second).statements[0]?.error?.message, leaked);
     core.db.run(
