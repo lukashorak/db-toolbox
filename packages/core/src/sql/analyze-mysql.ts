@@ -420,6 +420,8 @@ function analyzeSet(tokens: Token[]): StatementAnalysis {
     if (GLOBAL_SCOPE.test(scope) || GLOBAL_SCOPE.test(name)) {
       a.kind = 'write';
       unsafe(a, 'changes server configuration');
+      // Server variables are not transactional; PERSIST also writes them to disk.
+      a.irreversible ??= 'changes server configuration';
     }
     if (plain === 'autocommit') {
       a.kind = 'transaction';
