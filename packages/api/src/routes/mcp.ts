@@ -8,6 +8,8 @@ export interface McpRouteOptions {
   core: Core;
   guard: RequestGuard;
   version: string;
+  /** Headers every response carries (the onSend hook does not run for a hijacked reply). */
+  headers: Record<string, string>;
 }
 
 /**
@@ -15,7 +17,7 @@ export interface McpRouteOptions {
  * profile is resolved from the token's OAuth client, never from anything the client sends.
  */
 export function mcpRoutes(options: McpRouteOptions) {
-  const { config, core, guard, version } = options;
+  const { config, core, guard, version, headers } = options;
   const metadata = protectedResourceMetadata(config);
   return async (app: FastifyInstance) => {
     // RFC 9728 path-insertion form for the resource `${PUBLIC_URL}/mcp`, plus the root form that
@@ -32,6 +34,8 @@ export function mcpRoutes(options: McpRouteOptions) {
 
     app.post(MCP_PATH, async (request, reply) => {
       const actor = await guard.authenticate(request, 'mcp');
+      // The SDK writes the raw response itself; headers set here are merged into its writeHead.
+      for (const [name, value] of Object.entries(headers)) reply.raw.setHeader(name, value);
       reply.hijack();
       try {
         await handleMcpRequest(request.raw, reply.raw, request.body, actor, { core, version });

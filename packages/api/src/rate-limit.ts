@@ -84,6 +84,13 @@ export class RateLimiter {
     bucket.tokens -= 1;
   }
 
+  /** Gives back one request taken with `take` (one that turned out not to count). */
+  refund(key: string): void {
+    if (!this.enabled) return;
+    const bucket = this.#bucket(key);
+    bucket.tokens = Math.min(this.#capacity, bucket.tokens + 1);
+  }
+
   /** Forgets keys whose buckets are full again, so the map stays small. */
   #sweep(now: number): void {
     for (const [key, bucket] of this.#buckets) {

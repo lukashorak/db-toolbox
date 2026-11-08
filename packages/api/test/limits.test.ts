@@ -17,6 +17,7 @@ import {
   GUI_CLIENT,
   ISSUER,
   MCP_AUDIENCE,
+  MCP_CLIENT,
   PUBLIC_URL,
   type TestIssuer,
 } from '../../../test/support/oidc.js';
@@ -28,6 +29,7 @@ import {
   type WorkbenchServer,
 } from '../src/index.js';
 import { MAX_KEYS } from '../src/rate-limit.js';
+import { admin, pgInput } from '../../core/test/helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof AppError && e.code === c;
 
@@ -98,6 +100,43 @@ describe('request guard', () => {
   });
   const request = (authorization: string, ip = '10.0.0.1') =>
     ({ ip, headers: { authorization } }) as unknown as FastifyRequest;
+
+  it('bounds verifications running at once from one address by its failure allowance', async () => {
+    let started = 0;
+    const pending: (() => void)[] = [];
+    const stub = {
+      authenticate: () =>
+        new Promise((resolve) => {
+          started++;
+          pending.push(() => resolve(actor('alice', GUI_CLIENT)));
+        }),
+    } as unknown as Authenticator;
+    const guard = new RequestGuard(
+      stub,
+      { apiPerMinute: 1000, mcpPerMinute: 1000, authFailuresPerMinute: 2 },
+      () => 0,
+    );
+    const attempts = Array.from({ length: 100 }, () =>
+      guard.authenticate(request('alice'), 'gui').then(
+        () => 'ok',
+        (e: unknown) => (e instanceof AppError ? e.code : 'other'),
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(started, 2, 'only the allowance starts verifying');
+    for (const resolve of pending) resolve();
+    const results = await Promise.all(attempts);
+    assert.deepEqual(
+      [results.filter((r) => r === 'ok').length, results.filter((r) => r === 'rate_limited').length],
+      [2, 98],
+    );
+    // Accepted tokens gave their reservation back: the next request verifies.
+    const next = guard.authenticate(request('alice'), 'gui');
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(started, 3);
+    pending.at(-1)?.();
+    await next;
+  });
 
   it('counts MCP calls per user and client, separately from the GUI', async () => {
     const stub = {
@@ -212,6 +251,33 @@ describe('HTTP limits and headers', () => {
       headers: { origin: 'https://evil.example', 'access-control-request-method': 'GET' },
     });
     assert.equal(preflight.headers['access-control-allow-origin'], undefined, 'no CORS');
+    // MCP answers are written by the SDK on the raw response: the headers are there too.
+    core.users.touch(admin);
+    const connection = core.connections.create(admin, pgInput).id;
+    core.profiles.create(admin, { name: 'Claude', clientId: MCP_CLIENT, connectionIds: [connection] });
+    const mcp = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${await issuer.mcp({ subject: 'dana', roles: ['query:read'] })}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      remoteAddress: '10.0.0.20',
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1' },
+        },
+      },
+    });
+    assert.equal(mcp.statusCode, 200);
+    assert.match(String(mcp.headers['content-security-policy']), /frame-ancestors 'none'/);
+    assert.equal(mcp.headers['strict-transport-security'], 'max-age=31536000');
     const errors = await app.inject({ method: 'GET', url: '/api/v1/session' });
     assert.equal(errors.statusCode, 401);
     assert.equal(errors.headers['x-frame-options'], 'DENY');

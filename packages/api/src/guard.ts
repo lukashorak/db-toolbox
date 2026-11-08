@@ -5,7 +5,9 @@ import { RateLimiter } from './rate-limit.js';
 /**
  * Authentication with rate limits: rejected tokens count against the client address (so token
  * guessing and verification load are bounded), accepted requests against the user, or the user
- * and MCP client.
+ * and MCP client. Each verification reserves one of the address's failure allowance before it
+ * starts and gives it back when the token is accepted, so concurrent requests cannot all start
+ * verifying on the same allowance.
  */
 export class RequestGuard {
   readonly #api: RateLimiter;
@@ -34,19 +36,18 @@ export class RequestGuard {
         },
       );
     }
+    // Same tick as wait(): a token is there to reserve.
+    this.#failures.take(address, 'rejected sign-ins');
     let actor: Actor;
     try {
       actor = await this.authenticator.authenticate(request.headers.authorization, kind);
     } catch (error) {
-      if (error instanceof AppError && error.status === 401) {
-        try {
-          this.#failures.take(address, 'rejected sign-ins');
-        } catch {
-          // This attempt still gets its 401; the next one is refused.
-        }
-      }
+      // A rejected token keeps its reservation; any other failure (the identity provider
+      // unreachable, say) is not the client's and gives it back.
+      if (!(error instanceof AppError && error.status === 401)) this.#failures.refund(address);
       throw error;
     }
+    this.#failures.refund(address);
     if (kind === 'mcp') this.#mcp.take(`${actor.subject} ${actor.clientId}`, 'MCP requests');
     else this.#api.take(actor.subject, 'requests');
     return actor;

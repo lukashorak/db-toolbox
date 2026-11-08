@@ -97,7 +97,7 @@ export async function buildServer(config: Config, options: ServerOptions) {
 
   await app.register(publicRoutes(config, core, options.version ?? '0.0.0'), { prefix: API_PREFIX });
   await app.register(protectedRoutes(guard, core, config), { prefix: API_PREFIX });
-  await app.register(mcpRoutes({ config, core, guard, version: options.version ?? '0.0.0' }));
+  await app.register(mcpRoutes({ config, core, guard, version: options.version ?? '0.0.0', headers }));
 
   const webDist = options.webDist === undefined ? WEB_DIST : options.webDist;
   const serveWeb = Boolean(webDist && existsSync(webDist));
