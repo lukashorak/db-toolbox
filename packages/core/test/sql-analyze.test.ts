@@ -55,6 +55,12 @@ describe('statement classification', () => {
       assert.equal((await analyzeStatement(sql, 'postgresql')).changesSession, true, sql);
     }
     assert.equal((await analyzeStatement('create table t (a int)', 'postgresql')).changesSession, false);
+    // DDL evaluates expressions too.
+    assert.equal(
+      (await analyzeStatement("create table c as select set_config('wb.s', 'v', false)", 'postgresql'))
+        .changesSession,
+      true,
+    );
     // Session-level locks outlive the transaction; transaction-level ones do not.
     for (const sql of ['select pg_advisory_lock(1)', 'select pg_try_advisory_lock_shared(1, 2)']) {
       assert.equal((await analyzeStatement(sql, 'postgresql')).changesSession, true, sql);
@@ -315,7 +321,12 @@ describe('preflight', () => {
       outfile.map((p) => [p.code, p.statement]),
       [['irreversible_effect', 1]],
     );
-    for (const sql of ["copy (select 1) to '/tmp/x.csv'", "copy (select 1) to program 'cat'"]) {
+    for (const sql of [
+      "copy (select 1) to '/tmp/x.csv'",
+      "copy (select 1) to program 'cat'",
+      "select lo_export(1, '/tmp/export.bin')",
+      "select pg_file_write('/tmp/x', 'data', false)",
+    ]) {
       const copy = await run(sql, 'postgresql', { transactionMode: 'atomic' });
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
     }

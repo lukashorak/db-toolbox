@@ -54,6 +54,8 @@ const UNSAFE_PREFIXES: [string, string][] = [
 ];
 
 const WRITE_NODES = new Set(['InsertStmt', 'UpdateStmt', 'DeleteStmt', 'MergeStmt']);
+/** Functions that write, rename or delete files on the database server. */
+const FILE_FUNCTIONS = new Set(['lo_export', 'pg_file_write', 'pg_file_rename', 'pg_file_unlink']);
 
 /** Visits every node of the parse tree as (type, body). */
 function walk(value: unknown, visit: (type: string, body: Node) => void): void {
@@ -157,6 +159,8 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       if (reason) unsafe(analysis, `${name}() ${reason}`);
       // set_config(…, false) keeps the setting for the rest of the session.
       if (name === 'set_config') analysis.changesSession = true;
+      // Files on the server outlive any rollback.
+      if (FILE_FUNCTIONS.has(name)) analysis.irreversible = `${name}() changes files on the database server`;
       // Session-level advisory locks outlive the transaction: the connection must not be reused.
       if (/^pg_(try_)?advisory_lock(_shared)?$/.test(name)) analysis.changesSession = true;
     }
@@ -299,6 +303,8 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
     }
     default: {
       const a = unsafe(kindOf('write'), 'changes the database');
+      // DDL can evaluate expressions too (CREATE TABLE … AS SELECT set_config(…)): the same checks.
+      checkTree(a, body);
       const concurrent =
         Boolean(body.concurrent) ||
         (Array.isArray(body.params) &&

@@ -10,7 +10,7 @@ import type { Actor, Completeness, ExportStatus } from '../domain/types.js';
 import { isoNow, type ServiceContext } from '../services/context.js';
 import { parseInput } from '../services/validation.js';
 import { bool, type Row } from '../store/database.js';
-import { readRows, resultGone } from './capture.js';
+import { METADATA_DUE, readRows, resultGone } from './capture.js';
 import { canSeeExecution } from './visibility.js';
 
 export type ExportFormat = 'csv' | 'json';
@@ -304,7 +304,7 @@ export class ExportService {
          JOIN result_sets r ON r.execution_id = x.execution_id AND r.result_index = x.result_index
          JOIN executions e ON e.id = x.execution_id
         WHERE x.status NOT IN ('expired', 'deleted')
-          AND ((r.expires_at IS NOT NULL AND r.expires_at <= :at) OR e.metadata_expires_at <= :at
+          AND ((r.expires_at IS NOT NULL AND r.expires_at <= :at) OR ${METADATA_DUE}
                OR r.completeness IN ('expired', 'deleted'))`,
       { at },
     );
@@ -319,7 +319,7 @@ export class ExportService {
       );
     }
     // Folders of executions whose metadata is about to be deleted.
-    for (const e of this.ctx.db.all('SELECT id FROM executions WHERE metadata_expires_at <= :at', { at })) {
+    for (const e of this.ctx.db.all(`SELECT e.id FROM executions e WHERE ${METADATA_DUE}`, { at })) {
       if (this.exportDir) await rm(this.#folder(String(e.id)), { recursive: true, force: true });
     }
     // Disclosure ends with the result it refers to.

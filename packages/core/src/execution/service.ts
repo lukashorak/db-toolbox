@@ -18,7 +18,7 @@ import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW } from '../sql/types.js';
 import { preflight, type PreflightProblem } from '../sql/preflight.js';
 import type { StatementKind } from '../sql/types.js';
 import { bool, int, type Row } from '../store/database.js';
-import { readRows, ResultCapture, StorageBudget, resultGone } from './capture.js';
+import { METADATA_DUE, readRows, ResultCapture, StorageBudget, resultGone } from './capture.js';
 import { canSeeExecution } from './visibility.js';
 
 const submitSchema = z
@@ -1389,7 +1389,7 @@ export class ExecutionService {
     });
     this.#budget.release(bytes);
     const old = this.ctx.db.all(
-      `SELECT id FROM executions WHERE metadata_expires_at <= :at AND status IN ${TERMINAL}`,
+      `SELECT e.id FROM executions e WHERE ${METADATA_DUE} AND e.status IN ${TERMINAL}`,
       { at },
     );
     this.ctx.db.transaction(() => {

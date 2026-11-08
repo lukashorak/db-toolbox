@@ -92,7 +92,8 @@ Statements that change session state mark the session dirty, and the session is 
 - `cleanup()` runs every 10 minutes:
   - working results expire after 24 hours;
   - retained results expire after their days (at most 7);
-  - execution metadata is deleted after 90 days.
+  - execution metadata is deleted after 90 days, but never before its results: an execution whose result is retained for longer is kept, with its export files, until that result expires.
+- Retain chosen while a run is going applies to its results when it finishes.
 
 ## Visibility
 

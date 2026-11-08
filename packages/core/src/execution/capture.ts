@@ -201,6 +201,16 @@ export class ResultCapture implements ResultSink {
 }
 
 /**
+ * SQL condition (execution aliased `e`, parameter `:at`): its metadata may be deleted. Metadata
+ * waits for the results: an execution is kept while any of its results is still within retention
+ * (a result retained for longer than metadata is kept for that long, with its execution).
+ */
+export const METADATA_DUE = `(e.metadata_expires_at <= :at AND NOT EXISTS (
+  SELECT 1 FROM result_sets live WHERE live.execution_id = e.id
+    AND live.completeness NOT IN ('expired', 'deleted')
+    AND (live.expires_at IS NULL OR live.expires_at > :at)))`;
+
+/**
  * A captured result that may no longer be read: expired or deleted, or past its retention deadline
  * although the periodic cleanup has not removed it yet.
  */

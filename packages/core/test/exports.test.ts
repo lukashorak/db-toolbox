@@ -335,6 +335,24 @@ describe('result deletion and retention', () => {
     core.close();
   });
 
+  it('keeps an execution, its results and exports while a result is retained beyond its metadata', async () => {
+    const { core, id } = await fixture();
+    // Metadata would be due on the 8th; the result is retained until the 20th.
+    core.db.run("UPDATE executions SET metadata_expires_at = '2026-11-08T00:00:00Z' WHERE id = :id", { id });
+    core.db.run("UPDATE result_sets SET expires_at = '2026-11-20T00:00:00Z' WHERE execution_id = :id", {
+      id,
+    });
+    const created = await core.exports.create(writer, id, 0, { format: 'csv' });
+    await core.exports.idle();
+    const early = await core.cleanup(new Date('2026-11-10T00:00:00Z'));
+    assert.deepEqual([early.exportsExpired, early.resultsExpired, early.executionsDeleted], [0, 0, 0]);
+    assert.equal(core.executions.rows(writer, id, 0).rows.length, 4, 'the retained rows are still there');
+    assert.ok(await core.exports.download(writer, created.id), 'and the export file');
+    const late = await core.cleanup(new Date('2026-11-21T00:00:00Z'));
+    assert.deepEqual([late.exportsExpired, late.resultsExpired, late.executionsDeleted], [1, 1, 1]);
+    core.close();
+  });
+
   it('cleanup removes export files and chunks after retention and keeps metadata', async () => {
     const { core, id, dir } = await fixture();
     const created = await core.exports.create(writer, id, 0, { format: 'json' });
