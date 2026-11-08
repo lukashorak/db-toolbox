@@ -80,6 +80,23 @@ const REMOTE_FUNCTIONS = new Set([
 ]);
 /** Functions that write, rename or delete files on the database server. */
 const FILE_FUNCTIONS = new Set(['lo_export', 'pg_file_write', 'pg_file_rename', 'pg_file_unlink']);
+/**
+ * The catalog's functions that act on the server or on other sessions at once, outside this
+ * transaction: no rollback restores a terminated session, a cancelled query or reset statistics.
+ */
+const SERVER_ACTIONS: Record<string, string> = {
+  pg_terminate_backend: 'terminates another session',
+  pg_cancel_backend: 'cancels another session’s query',
+  pg_reload_conf: 'reloads the server configuration',
+  pg_rotate_logfile: 'rotates the server log',
+  pg_log_backend_memory_contexts: 'writes to the server log',
+  pg_promote: 'promotes a standby',
+  pg_switch_wal: 'switches the WAL file',
+  pg_create_restore_point: 'creates a restore point',
+  pg_create_physical_replication_slot: 'creates a replication slot',
+  pg_create_logical_replication_slot: 'creates a replication slot',
+  pg_drop_replication_slot: 'drops a replication slot',
+};
 
 /** Visits every node of the parse tree as (type, body). */
 function walk(value: unknown, visit: (type: string, body: Node) => void): void {
@@ -256,6 +273,10 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       const inCatalog = called.length === 1 || called.at(-2) === 'pg_catalog';
       if (inCatalog && Object.hasOwn(WRITING_BUILT_INS, exact))
         analysis.builtinWrite ??= `${exact}() ${WRITING_BUILT_INS[exact]}`;
+      if (inCatalog && Object.hasOwn(SERVER_ACTIONS, exact))
+        analysis.irreversible ??= `${exact}() ${SERVER_ACTIONS[exact]}, which no rollback undoes`;
+      if (inCatalog && exact.startsWith('pg_stat_reset'))
+        analysis.irreversible ??= `${exact}() resets statistics, which no rollback undoes`;
       if (inCatalog && exact === 'set_config') {
         const [setting, value] = (body.args as unknown[] | undefined) ?? [];
         if (constText(setting)?.toLowerCase() === 'client_encoding' && !isUtf8(value))

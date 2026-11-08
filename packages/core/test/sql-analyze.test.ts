@@ -456,10 +456,23 @@ describe('preflight', () => {
       // Over another connection, which commits there on its own.
       "select dblink_exec('dbname=other', 'insert into audit values (1)')",
       "select * from dblink('dbname=other', 'insert into audit values (1) returning 1') as t (n int)",
+      // Signals and server actions take effect at once, outside the transaction.
+      'select pg_catalog.pg_terminate_backend(12345, 1000)',
+      'select pg_cancel_backend(12345)',
+      'select pg_reload_conf()',
+      'select pg_stat_reset()',
+      "select pg_drop_replication_slot('slot')",
     ]) {
       const copy = await run(sql, 'postgresql', { transactionMode: 'atomic' });
       assert.equal(copy[0]?.code, 'irreversible_effect', sql);
     }
+    // A function of that name in another schema is not the catalog's.
+    assert.equal(
+      (await run('select app.pg_terminate_backend(1)', 'postgresql', { transactionMode: 'atomic' })).some(
+        (p) => p.code === 'irreversible_effect',
+      ),
+      false,
+    );
     assert.deepEqual(await run("select * from a into outfile '/tmp/a.csv'", 'mysql'), []);
     // TABLE and VALUES write files the same way.
     for (const sql of ["table a into outfile '/tmp/a.csv'", "values row(1) into dumpfile '/tmp/b.bin'"]) {
