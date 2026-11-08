@@ -97,6 +97,9 @@ describe('ConnectionService', () => {
     insertExecution(core, 'ex_running', id, 'running');
     const refs = core.connections.references(admin, id);
     assert.equal(refs.savedQueries.length, 1);
+    // Saved queries are private: others without connection management do not see their names.
+    assert.equal(core.connections.references(writer, id).savedQueries.length, 1, 'the owner');
+    assert.deepEqual(core.connections.references(reader, id).savedQueries, [], 'another user');
     assert.equal(refs.profiles[0]?.name, 'Claude Code analytics');
     assert.deepEqual(refs.activeExecutions, [{ id: 'ex_running', status: 'running' }]);
     assert.throws(() => core.connections.delete(admin, id), code('connection_busy'));

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import Banner from '../components/Banner.svelte';
   import ResultsPanel from '../components/ResultsPanel.svelte';
   import SidePanel from '../components/SidePanel.svelte';
@@ -45,6 +45,9 @@
   const runs = $derived(tab?.runs ?? []);
   const current = $derived(shownRun && views[shownRun] ? views[shownRun] : runs[0] ? views[runs[0]] : null);
   const active = $derived(runs.some((id) => views[id] && !TERMINAL.has(views[id].status)));
+  /** Tabs whose submission is on its way: a second Run (double click, repeated shortcut) waits. */
+  const submitting = new SvelteSet<string>();
+  const busy = $derived(active || (tab ? submitting.has(tab.id) : false));
 
   /** The analysis of exactly what the editor holds now; null while the text is being checked again. */
   const fresh = $derived(
@@ -213,7 +216,7 @@
     kind: 'statement' | 'script',
     sqlOverride?: { sql: string; base: number; scope: string; captureMode?: 'full' },
   ) {
-    if (!tab || !tab.connectionId || active) return;
+    if (!tab || !tab.connectionId || busy) return;
     // Running "the statement" must never fall back to the whole script: until the statement check
     // has resolved the range at the cursor, refuse (the shortcut can fire before the button exists).
     if (kind === 'statement' && !sqlOverride && !target) {
@@ -230,6 +233,9 @@
         : { sql: tab.sql.slice(target.from, target.to), base: target.from, scope: target.scope });
     if (!part.sql.trim()) return;
     rejected = null;
+    // Set before the first await, so a second call in the meantime returns above.
+    const tabId = tab.id;
+    submitting.add(tabId);
     try {
       const view = await api<ExecutionView>('POST', '/executions', {
         connectionId: tab.connectionId,
@@ -258,6 +264,8 @@
           )?.statements ?? [];
         rejected = { problems: (e.details?.problems ?? []) as Problem[], base: part.base, statements };
       } else toast(e instanceof Error ? e.message : String(e), 'danger');
+    } finally {
+      submitting.delete(tabId);
     }
   }
 
@@ -321,7 +329,7 @@
   <div class="toolbar">
     <label class="field"
       ><span>Connection</span>
-      <select bind:value={tab.connectionId} disabled={active}>
+      <select bind:value={tab.connectionId} disabled={busy}>
         {#each connections as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
       </select></label
     >
@@ -329,7 +337,7 @@
       ><span>Capture</span>
       <select
         value={settings.captureMode}
-        disabled={active}
+        disabled={busy}
         onchange={(e) =>
           update({ captureMode: (e.currentTarget as HTMLSelectElement).value as RunSettings['captureMode'] })}
       >
@@ -340,7 +348,7 @@
       ><span>Transaction</span>
       <select
         value={settings.transactionMode}
-        disabled={active}
+        disabled={busy}
         onchange={(e) =>
           update({
             transactionMode: (e.currentTarget as HTMLSelectElement).value as RunSettings['transactionMode'],
@@ -354,7 +362,7 @@
         ><input
           type="checkbox"
           checked={settings.continueOnError}
-          disabled={active}
+          disabled={busy}
           onchange={(e) => update({ continueOnError: (e.currentTarget as HTMLInputElement).checked })}
         /> Continue after error</label
       >
@@ -365,7 +373,7 @@
         min="1"
         placeholder="default"
         value={settings.timeoutSeconds ?? ''}
-        disabled={active}
+        disabled={busy}
         onchange={(e) =>
           update({ timeoutSeconds: Number((e.currentTarget as HTMLInputElement).value) || null })}
       /></label
@@ -374,7 +382,7 @@
       ><span>Keep results</span>
       <select
         value={String(settings.retainDays ?? '')}
-        disabled={active}
+        disabled={busy}
         onchange={(e) => update({ retainDays: Number((e.currentTarget as HTMLSelectElement).value) || null })}
       >
         <option value="">24 hours</option><option value="3">3 days</option><option value="7">7 days</option>
@@ -386,13 +394,13 @@
       {:else}
         <button
           class="button primary"
-          disabled={!target || !tab.connectionId}
+          disabled={!target || !tab.connectionId || busy}
           onclick={() => void run('statement')}
           data-testid="run-target">{target?.label ?? 'Run'}</button
         >
         <button
           class="button"
-          disabled={!tab.connectionId || !tab.sql.trim()}
+          disabled={!tab.connectionId || !tab.sql.trim() || busy}
           onclick={() => void run('script')}>Run script</button
         >
       {/if}

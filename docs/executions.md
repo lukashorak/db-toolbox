@@ -18,14 +18,14 @@ submit ─┬─► preflight_rejected                     (nothing ran)
 
 Status, transaction outcome and result completeness are reported separately.
 
-| Transaction outcome | Meaning                                                                     |
-| ------------------- | --------------------------------------------------------------------------- |
-| `not_started`       | Nothing ran                                                                 |
-| `none`              | Nothing to commit: read-only, or no write succeeded                         |
-| `committed`         | Every write is committed                                                    |
-| `partial_commit`    | Per statement: some writes are committed, then the run stopped              |
-| `rolled_back`       | Single transaction: nothing is committed                                    |
-| `unknown`           | The connection was lost during a write or during COMMIT. Check the database |
+| Transaction outcome | Meaning                                                                                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `not_started`       | Nothing ran                                                                                                                                      |
+| `none`              | Nothing to commit: read-only, or no write succeeded                                                                                              |
+| `committed`         | Every write is committed                                                                                                                         |
+| `partial_commit`    | Per statement: some writes are committed, then the run stopped                                                                                   |
+| `rolled_back`       | Single transaction: nothing is committed                                                                                                         |
+| `unknown`           | The connection was lost during a write or during COMMIT, or a procedure call failed (it may have committed part of its work). Check the database |
 
 ## Submission
 

@@ -539,6 +539,17 @@ for (const { engine, variable, prepare } of engines) {
         assert.deepEqual(core.executions.rows(writer, view.id, 1).rows, [['2', 'x']]);
       });
 
+      it('reports an unknown outcome, not a rollback, when a procedure fails after committing', async () => {
+        const view = await run('CALL wb_commit_then_fail()', { connectionId: writable });
+        assert.equal(view.status, 'failed');
+        assert.deepEqual(
+          [view.statements[0]?.status, view.statements[0]?.transactionOutcome, view.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+        assert.match(String(view.error?.message), /failed after a commit/);
+        assert.equal(await count("name = 'proc-committed'"), 1, 'the committed part stays');
+      });
+
       it('lets a procedure finish its writes when its rows reach the preview limit', async () => {
         const view = await run('CALL wb_report_then_write()', { connectionId: writable });
         assert.deepEqual([view.status, view.statements[0]?.status], ['succeeded', 'succeeded']);

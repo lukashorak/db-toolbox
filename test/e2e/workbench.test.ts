@@ -23,6 +23,7 @@ describe(
     let env: GuiEnv;
     let page: Page;
     let apiRequests = 0;
+    let submissions = 0;
 
     before(async () => {
       const url = String(process.env.POSTGRES_TEST_URL);
@@ -57,6 +58,7 @@ describe(
       page = await env.browser.newPage();
       page.on('request', (r) => {
         if (r.url().includes('/api/v1/')) apiRequests++;
+        if (r.method() === 'POST' && /\/api\/v1\/executions$/.test(r.url())) submissions++;
       });
       await env.signIn(page, 'alice', '/workbench');
     });
@@ -146,6 +148,30 @@ describe(
         .first()
         .waitFor({ timeout: 20_000 });
       await page.getByLabel('Transaction').selectOption('per_statement');
+    });
+
+    it('submits once when Run is pressed again before the first answer', async () => {
+      await setSql("INSERT INTO wb_items (name) VALUES ('gui-once')");
+      // Hold the submission's answer, so the later presses land while the first is on its way.
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const isSubmit = (r: { method(): string; url(): string }) =>
+        r.method() === 'POST' && /\/api\/v1\/executions$/.test(r.url());
+      await page.route('**/api/v1/executions', async (route) => {
+        if (isSubmit(route.request())) await held;
+        await route.continue();
+      });
+      const answered = page.waitForResponse((r) => isSubmit(r.request()));
+      const before = submissions;
+      await page.getByTestId('sql-editor').click();
+      await page.keyboard.press('Control+Shift+Enter');
+      await page.keyboard.press('Control+Shift+Enter');
+      await page.getByRole('button', { name: 'Run script' }).click({ force: true });
+      release();
+      await answered;
+      await page.unroute('**/api/v1/executions');
+      await finished('succeeded');
+      assert.equal(submissions - before, 1, 'one submission');
     });
 
     it('never runs a statement range of an earlier text', async () => {

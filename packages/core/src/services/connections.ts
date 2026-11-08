@@ -11,7 +11,7 @@ import {
   type ConnectionView,
   type Engine,
 } from '../domain/types.js';
-import { requirePermission } from '../security/policy.js';
+import { can, requirePermission } from '../security/policy.js';
 import { bool, int, type Row } from '../store/database.js';
 import { changedFields, isoNow, type ServiceContext } from './context.js';
 import { fieldError, isHost, isPemCertificate, parseInput } from './validation.js';
@@ -322,11 +322,16 @@ export class ConnectionService {
     requirePermission(actor, 'connections.view');
     this.row(id);
     const db = this.ctx.db;
+    // Saved queries are private to their owners. Only those who manage connections (and decide on
+    // disabling or deleting one) see everyone's; anyone else sees their own.
+    const everyone = can(actor, 'connections.manage');
     return {
       savedQueries: db
-        .all('SELECT id, name FROM saved_queries WHERE default_connection_id = :id ORDER BY lower(name)', {
-          id,
-        })
+        .all(
+          `SELECT id, name FROM saved_queries WHERE default_connection_id = :id
+             ${everyone ? '' : 'AND owner = :owner'} ORDER BY lower(name)`,
+          { id, ...(everyone ? {} : { owner: actor.subject }) },
+        )
         .map((r) => ({ id: String(r.id), name: String(r.name) })),
       profiles: db
         .all(

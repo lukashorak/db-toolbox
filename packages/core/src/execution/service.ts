@@ -929,6 +929,8 @@ export class ExecutionService {
             break;
           }
           const writes = !(st.kind === 'read' || (readOnly && st.kind === 'session'));
+          // A procedure can COMMIT part of its work and then fail: its failure promises no rollback.
+          const mayCommit = String(st.command).toUpperCase() === 'CALL';
           const startedAt = isoNow(this.ctx);
           const t0 = performance.now();
           this.ctx.db.run(
@@ -999,7 +1001,7 @@ export class ExecutionService {
               await session.rollback().catch(() => session.markDirty('rollback failed'));
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
-              : lost && writes && !readOnly
+              : (lost || mayCommit) && writes && !readOnly
                 ? 'unknown'
                 : writes && !readOnly
                   ? 'rolled_back'

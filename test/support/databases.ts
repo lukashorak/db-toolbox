@@ -150,6 +150,12 @@ export async function prepareMysql(url: string): Promise<void> {
         INSERT INTO wb_items (name)
           SELECT CONCAT('proc-after-report-', count(*)) FROM wb_numbers a CROSS JOIN wb_numbers b WHERE b.n <= 1000;
       END;
+      -- Commits part of its work, then fails: the failure promises no rollback.
+      CREATE PROCEDURE wb_commit_then_fail() BEGIN
+        INSERT INTO wb_items (name) VALUES ('proc-committed');
+        COMMIT;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'failed after a commit';
+      END;
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       -- Two branches that share one nested view: not a cycle.

@@ -18,12 +18,13 @@ import { buildServer, WEB_DIST, type WorkbenchServer } from '@workbench/api';
 import { freePort, KEYCLOAK_URL, KeycloakAdmin } from './keycloak.js';
 
 // Minimal Playwright surface used by the tests; the package resolves at run time.
+type RequestInfo = { url(): string; method(): string };
 export type Locator = {
   waitFor(options?: object): Promise<void>;
   textContent(): Promise<string | null>;
   inputValue(): Promise<string>;
   fill(v: string): Promise<void>;
-  click(): Promise<void>;
+  click(options?: { force?: boolean }): Promise<void>;
   focus(): Promise<void>;
   selectOption(v: string | { label: string }): Promise<unknown>;
   check(): Promise<void>;
@@ -45,7 +46,13 @@ export type Page = Locator & {
   getByTestId(id: string): Locator;
   waitForEvent(event: 'download'): Promise<{ path(): Promise<string>; suggestedFilename(): string }>;
   keyboard: { press(key: string): Promise<void> };
-  on(event: 'request', listener: (request: { url(): string; method(): string }) => void): void;
+  on(event: 'request', listener: (request: RequestInfo) => void): void;
+  route(
+    url: string,
+    handler: (route: { request(): RequestInfo; continue(): Promise<void> }) => unknown,
+  ): Promise<void>;
+  unroute(url: string): Promise<void>;
+  waitForResponse(predicate: (response: { request(): RequestInfo }) => boolean): Promise<unknown>;
   addScriptTag(options: { path: string }): Promise<unknown>;
   evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
   setViewportSize(size: { width: number; height: number }): Promise<void>;
