@@ -34,7 +34,6 @@
   let exportFormat = $state<'csv' | 'json'>('csv');
   let shareForm = $state({ profileId: '', minutes: 60 });
   let profiles = $state<{ id: string; name: string }[]>([]);
-  let busy = $state(false);
   /**
    * The result a side panel acts on, fixed when it opens. Showing another execution or result set
    * closes the panel (and drops one still loading), so a confirmation never applies to a result
@@ -42,6 +41,16 @@
    */
   type Target = { execution: string; title: string; index: number; sql: string; rows: number };
   let target = $state.raw<Target | null>(null);
+  /**
+   * The panel whose export or share is under way. One still running for a result no longer shown
+   * keeps its own target, and when it ends it touches only its own panel, not one opened since.
+   */
+  let busy = $state.raw<Target | null>(null);
+  const working = $derived(busy !== null && busy === target);
+  function finished(t: Target, closePanel: boolean): void {
+    if (closePanel && target === t) panel = null;
+    if (busy === t) busy = null;
+  }
 
   const statement = $derived(execution.statements[statementTab] ?? null);
   const sets = $derived(execution.resultSets.filter((r) => r.statement === statementTab));
@@ -179,7 +188,8 @@
   async function exportResult(previewOnly: boolean) {
     const t = target;
     if (!t) return;
-    busy = true;
+    busy = t;
+    let done = false;
     try {
       let created = await api<ExportView>('POST', `/executions/${t.execution}/results/${t.index}/exports`, {
         format: exportFormat,
@@ -192,11 +202,11 @@
       if (created.status !== 'ready') throw new Error(created.error?.message ?? 'The export failed.');
       const file = await download(`/exports/${created.id}/download`);
       toast(`${file.fileName} · ${created.rowCount} rows`, 'success');
-      panel = null;
+      done = true;
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'danger');
     } finally {
-      busy = false;
+      finished(t, done);
     }
   }
 
@@ -214,18 +224,19 @@
   async function share() {
     const t = target;
     if (!t) return;
-    busy = true;
+    busy = t;
+    let done = false;
     try {
       await api('POST', `/executions/${t.execution}/results/${t.index}/share`, {
         profileId: shareForm.profileId,
         minutes: Number(shareForm.minutes),
       });
       toast('Shared with the MCP profile until the approval expires.', 'success');
-      panel = null;
+      done = true;
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), 'danger');
     } finally {
-      busy = false;
+      finished(t, done);
     }
   }
 </script>
@@ -434,7 +445,7 @@
     <button class="button" onclick={() => (panel = null)}>Cancel</button>
     <button
       class="button primary"
-      disabled={busy}
+      disabled={working}
       onclick={() => void exportResult(panel === 'preview-export')}>Export and download</button
     >
   {/snippet}
@@ -466,7 +477,7 @@
   {/if}
   {#snippet footer()}
     <button class="button" onclick={() => (panel = null)}>Cancel</button>
-    <button class="button primary" disabled={busy || !shareForm.profileId} onclick={() => void share()}
+    <button class="button primary" disabled={working || !shareForm.profileId} onclick={() => void share()}
       >Share</button
     >
   {/snippet}

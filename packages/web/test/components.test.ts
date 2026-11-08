@@ -393,6 +393,25 @@ describe('results panel', () => {
       minutes: 60,
     });
     expect(api).not.toHaveBeenCalledWith('POST', '/executions/exe_b/results/0/share', expect.anything());
+
+    // A share still under way for A when B is shown and its dialog opened: when A's answer comes,
+    // B's dialog stays open and usable.
+    api.mockImplementationOnce(async () => profiles);
+    await fireEvent.click(shareButton());
+    await settle();
+    let answerShare: (value: unknown) => void = () => undefined;
+    api.mockImplementationOnce(() => new Promise((resolve) => (answerShare = resolve)));
+    await fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    await rerender({ execution: single('exe_b', 'B') });
+    await settle();
+    api.mockImplementationOnce(async () => profiles);
+    await fireEvent.click(shareButton());
+    await settle();
+    answerShare({});
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(screen.getByTestId('share-target').textContent).toContain('“B”');
+    expect((screen.getByRole('button', { name: 'Share' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('shows every result set a statement returned', async () => {
