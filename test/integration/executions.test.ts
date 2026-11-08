@@ -727,6 +727,23 @@ for (const { engine, variable, prepare } of engines) {
       });
     }
 
+    it('counts what functions a SELECT calls write, and lets them run past the preview limit', async () => {
+      const logged = async () => {
+        const view = await run('SELECT count(*) FROM wb_audit_log WHERE id = 7');
+        return Number(core.executions.rows(writer, view.id, 0).rows[0]?.[0]);
+      };
+      const before = await logged();
+      const one = await run('SELECT wb_fn_inno()');
+      assert.deepEqual([one.status, one.statements[0]?.transactionOutcome], ['succeeded', 'committed']);
+      // A function that only reads leaves the statement a read.
+      const reads = await run('SELECT wb_item_count()');
+      assert.deepEqual([reads.status, reads.statements[0]?.transactionOutcome], ['succeeded', 'none']);
+      // More rows than the preview keeps: the function still runs for every one of them.
+      const many = await run('SELECT wb_fn_inno() FROM wb_numbers');
+      assert.deepEqual([many.status, many.resultSets[0]?.completeness], ['succeeded', 'preview_limited']);
+      assert.equal(await logged(), before + 1 + 5000);
+    });
+
     it('reports quota_limited, never complete, when the per-execution limit is reached', async () => {
       const small = makeCore(join(dir, 'quota.sqlite'), { MAX_RESULT_BYTES: '20000' });
       try {

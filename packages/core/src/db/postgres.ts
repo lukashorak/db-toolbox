@@ -3,6 +3,7 @@ import Cursor from 'pg-cursor';
 import { DbError, mapPostgresError } from './errors.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
+import { UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
 import type {
   Cell,
   ColumnInfo,
@@ -177,8 +178,18 @@ export class PostgresAdapter implements DbAdapter {
   async tableEngine(): Promise<string | null> {
     return null;
   }
-  async functionEngine(): Promise<string | null> {
-    return null;
+  /**
+   * UNRESOLVED_VIEW when a user-defined VOLATILE function of that name exists, which may write;
+   * else null. PostgreSQL refuses data changes in STABLE and IMMUTABLE functions.
+   */
+  async functionEngine(fn: TableRef): Promise<string | null> {
+    const [row] = await this.#metaQuery(
+      `SELECT count(*) AS volatile FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.proname = $2 AND p.prokind IN ('f', 'w') AND p.provolatile = 'v'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND ($1::text IS NULL OR n.nspname = $1)`,
+      [fn.schema, fn.name],
+    );
+    return Number(row?.volatile ?? 0) > 0 ? UNRESOLVED_VIEW : null;
   }
 
   async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {

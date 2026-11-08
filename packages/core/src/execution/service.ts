@@ -5,7 +5,14 @@ import { DbError } from '../db/errors.js';
 import type { Cell, ColumnInfo, DbAdapter, DbSession } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
 import { newId } from '../domain/ids.js';
-import type { Actor, Completeness, ExecutionStatus, Role, TransactionOutcome } from '../domain/types.js';
+import type {
+  Actor,
+  Completeness,
+  Engine,
+  ExecutionStatus,
+  Role,
+  TransactionOutcome,
+} from '../domain/types.js';
 import { evaluateWritePolicy, requirePermission } from '../security/policy.js';
 import type { ConnectionService } from '../services/connections.js';
 import { isoNow, type ServiceContext } from '../services/context.js';
@@ -1002,7 +1009,13 @@ export class ExecutionService {
             };
             break;
           }
-          const writes = !(st.kind === 'read' || (readOnly && st.kind === 'session'));
+          // A read can still write through the functions it calls, unless the transaction is read-only.
+          const writesThroughFunctions =
+            st.kind === 'read' &&
+            !readOnly &&
+            (await this.#readMayWrite(adapter, String(st.sql), row.engine as Engine, database));
+          const writes =
+            writesThroughFunctions || !(st.kind === 'read' || (readOnly && st.kind === 'session'));
           // A procedure (or, in MySQL, a prepared statement, which may itself be a CALL or DDL) can
           // commit part of its work and then fail: its failure promises no rollback, whatever the error.
           const command = String(st.command).toUpperCase();
@@ -1034,8 +1047,9 @@ export class ExecutionService {
                 signal,
                 batchSize: sink.batchSize,
                 // Reaching the capture limit may end a read, never a statement that changes data:
-                // a procedure that returns rows and then writes must still finish.
-                onStop: st.kind === 'read' ? 'cancel' : 'drain',
+                // a procedure that returns rows and then writes must still finish, and so must a
+                // SELECT whose functions write for every row.
+                onStop: st.kind === 'read' && !writesThroughFunctions ? 'cancel' : 'drain',
               });
             } finally {
               // SET, user variables (SELECT @v := …) and the like stay on a pooled session: discard
@@ -1269,6 +1283,22 @@ export class ExecutionService {
     return problems.filter(
       (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
     );
+  }
+
+  /**
+   * A read calls a function that may write: MySQL, a stored function that writes or cannot be
+   * checked; PostgreSQL, a user-defined VOLATILE function. A lookup that fails counts as may-write.
+   */
+  async #readMayWrite(adapter: DbAdapter, sql: string, engine: Engine, database: string | null) {
+    for (const called of (await analyzeStatement(sql, engine)).callsFunctions ?? []) {
+      try {
+        const fn = engine === 'mysql' ? { ...called, schema: called.schema ?? database } : called;
+        if ((await adapter.functionEngine(fn)) !== null) return true;
+      } catch {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

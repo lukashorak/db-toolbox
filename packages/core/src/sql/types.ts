@@ -60,8 +60,9 @@ export interface StatementAnalysis {
    */
   writeTargetsUnknown?: boolean;
   /**
-   * MySQL: functions the statement calls that may be stored functions (names that are not built in),
-   * whose writes single-transaction mode must check like the statement's own.
+   * Functions the statement calls that may be user-defined (MySQL stored functions, PostgreSQL
+   * functions outside pg_catalog): they can write, even from a SELECT. MySQL single-transaction mode
+   * checks what they write like the statement's own writes.
    */
   callsFunctions?: TableRef[];
   /** MySQL `USE`: the database that later unqualified names in the session refer to. */

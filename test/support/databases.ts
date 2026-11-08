@@ -79,6 +79,9 @@ CREATE MATERIALIZED VIEW wb_item_stats AS SELECT count(*) AS n FROM wb_items;
 CREATE FUNCTION wb_item_count() RETURNS bigint LANGUAGE sql STABLE AS 'SELECT count(*) FROM wb_items';
 CREATE FUNCTION wb_add(a int, b int) RETURNS int LANGUAGE sql IMMUTABLE AS 'SELECT a + b';
 CREATE PROCEDURE wb_proc() LANGUAGE sql AS 'SELECT 1';
+-- Writes when a SELECT calls it.
+CREATE TABLE wb_audit_log (id int);
+CREATE FUNCTION wb_fn_inno() RETURNS int LANGUAGE sql VOLATILE AS 'INSERT INTO wb_audit_log VALUES (7); SELECT 7';
 -- Leaves a session setting and an advisory lock behind, out of sight of the statement analysis.
 CREATE FUNCTION wb_fn_leave_state() RETURNS int LANGUAGE sql AS
   'SELECT set_config(''wb.leak'', ''42'', false); SELECT pg_advisory_lock(4242); SELECT 1';

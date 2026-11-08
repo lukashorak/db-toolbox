@@ -334,6 +334,19 @@ describe('preflight', () => {
     assert.deepEqual(await calls('select F(1), f(2)'), [{ schema: null, name: 'f' }]);
   });
 
+  it('lists the PostgreSQL functions a statement calls that may be user-defined', async () => {
+    const calls = async (sql: string) => (await analyzeStatement(sql, 'postgresql')).callsFunctions ?? [];
+    assert.deepEqual(
+      await calls('select lower(name), app.f(1), g(2), pg_catalog.h(3), count(*) from t where k(x)'),
+      [
+        { schema: 'app', name: 'f' },
+        { schema: null, name: 'g' },
+        { schema: null, name: 'k' },
+      ],
+    );
+    assert.deepEqual(await calls('select extract(year from now())'), []);
+  });
+
   it('checks what called stored functions write in single-transaction mode', async () => {
     const tableEngine = async () => 'InnoDB';
     const asked: string[] = [];
