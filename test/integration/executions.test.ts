@@ -303,6 +303,13 @@ for (const { engine, variable, prepare } of engines) {
           String(throughViewFn.error?.message),
           /uses the view wb_v_fn_legacy_nested, which calls a stored function that writes to a MyISAM table/,
         );
+        // TABLE v reads the view as SELECT * FROM v does.
+        const throughTable = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-table-view'); TABLE wb_v_fn_legacy_nested",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(throughTable.status, 'preflight_rejected');
+        assert.match(String(throughTable.error?.message), /uses the view wb_v_fn_legacy_nested/);
         // A view over InnoDB tables is fine.
         const innoView = await settle(
           core,

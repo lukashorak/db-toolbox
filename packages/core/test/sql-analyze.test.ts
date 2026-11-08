@@ -389,6 +389,12 @@ describe('preflight', () => {
         engine,
       );
     }
+    // MySQL TABLE t is SELECT * FROM t; VALUES can read tables in subqueries.
+    assert.deepEqual(await named('TABLE wb_v ORDER BY 1 LIMIT 2', 'mysql'), ['.wb_v']);
+    assert.deepEqual(await named('TABLE app.a UNION ALL TABLE b', 'mysql'), ['.b', 'app.a']);
+    assert.deepEqual(await named('VALUES ROW((SELECT n FROM wb_v)), ROW(2)', 'mysql'), ['.wb_v']);
+    assert.deepEqual(await named('VALUES ROW((SELECT n FROM v)) UNION TABLE w', 'mysql'), ['.v', '.w']);
+    assert.deepEqual(await named('VALUES ROW(1, 2)', 'mysql'), []);
   });
 
   it('checks what called stored functions write in single-transaction mode', async () => {

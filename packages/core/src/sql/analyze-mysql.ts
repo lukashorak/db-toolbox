@@ -303,6 +303,36 @@ function functionName(node: Node): string {
   return String(parts?.at(-1)?.value ?? '').toLowerCase();
 }
 
+/**
+ * Tables and views a TABLE or VALUES statement reads, which the parser does not take: each
+ * `TABLE name` (TABLE t is SELECT * FROM t, also after UNION), and the subqueries of VALUES ROW(…),
+ * parsed as the derived table they can be (or, if that fails, the names after FROM and JOIN).
+ */
+function tablesOfTableOrValues(text: string, tokens: Token[]): TableRef[] {
+  const found = new Map<string, TableRef>();
+  const add = (ref: TableRef | undefined) => {
+    if (ref) found.set(`${ref.schema ?? ''}.${ref.name}`, ref);
+  };
+  const QUERY_START = new Set(['(', 'UNION', 'EXCEPT', 'INTERSECT', 'ALL', 'DISTINCT']);
+  tokens.forEach((t, i) => {
+    if (word(t) !== 'TABLE') return;
+    if (i > 0 && !QUERY_START.has(word(tokens[i - 1]) || (tokens[i - 1]?.text ?? ''))) return;
+    add(qualifiedName(tokens, i + 1));
+  });
+  if (tokens.some((t, i) => i > 0 && word(t) === 'SELECT')) {
+    try {
+      const { tableList, ast } = parser.parse(`SELECT * FROM (${text}) AS wb_values`, OPTIONS);
+      tablesReferenced(tableList, ast).forEach(add);
+    } catch {
+      tokens.forEach((t, i) => {
+        if ((word(t) === 'FROM' || word(t) === 'JOIN') && tokens[i + 1]?.text !== '(')
+          add(qualifiedName(tokens, i + 1));
+      });
+    }
+  }
+  return [...found.values()];
+}
+
 /** SELECT, WITH and parenthesised queries: decided from the parse tree. */
 function analyzeQuery(text: string): StatementAnalysis {
   let parsed: { ast: Node | Node[]; tableList: string[] };
@@ -484,6 +514,9 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       }
       const a = baseAnalysis('read', first);
       a.returnsRows = true;
+      // The tables and views it reads get a SELECT's checks: a view can call a function that writes.
+      const referenced = tablesOfTableOrValues(text, tokens);
+      if (referenced.length) a.referencesTables = referenced;
       return a;
     }
     case 'SHOW':
