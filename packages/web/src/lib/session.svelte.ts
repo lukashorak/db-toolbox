@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import { api } from './api';
 import type { ClientConfig } from './auth';
 import { ACTIVE } from './labels';
@@ -63,12 +64,64 @@ const toJob = (e: ExecutionSummary): Job => ({
   submittedAt: e.submittedAt,
 });
 
+type Progress = Pick<Job, 'status' | 'transactionOutcome'>;
+
+const STAGE: Record<string, number> = { queued: 0, running: 1, cancel_requested: 2 };
+/** How far an execution has come: statuses only move forward, and a finished one never changes. */
+const stage = (status: string) => STAGE[status] ?? 3;
+
+/**
+ * Shows `update` on `job` unless the job already shows a later status. Answers to requests and
+ * live events can arrive out of order, and an older one must not undo a newer one. `newer` says
+ * the update is at least as recent as what the job shows (a live event; events arrive in order),
+ * so it also wins at the same stage.
+ */
+function advance(job: Job, update: Progress, newer: boolean): void {
+  const ahead = stage(update.status) - stage(job.status);
+  if (ahead < 0 || (ahead === 0 && !newer)) return;
+  job.status = update.status;
+  job.transactionOutcome = update.transactionOutcome;
+}
+
 async function resync(): Promise<void> {
   const list = await api<ExecutionSummary[]>('GET', '/executions?limit=20');
-  jobs.items = list.map(toJob);
+  // Events that arrived while the list loaded can be newer than it: keep the later status.
+  const shown = new Map(
+    jobs.items.map((j) => [j.id, { status: j.status, transactionOutcome: j.transactionOutcome }]),
+  );
+  jobs.items = list.map((e) => {
+    const job = toJob(e);
+    const before = shown.get(e.id);
+    if (before) advance(job, before, false);
+    return job;
+  });
   if (can('disclosure.decide')) {
     jobs.pendingApprovals = (await api<unknown[]>('GET', '/approvals?status=pending')).length;
   }
+}
+
+/** Executions being looked up, with the newest event received for each meanwhile. */
+const lookups = new SvelteMap<string, Progress>();
+
+/**
+ * Adds an execution first seen in an event: one lookup at a time. The newest event received
+ * meanwhile then applies where it is further along than the answer.
+ */
+function lookUp(id: string, event: Progress): void {
+  const running = lookups.has(id);
+  lookups.set(id, event);
+  if (running) return;
+  void api<ExecutionSummary>('GET', `/executions/${id}`)
+    .then((e) => {
+      if (!jobs.items.some((j) => j.id === id)) jobs.items = [toJob(e), ...jobs.items].slice(0, 20);
+      const job = jobs.items.find((j) => j.id === id);
+      const latest = lookups.get(id);
+      if (!job) return;
+      advance(job, e, false);
+      if (latest) advance(job, latest, false);
+    })
+    .catch(() => undefined)
+    .finally(() => lookups.delete(id));
 }
 
 /** Starts following live status; returns a function that stops it. */
@@ -88,16 +141,8 @@ export function followJobs(): () => void {
       }
       if (event.type !== 'execution') return;
       const job = jobs.items.find((j) => j.id === event.data.id);
-      if (job) {
-        job.status = event.data.status;
-        job.transactionOutcome = event.data.transactionOutcome;
-      } else {
-        void api<ExecutionSummary>('GET', `/executions/${event.data.id}`)
-          .then((e) => {
-            if (!jobs.items.some((j) => j.id === e.id)) jobs.items = [toJob(e), ...jobs.items].slice(0, 20);
-          })
-          .catch(() => undefined);
-      }
+      if (job) advance(job, event.data, true);
+      else lookUp(event.data.id, event.data);
     },
   });
 }
