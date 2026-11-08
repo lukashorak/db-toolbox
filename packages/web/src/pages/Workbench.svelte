@@ -44,7 +44,14 @@
   const connection = $derived(connections.find((c) => c.id === tab?.connectionId) ?? null);
   const runs = $derived(tab?.runs ?? []);
   const current = $derived(shownRun && views[shownRun] ? views[shownRun] : runs[0] ? views[runs[0]] : null);
-  const active = $derived(runs.some((id) => views[id] && !TERMINAL.has(views[id].status)));
+  /**
+   * Runs whose last status check failed for a passing reason (the network, a rate limit, the server):
+   * they may still be running, so they count as active and the next poll asks again.
+   */
+  const unsure = new SvelteSet<string>();
+  const active = $derived(
+    runs.some((id) => unsure.has(id) || (views[id] && !TERMINAL.has(views[id].status))),
+  );
   /** Tabs whose submission is on its way: a second Run (double click, repeated shortcut) waits. */
   const submitting = new SvelteSet<string>();
   const busy = $derived(active || (tab ? submitting.has(tab.id) : false));
@@ -199,13 +206,18 @@
   async function load(id: string) {
     try {
       views[id] = await api<ExecutionView>('GET', `/executions/${id}`);
-    } catch {
-      // Expired or deleted: drop it from the tab.
-      if (tab) tab.runs = (tab.runs ?? []).filter((r) => r !== id);
+      unsure.delete(id);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Expired or deleted: drop it from the tab.
+        unsure.delete(id);
+        if (tab) tab.runs = (tab.runs ?? []).filter((r) => r !== id);
+      } else if (!views[id] || !TERMINAL.has(views[id].status)) unsure.add(id);
     }
   }
   async function refreshActive() {
-    for (const id of runs) if (views[id] && !TERMINAL.has(views[id].status)) await load(id);
+    for (const id of runs)
+      if (unsure.has(id) || (views[id] && !TERMINAL.has(views[id].status))) await load(id);
   }
 
   function update(patch: Partial<RunSettings>) {

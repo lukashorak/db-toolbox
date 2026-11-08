@@ -325,6 +325,33 @@ describe(
         .waitFor();
     });
 
+    it('keeps a running execution in its tab when status checks fail for a while', async () => {
+      await setSql('SELECT pg_sleep(3), 7 AS seven');
+      await page.getByTestId('run-target').click();
+      await finished('running');
+      // The status checks fail (the network, a rate limit): the run stays, and Run stays unavailable.
+      const status = '**/api/v1/executions/*';
+      await page.route(status, (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({
+              status: 503,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: 'internal', message: 'Unavailable for a moment' }),
+            })
+          : route.continue(),
+      );
+      try {
+        await new Promise((r) => setTimeout(r, 2500));
+        // Still active: Cancel in place of Run, and the running result shown.
+        assert.equal(await page.getByRole('button', { name: 'Cancel run' }).count(), 1);
+        assert.equal(await page.getByTestId('run-target').count(), 0);
+        assert.equal(await page.locator('[data-testid="results"][data-status="running"]').count(), 1);
+      } finally {
+        await page.unroute(status);
+      }
+      await finished('succeeded');
+    });
+
     it('recovers a running execution after a reload and in a new browser (AC7)', async () => {
       await setSql('SELECT pg_sleep(4), 42 AS answer');
       await page.getByTestId('run-target').click();
