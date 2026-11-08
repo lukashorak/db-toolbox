@@ -49,7 +49,8 @@
     } catch (e) {
       if (current()) error = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      // Only the newest load ends "Loading": an older one ending first would show an empty list.
+      if (current()) loading = false;
     }
   }
   onMount(load);

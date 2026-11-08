@@ -735,6 +735,54 @@ describe('answers that arrive after a newer request', () => {
     }
   });
 
+  it('connections: an older list load that ends first does not end "Loading" for the reload', async () => {
+    const original = api.getMockImplementation();
+    const answers: ((value: unknown) => void)[] = [];
+    const saved = {
+      id: 'cn',
+      name: 'New db',
+      engine: 'postgresql',
+      environment: 'development',
+      host: 'db',
+      port: 5432,
+      database: 'app',
+      schema: null,
+      username: 'u',
+      tlsMode: 'disable',
+      readOnly: false,
+      enabled: true,
+      lastTestResult: null,
+    };
+    api.mockImplementation(((method: string, url: string) => {
+      if (method === 'GET' && url === '/connections') return new Promise((r) => answers.push(r));
+      if (method === 'POST' && url === '/connections') return Promise.resolve(saved);
+      if (url.endsWith('/references'))
+        return Promise.resolve({ savedQueries: [], profiles: [], activeExecutions: [] });
+      return Promise.resolve([]);
+    }) as never);
+    session.permissions = ['connections.view', 'connections.manage'];
+    try {
+      render(Connections);
+      await settle();
+      // Saved while the first list is still loading: the save reloads the list.
+      await fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
+      await settle();
+      await fireEvent.click(screen.getAllByRole('button', { name: 'Add connection' }).at(-1) as HTMLElement);
+      await settle();
+      expect(answers).toHaveLength(2);
+      answers[0]?.([]);
+      await settle();
+      expect(screen.queryByText('No connections yet.')).toBeNull();
+      expect(screen.getByRole('status').textContent).toContain('Loading');
+      answers[1]?.([saved]);
+      await settle();
+      expect(screen.getAllByRole('button', { name: 'New db' }).length).toBeGreaterThan(0);
+    } finally {
+      session.permissions = [];
+      if (original) api.mockImplementation(original);
+    }
+  });
+
   it('settings: an audit filter applied while the events load keeps its own events', async () => {
     const original = api.getMockImplementation();
     let answerAll: (value: unknown) => void = () => undefined;
