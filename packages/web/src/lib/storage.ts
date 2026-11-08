@@ -42,6 +42,12 @@ export interface DraftTab {
   settings?: RunSettings;
   /** Executions started from this tab, newest first. */
   runs?: string[];
+  /**
+   * The request key of a submission the server has not answered yet (or whose answer was lost): it
+   * may have started there. The next Run sends it again, so the server returns that execution
+   * instead of starting the same SQL twice. Kept here, it survives a reload or another page.
+   */
+  pendingRequestKey?: string;
 }
 
 export const DEFAULT_SETTINGS: RunSettings = {

@@ -391,6 +391,12 @@ describe(
           .getByText(/Failed to fetch/)
           .first()
           .waitFor();
+        // A reload in between (or another page) does not lose the submission's key.
+        await page.reload();
+        await page
+          .getByTestId('run-target')
+          .getByText(/Run statement \d+/)
+          .waitFor();
         await page.getByTestId('run-target').click();
         await finished();
       } finally {

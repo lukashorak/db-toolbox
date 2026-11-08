@@ -54,12 +54,6 @@
   );
   /** Tabs whose submission is on its way: a second Run (double click, repeated shortcut) waits. */
   const submitting = new SvelteSet<string>();
-  /**
-   * Per tab, the request key of a submission whose answer was lost (the network, a server error): it
-   * may have reached the server. The next Run there sends the same key, so the server returns that
-   * execution instead of starting the same SQL twice, or says it exists (idempotency_conflict).
-   */
-  const pendingKeys = new SvelteMap<string, string>();
   const busy = $derived(active || (tab ? submitting.has(tab.id) : false));
 
   /** The analysis of exactly what the editor holds now; null while the text is being checked again. */
@@ -259,7 +253,11 @@
     // Set before the first await, so a second call in the meantime returns above.
     const tabId = tab.id;
     submitting.add(tabId);
-    const requestKey = pendingKeys.get(tabId) ?? crypto.randomUUID();
+    // Saved with the tab before sending, until the server answers: if the answer is lost, even across
+    // a reload, the next Run sends the same key, and the server returns that execution instead of
+    // starting the same SQL twice, or says it exists (idempotency_conflict).
+    const requestKey = origin.pendingRequestKey ?? crypto.randomUUID();
+    origin.pendingRequestKey = requestKey;
     try {
       const view = await api<ExecutionView>('POST', '/executions', {
         connectionId,
@@ -273,7 +271,7 @@
         ...(settings.timeoutSeconds ? { timeoutMs: settings.timeoutSeconds * 1000 } : {}),
         ...(settings.retainDays ? { retention: 'retained', retainDays: settings.retainDays } : {}),
       });
-      pendingKeys.delete(tabId);
+      delete origin.pendingRequestKey;
       bases.set(view.id, part.base);
       views[view.id] = view;
       origin.runs = [view.id, ...(origin.runs ?? [])].slice(0, 20);
@@ -281,8 +279,7 @@
     } catch (e) {
       // Without an answer from the server, the submission may have started there: keep its key.
       const uncertain = !(e instanceof ApiError) || e.status >= 500;
-      if (uncertain) pendingKeys.set(tabId, requestKey);
-      else pendingKeys.delete(tabId);
+      if (!uncertain) delete origin.pendingRequestKey;
       if (
         e instanceof ApiError &&
         e.code === 'idempotency_conflict' &&
