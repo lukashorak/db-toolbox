@@ -404,6 +404,29 @@ for (const { engine, variable, prepare } of engines) {
       },
     );
 
+    it('a read that wrote through a function, whose result could not be stored, reports an unknown outcome', async () => {
+      // SELECT wb_fn_inno() writes to an InnoDB table and commits; then storing its result fails.
+      const db = core.db as unknown as { run: (sql: string, params?: unknown) => unknown };
+      const run = db.run.bind(db);
+      let fail = true;
+      db.run = (sql: string, params?: unknown) => {
+        if (fail && sql.includes('INSERT INTO result_sets')) {
+          fail = false;
+          throw new Error('database or disk is full');
+        }
+        return run(sql, params);
+      };
+      try {
+        const done = await settle(core, (await submit('SELECT wb_fn_inno()')).id);
+        assert.deepEqual(
+          [done.status, done.statements[0]?.transactionOutcome, done.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+      } finally {
+        db.run = run;
+      }
+    });
+
     it('a read-only connection rejects writes before running and runs reads read-only', async () => {
       const rejected = await core.executions.submit(writer, {
         connectionId: readOnly,

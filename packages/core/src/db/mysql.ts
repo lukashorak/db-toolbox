@@ -862,6 +862,9 @@ class MysqlSession implements DbSession {
         }),
       );
     } catch (error) {
+      // The sink's own failure (storing the rows) is not the database's: the statement may have
+      // finished, and committed, before it. It is passed on as it is.
+      if (failed !== null && error === failed && !guard.abandoned) throw error;
       const mapped = guard.abandoned ? guard.error() : mapMysqlError(error);
       const stoppedOnRequest =
         interrupted === 'stopped' && (mapped.code === '1317' || mapped.code === '3024');
