@@ -23,7 +23,15 @@ import {
   type ResultSink,
 } from '@workbench/core';
 import { MYSQL_CORPUS, POSTGRES_CORPUS } from '../fixtures/classification.js';
-import { certs, DATABASE, prepareMysql, preparePostgres, READER, targetFrom } from '../support/databases.js';
+import {
+  certs,
+  DATABASE,
+  prepareMysql,
+  preparePostgres,
+  READER,
+  targetFrom,
+  WRITER,
+} from '../support/databases.js';
 import { skipUnless } from '../support/services.js';
 
 function collect(stopAfter?: number) {
@@ -207,6 +215,28 @@ for (const { engine, variable, prepare } of engines) {
             'MyISAM (written by a trigger)',
           );
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_audited_inno' }), 'InnoDB');
+          // Only triggers the write can fire count: a DELETE trigger does not concern an INSERT.
+          assert.equal(
+            await adapter.tableEngine({ schema: null, name: 'wb_del_trig', events: ['INSERT'] }),
+            'InnoDB',
+          );
+          assert.equal(
+            await adapter.tableEngine({ schema: null, name: 'wb_del_trig', events: ['DELETE'] }),
+            'MyISAM (written by a trigger)',
+          );
+          assert.equal(
+            await adapter.tableEngine({ schema: null, name: 'wb_del_trig', events: ['INSERT', 'DELETE'] }),
+            'MyISAM (written by a trigger)',
+            'REPLACE fires delete triggers too',
+          );
+          // An account without TRIGGER cannot see triggers: no triggers listed proves nothing.
+          const writer = await registry.get({
+            ...target({ id: 'cn_writer_mysql', username: WRITER.username, password: WRITER.password }),
+            updatedAt: 'v1',
+          });
+          assert.equal(await writer.tableEngine({ schema: null, name: 'wb_audited' }), 'unresolved view');
+          assert.equal(await writer.tableEngine({ schema: null, name: 'wb_orders' }), 'unresolved view');
+          assert.equal(await writer.tableEngine({ schema: null, name: 'wb_items' }), 'InnoDB');
           // A lookup whose signal has aborted starts no query.
           await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {
             name: 'AbortError',
@@ -229,8 +259,8 @@ for (const { engine, variable, prepare } of engines) {
             const before = await questions();
             assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_g5' }), 'InnoDB');
             const asked = (await questions()) - before - 1;
-            // Two queries per view, plus the base table and its triggers.
-            assert.ok(asked <= 2 * 16 + 2, `${asked} metadata queries`);
+            // Two queries per view, plus the base table, its triggers and trigger visibility.
+            assert.ok(asked <= 2 * 16 + 3, `${asked} metadata queries`);
           } finally {
             await root.end();
           }

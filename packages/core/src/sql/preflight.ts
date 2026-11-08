@@ -160,17 +160,17 @@ export async function preflight(
         });
       }
       for (const written of s.analysis.writesTables) {
-        const table: TableRef = { schema: written.schema ?? database, name: written.name };
+        const table: TableRef = { ...written, schema: written.schema ?? database };
         // Exact case: on servers with case-sensitive names, `Ledger` and `ledger` are two tables.
-        const key = `${table.schema ?? ''}.${table.name}`;
+        const key = `${table.schema ?? ''}.${table.name}|${table.events?.join(',') ?? '*'}`;
         if (!seen.has(key)) seen.set(key, await options.tableEngine(table));
         const engine = seen.get(key);
         if (engine === UNRESOLVED_VIEW) {
           problems.push({
             code: 'unchecked_write_target',
             statement: s.index,
-            message: `${label(s)} writes through the view ${table.schema ? `${table.schema}.` : ''}${table.name}, whose tables could not be determined, so whether the write can roll back cannot be checked.`,
-            hint: 'Use per-statement mode, or write to the tables directly.',
+            message: `${label(s)} writes to ${table.schema ? `${table.schema}.` : ''}${table.name}, whose effects could not be determined (the tables beneath a view, or triggers the account cannot see), so whether the write can roll back cannot be checked.`,
+            hint: 'Use per-statement mode. On MySQL, an account needs the TRIGGER privilege to see a table’s triggers.',
           });
         } else if (engine && !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) {
           problems.push({

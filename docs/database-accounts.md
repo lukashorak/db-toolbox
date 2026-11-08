@@ -81,6 +81,18 @@ GRANT SELECT, SHOW VIEW ON app.* TO 'workbench_ro'@'%';
 GRANT SHOW_ROUTINE ON *.* TO 'workbench_ro'@'%';
 ```
 
+### Writable account
+
+For connections that may change data. To run a script as **one transaction**, the workbench checks that every table it writes can roll back. That includes the tables that triggers write, and MySQL shows a table's triggers only to accounts that hold `TRIGGER` on it. Without that privilege, single-transaction writes to the table are refused: use per-statement mode, or grant it.
+
+```sql
+CREATE USER 'workbench_rw'@'%' IDENTIFIED BY '<generated>';
+GRANT SELECT, INSERT, UPDATE, DELETE, SHOW VIEW ON app.* TO 'workbench_rw'@'%';
+-- Lets the single-transaction check see triggers. TRIGGER also allows creating and dropping
+-- triggers, so grant it only where that is acceptable.
+GRANT TRIGGER ON app.* TO 'workbench_rw'@'%';
+```
+
 ### Monitoring account
 
 `PROCESS` shows every session's query; `performance_schema` gives lock waits and statement digests:

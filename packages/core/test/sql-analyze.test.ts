@@ -131,7 +131,7 @@ describe('statement classification', () => {
     assert.equal((await analyzeStatement('create index i on t (a)', 'postgresql')).noTransactionBlock, false);
     assert.deepEqual(
       (await analyzeStatement('update shop.t join u on t.id = u.id set t.a = 1', 'mysql')).writesTables,
-      [{ schema: 'shop', name: 't' }],
+      [{ schema: 'shop', name: 't', events: ['UPDATE'] }],
     );
     assert.equal(
       (await analyzeStatement('create table t (a int) engine = MyISAM', 'mysql')).declaredEngine,
@@ -244,6 +244,21 @@ describe('preflight', () => {
     );
   });
 
+  it('records which trigger events each MySQL write can fire', async () => {
+    const events = async (sql: string) =>
+      (await analyzeStatement(sql, 'mysql')).writesTables.map((t) => [t.name, t.events]);
+    assert.deepEqual(await events('insert into t values (1)'), [['t', ['INSERT']]]);
+    assert.deepEqual(await events('insert into t values (1) on duplicate key update v = 2'), [
+      ['t', ['INSERT', 'UPDATE']],
+    ]);
+    assert.deepEqual(await events('replace into t values (1)'), [['t', ['INSERT', 'DELETE']]]);
+    assert.deepEqual(await events('update t set v = 1'), [['t', ['UPDATE']]]);
+    assert.deepEqual(await events('delete from t where v = 1'), [['t', ['DELETE']]]);
+    assert.deepEqual(await events("load data infile '/tmp/x' replace into table t"), [
+      ['t', ['INSERT', 'DELETE']],
+    ]);
+  });
+
   it('checks names in exact case, and refuses writes through views whose tables are unknown', async () => {
     const asked: string[] = [];
     const tableEngine = async (t: { schema: string | null; name: string }) => {
@@ -272,7 +287,7 @@ describe('preflight', () => {
       "load data infile '/tmp/x.csv' ignore into table `app`.`legacy` fields terminated by ','",
       'mysql',
     );
-    assert.deepEqual(load.writesTables, [{ schema: 'app', name: 'legacy' }]);
+    assert.deepEqual(load.writesTables, [{ schema: 'app', name: 'legacy', events: ['INSERT'] }]);
     const problems = await run(
       "insert into t values (1); load data infile '/tmp/x.csv' into table legacy; select 1 from missing",
       'mysql',

@@ -13,9 +13,14 @@ export const UNRESOLVED_VIEW = 'unresolved view';
 /** MySQL storage engines that roll back (lower case). */
 export const TRANSACTIONAL_ENGINES = new Set(['innodb', 'ndb', 'ndbcluster']);
 
+/** Row events a write can fire triggers for (MySQL). */
+export type TriggerEvent = 'INSERT' | 'UPDATE' | 'DELETE';
+
 export interface TableRef {
   schema: string | null;
   name: string;
+  /** The trigger events the write can fire on this table; all of them when absent. */
+  events?: TriggerEvent[];
 }
 
 export interface StatementAnalysis {

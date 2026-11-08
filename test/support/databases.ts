@@ -10,6 +10,8 @@ import type { ConnectionTarget } from '@workbench/core';
 
 export const DATABASE = 'workbench_it';
 export const READER = { username: 'wb_reader', password: 'reader-pw' };
+/** MySQL: may change data, and holds TRIGGER (sees triggers) on wb_items only. */
+export const WRITER = { username: 'wb_writer', password: 'writer-pw' };
 
 export function certs() {
   const dir = process.env.INTEGRATION_CERTS ?? '.integration/certs';
@@ -185,6 +187,10 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE TABLE wb_audited_inno (id int PRIMARY KEY) ENGINE=InnoDB;
       CREATE TRIGGER wb_audited_inno_log AFTER INSERT ON wb_audited_inno FOR EACH ROW
         BEGIN INSERT INTO wb_audit_log VALUES (NEW.id); END;
+      -- Only a DELETE trigger writes to MyISAM: inserts cannot fire it.
+      CREATE TABLE wb_del_trig (id int PRIMARY KEY) ENGINE=InnoDB;
+      CREATE TRIGGER wb_del_trig_legacy AFTER DELETE ON wb_del_trig FOR EACH ROW
+        INSERT INTO wb_legacy VALUES (OLD.id + 2000, 'deleted');
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       -- Two branches that share one nested view: not a cycle.
@@ -200,6 +206,10 @@ export async function prepareMysql(url: string): Promise<void> {
       INSERT INTO wb_items (name, price, payload, raw, big, flag) VALUES
         ('alpha', 12.50, '{"a": [1, 2]}', 0x00ff10, 9007199254740993, b'1'),
         ('beta', NULL, NULL, NULL, NULL, NULL);
+      DROP USER IF EXISTS '${WRITER.username}'@'%';
+      CREATE USER '${WRITER.username}'@'%' IDENTIFIED BY '${WRITER.password}';
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${WRITER.username}'@'%';
+      GRANT TRIGGER ON ${DATABASE}.wb_items TO '${WRITER.username}'@'%';
       DROP USER IF EXISTS '${READER.username}'@'%';
       CREATE USER '${READER.username}'@'%' IDENTIFIED BY '${READER.password}';
       GRANT SELECT ON ${DATABASE}.* TO '${READER.username}'@'%';

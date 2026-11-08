@@ -1269,7 +1269,7 @@ export class ExecutionService {
     for (const table of analysis.writesTables) {
       let engine: string | null;
       try {
-        engine = await adapter.tableEngine({ schema: table.schema ?? database, name: table.name });
+        engine = await adapter.tableEngine({ ...table, schema: table.schema ?? database });
       } catch {
         return false;
       }

@@ -1,7 +1,7 @@
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptions } from 'mysql2';
 import { analyzeMysql } from '../sql/analyze-mysql.js';
 import { splitStatements } from '../sql/split.js';
-import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef } from '../sql/types.js';
+import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
 
@@ -206,7 +206,7 @@ export class MysqlAdapter implements DbAdapter {
    * be determined (no privilege, a cycle, nesting deeper than 16) reports UNRESOLVED_VIEW.
    */
   async tableEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {
-    return this.#engineOf(table.schema, table.name, [], new Map(), signal);
+    return this.#engineOf(table.schema, table.name, [], new Map(), signal, table.events);
   }
 
   /**
@@ -220,10 +220,11 @@ export class MysqlAdapter implements DbAdapter {
     ancestors: string[],
     known: Map<string, string | null>,
     signal?: AbortSignal,
+    events?: TriggerEvent[],
   ): Promise<string | null> {
-    const asked = `${schema ?? ''}.${name}`;
+    const asked = `${schema ?? ''}.${name}|${events?.join(',') ?? '*'}`;
     if (known.has(asked)) return known.get(asked) ?? null;
-    const engine = await this.#resolveEngine(schema, name, ancestors, known, signal);
+    const engine = await this.#resolveEngine(schema, name, ancestors, known, signal, events);
     known.set(asked, engine);
     return engine;
   }
@@ -234,6 +235,7 @@ export class MysqlAdapter implements DbAdapter {
     ancestors: string[],
     known: Map<string, string | null>,
     signal?: AbortSignal,
+    events?: TriggerEvent[],
   ): Promise<string | null> {
     const [row] = await this.#metaQuery(
       `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES
@@ -246,14 +248,20 @@ export class MysqlAdapter implements DbAdapter {
     if (row.type !== 'VIEW') {
       const engine = row.engine ? String(row.engine) : null;
       if (!engine || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
-      // Triggers on the table write other tables in the same statement: those decide too.
+      // Triggers the write can fire write other tables in the same statement: those decide too.
+      const fired = events?.length ? events : (['INSERT', 'UPDATE', 'DELETE'] as TriggerEvent[]);
       const triggers = await this.#metaQuery(
         `SELECT TRIGGER_SCHEMA AS db, ACTION_STATEMENT AS body FROM information_schema.TRIGGERS
-          WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?`,
-        [row.db, name],
+          WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+            AND EVENT_MANIPULATION IN (${fired.map(() => '?').join(', ')})`,
+        [row.db, name, ...fired],
         signal,
       );
-      if (!triggers.length) return engine;
+      // MySQL lists only the triggers of tables the account holds TRIGGER on: none listed proves
+      // nothing without that privilege.
+      if (!triggers.length) {
+        return (await this.#seesTriggers(String(row.db), name, signal)) ? engine : UNRESOLVED_VIEW;
+      }
       if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
       for (const trigger of triggers) {
         const targets = triggerWrites(String(trigger.body));
@@ -265,6 +273,7 @@ export class MysqlAdapter implements DbAdapter {
             [...ancestors, key],
             known,
             signal,
+            target.events,
           );
           if (written === null || written === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
           const base = written.split(' ')[0] ?? written;
@@ -289,6 +298,27 @@ export class MysqlAdapter implements DbAdapter {
       found ??= engine;
     }
     return found;
+  }
+
+  /** The account holds TRIGGER on the table (globally, on its schema or on the table itself). */
+  async #seesTriggers(db: string, table: string, signal?: AbortSignal): Promise<boolean> {
+    const rows = await this.#metaQuery(
+      `SELECT 1 AS ok FROM (
+          SELECT GRANTEE FROM information_schema.USER_PRIVILEGES WHERE PRIVILEGE_TYPE = 'TRIGGER'
+          UNION ALL
+          SELECT GRANTEE FROM information_schema.SCHEMA_PRIVILEGES
+            WHERE PRIVILEGE_TYPE = 'TRIGGER' AND ? LIKE TABLE_SCHEMA
+          UNION ALL
+          SELECT GRANTEE FROM information_schema.TABLE_PRIVILEGES
+            WHERE PRIVILEGE_TYPE = 'TRIGGER' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
+        ) p
+        WHERE p.GRANTEE = CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''',
+                                 SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')
+        LIMIT 1`,
+      [db, db, table],
+      signal,
+    );
+    return rows.length > 0;
   }
 
   activeSessions(): number {

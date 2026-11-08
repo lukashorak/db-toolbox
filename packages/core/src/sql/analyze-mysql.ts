@@ -1,6 +1,6 @@
 import mysqlParser from 'node-sql-parser/build/mysql.js';
 import { significant, tokenize, type Token } from './lexer.js';
-import { baseAnalysis, unsafe, type StatementAnalysis, type TableRef } from './types.js';
+import { baseAnalysis, unsafe, type StatementAnalysis, type TableRef, type TriggerEvent } from './types.js';
 
 const parser = new mysqlParser.Parser();
 const OPTIONS = { database: 'MySQL' };
@@ -128,11 +128,35 @@ function expandExecutableComments(text: string): string {
   return out;
 }
 
-function tablesWritten(tableList: string[]): TableRef[] {
+/**
+ * Tables a statement writes, with the trigger events each can fire: INSERT … ON DUPLICATE KEY
+ * UPDATE also updates, and REPLACE deletes the row it replaces.
+ */
+function tablesWritten(tableList: string[], text: string): TableRef[] {
+  const upsert = /\bON\s+DUPLICATE\s+KEY\s+UPDATE\b/i.test(text);
+  // The parser reports REPLACE INTO as an insert.
+  const replace = /^\s*REPLACE\b/i.test(text);
+  const eventsOf = (op: string): TriggerEvent[] => {
+    switch (op.toLowerCase()) {
+      case 'insert':
+        if (replace) return ['INSERT', 'DELETE'];
+        return upsert ? ['INSERT', 'UPDATE'] : ['INSERT'];
+      case 'replace':
+        return ['INSERT', 'DELETE'];
+      case 'update':
+        return ['UPDATE'];
+      default:
+        return ['DELETE'];
+    }
+  };
   return tableList
     .map((entry) => entry.split('::'))
     .filter(([op]) => /^(insert|update|delete|replace)$/i.test(op ?? ''))
-    .map(([, schema, name]) => ({ schema: schema && schema !== 'null' ? schema : null, name: name ?? '' }))
+    .map(([op, schema, name]) => ({
+      schema: schema && schema !== 'null' ? schema : null,
+      name: name ?? '',
+      events: eventsOf(op ?? ''),
+    }))
     .filter((t) => t.name && t.name !== 'null');
 }
 
@@ -170,7 +194,7 @@ function analyzeQuery(text: string): StatementAnalysis {
   const type = String(root.type ?? '').toLowerCase();
   if (type !== 'select') {
     const a = unsafe(baseAnalysis('write', type.toUpperCase()), 'modifies data');
-    a.writesTables = tablesWritten(parsed.tableList);
+    a.writesTables = tablesWritten(parsed.tableList, text);
     if (!a.writesTables.length) a.writeTargetsUnknown = true;
     return a;
   }
@@ -378,7 +402,7 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       const a = write(first, 'modifies data');
       try {
         const { tableList } = parser.parse(text, OPTIONS);
-        a.writesTables = tablesWritten(tableList);
+        a.writesTables = tablesWritten(tableList, text);
       } catch {
         a.reasons.push('the statement could not be parsed; the database will report any syntax error');
       }
@@ -409,7 +433,9 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
         // LOAD DATA … INTO TABLE name …: the table whose storage engine decides whether it rolls back.
         const into = tokens.findIndex((t, i) => word(t) === 'INTO' && word(tokens[i + 1]) === 'TABLE');
         const target = into === -1 ? undefined : qualifiedName(tokens, into + 2);
-        if (target) a.writesTables = [target];
+        // LOAD DATA … REPLACE deletes the rows it replaces.
+        const events: TriggerEvent[] = words.includes('REPLACE') ? ['INSERT', 'DELETE'] : ['INSERT'];
+        if (target) a.writesTables = [{ ...target, events }];
         else a.writeTargetsUnknown = true;
       }
       return a;
