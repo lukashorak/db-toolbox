@@ -12,6 +12,8 @@ export const DATABASE = 'workbench_it';
 export const READER = { username: 'wb_reader', password: 'reader-pw' };
 /** MySQL: may change data, and holds TRIGGER (sees triggers) on wb_items only. */
 export const WRITER = { username: 'wb_writer', password: 'writer-pw' };
+/** MySQL: may change data, and sees triggers through a default role that grants TRIGGER. */
+export const ROLE_WRITER = { username: 'wb_role_writer', password: 'role-writer-pw' };
 
 export function certs() {
   const dir = process.env.INTEGRATION_CERTS ?? '.integration/certs';
@@ -206,6 +208,14 @@ export async function prepareMysql(url: string): Promise<void> {
       INSERT INTO wb_items (name, price, payload, raw, big, flag) VALUES
         ('alpha', 12.50, '{"a": [1, 2]}', 0x00ff10, 9007199254740993, b'1'),
         ('beta', NULL, NULL, NULL, NULL, NULL);
+      DROP USER IF EXISTS '${ROLE_WRITER.username}'@'%';
+      DROP ROLE IF EXISTS 'wb_trigger_viewer';
+      CREATE ROLE 'wb_trigger_viewer';
+      GRANT TRIGGER ON ${DATABASE}.* TO 'wb_trigger_viewer';
+      CREATE USER '${ROLE_WRITER.username}'@'%' IDENTIFIED BY '${ROLE_WRITER.password}';
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${ROLE_WRITER.username}'@'%';
+      GRANT 'wb_trigger_viewer' TO '${ROLE_WRITER.username}'@'%';
+      SET DEFAULT ROLE 'wb_trigger_viewer' TO '${ROLE_WRITER.username}'@'%';
       DROP USER IF EXISTS '${WRITER.username}'@'%';
       CREATE USER '${WRITER.username}'@'%' IDENTIFIED BY '${WRITER.password}';
       GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${WRITER.username}'@'%';

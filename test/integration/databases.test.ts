@@ -29,6 +29,7 @@ import {
   prepareMysql,
   preparePostgres,
   READER,
+  ROLE_WRITER,
   targetFrom,
   WRITER,
 } from '../support/databases.js';
@@ -237,6 +238,20 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_audited' }), 'unresolved view');
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_orders' }), 'unresolved view');
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_items' }), 'InnoDB');
+          // TRIGGER through an active (default) role counts as well.
+          const roleWriter = await registry.get({
+            ...target({
+              id: 'cn_role_writer_mysql',
+              username: ROLE_WRITER.username,
+              password: ROLE_WRITER.password,
+            }),
+            updatedAt: 'v1',
+          });
+          assert.equal(await roleWriter.tableEngine({ schema: null, name: 'wb_orders' }), 'InnoDB');
+          assert.equal(
+            await roleWriter.tableEngine({ schema: null, name: 'wb_audited' }),
+            'MyISAM (written by a trigger)',
+          );
           // A lookup whose signal has aborted starts no query.
           await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {
             name: 'AbortError',
@@ -259,8 +274,8 @@ for (const { engine, variable, prepare } of engines) {
             const before = await questions();
             assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_g5' }), 'InnoDB');
             const asked = (await questions()) - before - 1;
-            // Two queries per view, plus the base table, its triggers and trigger visibility.
-            assert.ok(asked <= 2 * 16 + 3, `${asked} metadata queries`);
+            // Two queries per view, plus the base table, its triggers and the session's grants (2).
+            assert.ok(asked <= 2 * 16 + 4, `${asked} metadata queries`);
           } finally {
             await root.end();
           }

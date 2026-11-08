@@ -83,7 +83,7 @@ GRANT SHOW_ROUTINE ON *.* TO 'workbench_ro'@'%';
 
 ### Writable account
 
-For connections that may change data. To run a script as **one transaction**, the workbench checks that every table it writes can roll back. That includes the tables that triggers write, and MySQL shows a table's triggers only to accounts that hold `TRIGGER` on it. Without that privilege, single-transaction writes to the table are refused: use per-statement mode, or grant it.
+For connections that may change data. To run a script as **one transaction**, the workbench checks that every table it writes can roll back. That includes the tables that triggers write, and MySQL shows a table's triggers only to accounts that hold `TRIGGER` on it, granted directly or through an active (for example default) role. Without that privilege, single-transaction writes to the table are refused: use per-statement mode, or grant it.
 
 ```sql
 CREATE USER 'workbench_rw'@'%' IDENTIFIED BY '<generated>';

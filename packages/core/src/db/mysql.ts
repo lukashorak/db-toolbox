@@ -5,6 +5,48 @@ import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEven
 
 const METADATA_TIMEOUT_MS = 30_000;
 
+/** Where a lookup keeps the session's SHOW GRANTS lines (no table name contains a NUL). */
+const GRANTS_KEY = '\u0000grants';
+
+/** A backticked or bare identifier, unquoted. */
+const unquote = (name: string) =>
+  name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1).replace(/``/g, '`') : name;
+
+/** A grant's schema pattern (`app\\_%` style: % and _ are wildcards, \\ escapes) against a name. */
+function schemaMatches(pattern: string, name: string): boolean {
+  let regex = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i] as string;
+    if (c === '\\' && i + 1 < pattern.length)
+      regex += (pattern[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    else if (c === '%') regex += '.*';
+    else if (c === '_') regex += '.';
+    else regex += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${regex}$`).test(name);
+}
+
+/**
+ * A SHOW GRANTS line (`GRANT …` or, with partial revokes, `REVOKE …`) that covers TRIGGER on the
+ * table: on *.*, on its schema (or a matching pattern), or on the table itself.
+ */
+function grantsTrigger(line: string, verb: 'GRANT' | 'REVOKE', db: string, table: string): boolean {
+  const m = new RegExp(`^${verb} (.+?) ON (.+?) (?:TO|FROM) `).exec(line);
+  if (!m) return false;
+  const privileges = (m[1] ?? '')
+    .replace(/\([^)]*\)/g, '')
+    .split(',')
+    .map((p) => p.trim().toUpperCase());
+  if (!privileges.some((p) => p === 'TRIGGER' || p === 'ALL PRIVILEGES' || p === 'ALL')) return false;
+  const target = (m[2] ?? '').trim();
+  if (target === '*.*') return true;
+  const parts = /^(`(?:[^`]|``)*`|[^.`]+)\.(`(?:[^`]|``)*`|\*)$/.exec(target);
+  if (!parts) return false;
+  const schema = unquote(parts[1] ?? '');
+  if (parts[2] === '*') return schemaMatches(schema, db);
+  return schema === db && unquote(parts[2] ?? '') === table;
+}
+
 /**
  * Tables a trigger body writes, or null when they cannot be determined (compound statements, calls,
  * anything but plain writes, reads and SET NEW.col = …).
@@ -260,7 +302,7 @@ export class MysqlAdapter implements DbAdapter {
       // MySQL lists only the triggers of tables the account holds TRIGGER on: none listed proves
       // nothing without that privilege.
       if (!triggers.length) {
-        return (await this.#seesTriggers(String(row.db), name, signal)) ? engine : UNRESOLVED_VIEW;
+        return (await this.#seesTriggers(String(row.db), name, known, signal)) ? engine : UNRESOLVED_VIEW;
       }
       if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
       for (const trigger of triggers) {
@@ -300,25 +342,35 @@ export class MysqlAdapter implements DbAdapter {
     return found;
   }
 
-  /** The account holds TRIGGER on the table (globally, on its schema or on the table itself). */
-  async #seesTriggers(db: string, table: string, signal?: AbortSignal): Promise<boolean> {
-    const rows = await this.#metaQuery(
-      `SELECT 1 AS ok FROM (
-          SELECT GRANTEE FROM information_schema.USER_PRIVILEGES WHERE PRIVILEGE_TYPE = 'TRIGGER'
-          UNION ALL
-          SELECT GRANTEE FROM information_schema.SCHEMA_PRIVILEGES
-            WHERE PRIVILEGE_TYPE = 'TRIGGER' AND ? LIKE TABLE_SCHEMA
-          UNION ALL
-          SELECT GRANTEE FROM information_schema.TABLE_PRIVILEGES
-            WHERE PRIVILEGE_TYPE = 'TRIGGER' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
-        ) p
-        WHERE p.GRANTEE = CONCAT('''', SUBSTRING_INDEX(CURRENT_USER(), '@', 1), '''@''',
-                                 SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')
-        LIMIT 1`,
-      [db, db, table],
-      signal,
+  /**
+   * The session holds TRIGGER on the table (globally, on its schema or on the table), directly or
+   * through its active roles. SHOW GRANTS … USING expands what those roles grant.
+   */
+  async #seesTriggers(
+    db: string,
+    table: string,
+    known: Map<string, string | null>,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    // The session's grants, read once per lookup.
+    let grants = known.get(GRANTS_KEY);
+    if (grants === undefined) {
+      const [current] = await this.#metaQuery('SELECT CURRENT_ROLE() AS roles', [], signal);
+      const roles = String(current?.roles ?? 'NONE');
+      // The role list comes from the server, already quoted (`role`@`host`, …).
+      const rows = await this.#metaQuery(
+        roles && roles !== 'NONE' ? `SHOW GRANTS FOR CURRENT_USER() USING ${roles}` : 'SHOW GRANTS',
+        [],
+        signal,
+      );
+      grants = rows.map((row) => String(Object.values(row)[0] ?? '')).join('\n');
+      known.set(GRANTS_KEY, grants);
+    }
+    const lines = (grants ?? '').split('\n');
+    return (
+      lines.some((line) => grantsTrigger(line, 'GRANT', db, table)) &&
+      !lines.some((line) => grantsTrigger(line, 'REVOKE', db, table))
     );
-    return rows.length > 0;
   }
 
   activeSessions(): number {
