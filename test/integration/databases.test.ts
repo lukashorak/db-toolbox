@@ -228,9 +228,32 @@ for (const { engine, variable, prepare } of engines) {
           ),
           'finished',
         );
+        // Inside a transaction (a single-transaction run) nothing is committed yet: the time limit
+        // stands, and the insert is rolled back.
+        const inTransaction = await settleWithin(
+          adapter.withSession(async (s) => {
+            await s.begin({ readOnly: false });
+            const { sink } = collect();
+            const ended = await s
+              .execute('INSERT INTO wb_audit_log VALUES (78) RETURNING id', sink, {
+                timeoutMs: 300,
+                batchSize: 100,
+              })
+              .then(
+                () => 'finished',
+                (e: unknown) => (e as { category?: string }).category,
+              );
+            await s.rollback();
+            return ended;
+          }),
+        );
+        assert.equal(inTransaction, 'timeout');
       } finally {
         pg.typeNames = typeNames;
       }
+      // Nothing of the rolled-back insert remains.
+      const left = await run('SELECT count(*) FROM wb_audit_log WHERE id = 78');
+      assert.equal(String(left.sets[0]?.rows[0]?.[0]), '0');
     });
 
     describe('connection test', () => {
