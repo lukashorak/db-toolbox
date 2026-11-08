@@ -75,6 +75,26 @@ function identifier(t: Token | undefined): string | undefined {
   return undefined;
 }
 
+/** Words before which a name followed by `(` is a table or CTE with a column list, not a call. */
+const NAME_POSITIONS = new Set(['WITH', 'RECURSIVE', 'INTO', 'TABLE', 'UPDATE', 'JOIN', 'FROM']);
+
+/**
+ * tokens[i] is a function call: an unquoted word followed by `(`, not in a name position (a table or
+ * CTE with a column list, `WITH get_lock (x) AS (…)`, `INSERT INTO load_file (a) …`).
+ */
+function isFunctionCall(tokens: Token[], i: number): boolean {
+  if (tokens[i]?.kind !== 'word' || tokens[i + 1]?.text !== '(') return false;
+  if (NAME_POSITIONS.has(word(tokens[i - 1]))) return false;
+  // A CTE after a comma: `…), get_lock (x) AS (…)`. Its column list is followed by AS.
+  let depth = 0;
+  for (let j = i + 1; j < tokens.length; j++) {
+    const text = tokens[j]?.text;
+    if (text === '(') depth++;
+    else if (text === ')' && --depth === 0) return word(tokens[j + 1]) !== 'AS';
+  }
+  return true;
+}
+
 /** `name` or `schema.name` starting at tokens[i]. */
 function qualifiedName(tokens: Token[], i: number): TableRef | undefined {
   const first = identifier(tokens[i]);
@@ -220,7 +240,10 @@ function analyzeSet(tokens: Token[]): StatementAnalysis {
     w.implicitCommit = second === 'PASSWORD';
     return w;
   }
-  for (const { name, scope, value } of setAssignments(tokens)) {
+  for (const assignment of setAssignments(tokens)) {
+    const { scope, value } = assignment;
+    // `autocommit` and @@session.`autocommit` name the same variable as autocommit.
+    const name = assignment.name.replace(/`/g, '');
     const plain = name
       .replace(/^@@(session\.|local\.|global\.|persist\.|persist_only\.)?/i, '')
       .toLowerCase();
@@ -429,7 +452,7 @@ export function analyzeMysql(text: string): StatementAnalysis {
   // effects a read-only transaction does not stop make the statement unsafe, and a named lock
   // belongs to the connection, which must then not be reused by someone else.
   tokens.forEach((t, i) => {
-    if (t.kind !== 'word' || tokens[i + 1]?.text !== '(') return;
+    if (!isFunctionCall(tokens, i)) return;
     const name = t.text.toLowerCase();
     if (UNSAFE_FUNCTIONS[name]) unsafe(analysis, `${name}() ${UNSAFE_FUNCTIONS[name]}`);
     if (name === 'get_lock') analysis.changesSession = true;

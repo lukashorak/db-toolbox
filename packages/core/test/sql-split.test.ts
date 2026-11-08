@@ -82,6 +82,14 @@ SELECT 3;`;
     );
   });
 
+  it('ends a word at a custom delimiter (END$$)', () => {
+    const sql = 'DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; END$$\nDELIMITER ;\nCALL p();';
+    assert.deepEqual(
+      splitStatements(sql, 'mysql').map((s) => s.text),
+      ['CREATE PROCEDURE p() BEGIN SELECT 1; END', 'CALL p()'],
+    );
+  });
+
   it('reports ranges with lines and columns', () => {
     const sql = 'select 1;\n  select\n    2 ;\n-- trailing\n';
     const [first, second] = splitStatements(sql, 'postgresql');

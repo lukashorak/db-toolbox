@@ -82,6 +82,19 @@ describe('statement classification', () => {
     const lock = await analyzeStatement("values row(get_lock('n', 60))", 'mysql');
     assert.deepEqual([lock.readOnlySafe, lock.changesSession], [false, true]);
     assert.equal((await analyzeStatement('values row(1, 2)', 'mysql')).readOnlySafe, true);
+    // A CTE or table that happens to be named like an unsafe function is not a call.
+    for (const sql of [
+      'with get_lock (x) as (select 1) select x from get_lock',
+      'with a as (select 1), load_file (y) as (select 2) select * from a, load_file',
+    ]) {
+      const cte = await analyzeStatement(sql, 'mysql');
+      assert.deepEqual([cte.readOnlySafe, cte.changesSession], [true, false], sql);
+    }
+    assert.equal((await analyzeStatement("select 1, get_lock('a', 1)", 'mysql')).readOnlySafe, false);
+    assert.equal(
+      (await analyzeStatement('do $$ begin perform 1; end $$', 'postgresql')).changesSession,
+      true,
+    );
     assert.equal((await analyzeStatement('call p()', 'postgresql')).changesSession, true);
     assert.equal((await analyzeStatement('create table t (a int)', 'mysql')).changesSession, false);
     assert.equal((await analyzeStatement('savepoint a', 'postgresql')).transactionControl, 'savepoint');
@@ -166,6 +179,14 @@ describe('preflight', () => {
       );
     }
     assert.equal((await run('set autocommit = 0', 'mysql'))[0]?.code, 'transaction_control');
+    // Backtick-quoted names are the same variables.
+    for (const sql of ['set `autocommit` = 0', 'set @@session.`autocommit` = 1']) {
+      assert.equal(
+        (await run(sql, 'mysql', { transactionMode: 'atomic' }))[0]?.code,
+        'transaction_control',
+        sql,
+      );
+    }
   });
 
   it('rejects implicit commits and non-transactional engines only in single-transaction mode', async () => {

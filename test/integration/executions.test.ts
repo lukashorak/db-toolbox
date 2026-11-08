@@ -483,6 +483,14 @@ for (const { engine, variable, prepare } of engines) {
           'the next run reads the permanent table, not the temporary one',
         );
 
+        if (engine === 'postgresql') {
+          // A DO block's body is not analyzed: whatever it leaves on the connection goes with it.
+          const block = "DO $$ BEGIN CREATE TEMP TABLE wb_do_secret AS SELECT 'secret' AS v; END $$";
+          assert.equal((await runOn(block)).status, 'succeeded');
+          const after = await runOn("SELECT to_regclass('pg_temp.wb_do_secret') IS NULL AS gone");
+          assert.ok(['t', 'true'].includes(String(single.executions.rows(writer, after.id, 0).rows[0]?.[0])));
+        }
+
         // Session-level locks belong to the connection: discarding it releases them.
         const lock = engine === 'mysql' ? "SELECT GET_LOCK('wb_lock', 0)" : 'SELECT pg_advisory_lock(4242)';
         assert.equal((await runOn(lock)).status, 'succeeded');

@@ -190,7 +190,13 @@ export function* tokenize(sql: string, dialect: Engine): Generator<Token> {
 
     if (isWordStart(c) || (dialect === 'mysql' && c === '@')) {
       i++;
-      while (i < n && isWordPart(sql[i] as string, dialect)) i++;
+      // A custom delimiter ends a word too: `END$$` is the word END, then the delimiter $$.
+      while (
+        i < n &&
+        isWordPart(sql[i] as string, dialect) &&
+        !(delimiter !== ';' && sql.startsWith(delimiter, i))
+      )
+        i++;
       yield token('word', start, i);
       continue;
     }
