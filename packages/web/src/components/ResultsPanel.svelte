@@ -84,18 +84,29 @@
   $effect(() => {
     const key = `${execution.id}:${set?.index}:${set?.completeness}:${set?.rowCount}`;
     if (!set || key === loadedFor || set.completeness === 'capturing') {
-      if (!set) rows = [];
+      if (!set) {
+        rows = [];
+        loadedFor = '';
+      }
       return;
     }
+    // Another result set: never show the previous set's rows under this one's heading while loading.
+    if (!loadedFor.startsWith(`${execution.id}:${set.index}:`)) rows = [];
     loadedFor = key;
     sortBy = null;
     filter = '';
+    inspected = null;
     void api<{ rows: (string | null)[][] }>(
       'GET',
       `/executions/${execution.id}/results/${set.index}/rows?limit=1000`,
     )
-      .then((page) => (rows = page.rows))
-      .catch((e) => toast(e instanceof Error ? e.message : String(e), 'danger'));
+      .then((page) => {
+        // A slower answer for a set that is no longer selected must not replace the current rows.
+        if (loadedFor === key) rows = page.rows;
+      })
+      .catch((e) => {
+        if (loadedFor === key) toast(e instanceof Error ? e.message : String(e), 'danger');
+      });
   });
 
   const reasons = $derived({

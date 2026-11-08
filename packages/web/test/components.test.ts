@@ -217,6 +217,24 @@ describe('results panel', () => {
     expect(screen.getByText('first')).toBeTruthy();
   });
 
+  it('keeps the selected result set’s rows when an older answer arrives late', async () => {
+    render(ResultsPanel, { execution, onRunFull: () => undefined });
+    await settle();
+    // The first result set's rows answer slowly…
+    let answerFirst: (value: { rows: string[][] }) => void = () => undefined;
+    api.mockImplementationOnce(() => new Promise((resolve) => (answerFirst = resolve)));
+    await fireEvent.click(screen.getByRole('tablist', { name: 'Statements' }).querySelector('[role="tab"]')!);
+    await settle();
+    // …and the person moves on to the second before they arrive.
+    await fireEvent.click(screen.getAllByTestId('result-set-tab')[1] as HTMLElement);
+    await settle();
+    expect(screen.getByText('second')).toBeTruthy();
+    answerFirst({ rows: [['late first']] });
+    await settle();
+    expect(screen.queryByText('late first')).toBeNull();
+    expect(screen.getByText('second')).toBeTruthy();
+  });
+
   it('shows every result set a statement returned', async () => {
     render(ResultsPanel, { execution, onRunFull: () => undefined });
     await settle();
