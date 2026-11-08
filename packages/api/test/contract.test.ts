@@ -110,6 +110,27 @@ describe('API contract', () => {
   let connection: string;
   let readOnly: string;
 
+  it('validation errors from services have the same shape as request validation', async () => {
+    const serviceLevel = await call('POST', '/connections', 'admin', {
+      ...connectionBody('IP with verify-full'),
+      engine: 'mysql',
+      port: 3306,
+      tlsMode: 'verify-full',
+    });
+    assert.equal(serviceLevel.status, 400);
+    assert.equal(serviceLevel.body.error, 'validation_failed');
+    assert.ok(Array.isArray(serviceLevel.body.details.fields), JSON.stringify(serviceLevel.body));
+    assert.equal(serviceLevel.body.details.fields[0].path, 'host');
+    const requestLevel = await call('POST', '/connections', 'admin', { name: 'x' });
+    assert.equal(requestLevel.status, 400);
+    assert.ok(Array.isArray(requestLevel.body.details.fields));
+    assert.ok(
+      requestLevel.body.details.fields.every(
+        (f: { path?: string; message?: string }) => f.path !== undefined && f.message,
+      ),
+    );
+  });
+
   it('connections: readers list, administrators manage', async () => {
     assert.equal((await call('GET', '/connections', 'none')).status, 401);
     assert.equal(

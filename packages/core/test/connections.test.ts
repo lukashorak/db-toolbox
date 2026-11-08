@@ -59,11 +59,15 @@ describe('ConnectionService', () => {
       (e: unknown) =>
         e instanceof AppError &&
         e.code === 'validation_failed' &&
-        ['name', 'host', 'port', 'password'].every((f) => f in ((e.details?.fields as object) ?? {})),
+        ['name', 'host', 'port', 'password'].every((f) =>
+          ((e.details?.fields as { path: string }[] | undefined) ?? []).some((p) => p.path === f),
+        ),
     );
     assert.throws(
       () => core.connections.create(admin, { ...pgInput, engine: 'mysql', port: 3306, schema: 'public' }),
-      (e: unknown) => e instanceof AppError && 'schema' in ((e.details?.fields as object) ?? {}),
+      (e: unknown) =>
+        e instanceof AppError &&
+        ((e.details?.fields as { path: string }[] | undefined) ?? []).some((p) => p.path === 'schema'),
     );
     assert.throws(
       () => core.connections.create(admin, { ...pgInput, caPem: 'not a cert' }),
