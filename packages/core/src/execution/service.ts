@@ -739,17 +739,25 @@ export class ExecutionService {
   }
 
   #failToStart(id: string, error: unknown): void {
+    // The cause goes to the audit trail for operators; the execution shows a plain message.
+    const cause = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     try {
       this.ctx.db.run(
         `UPDATE executions SET status = 'failed', finished_at = :now, error_code = 'internal',
            error_message = 'The execution could not be started.' WHERE id = :id AND status = 'queued'`,
         { id, now: isoNow(this.ctx) },
       );
+      this.ctx.audit.record({
+        actor: 'system',
+        action: 'execution.error',
+        target: { type: 'execution', id },
+        outcome: 'failed',
+        details: { stage: 'start', cause },
+      });
       this.#changed(id);
     } catch {
       // The application database itself failed; the next start reconciles.
     }
-    void error;
   }
 
   /** Re-authorizes a queued execution and starts it, or rejects it if it may no longer run. */

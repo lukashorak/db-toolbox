@@ -45,6 +45,11 @@ describe('SettingsService', () => {
       () => core.settings.updateDefaults(admin, { ordinaryTimeoutMs: 400000 }),
       code('validation_failed'),
     );
+    // Below the full-result maximum, but above ORDINARY_TIMEOUT_MS (30 s).
+    assert.throws(
+      () => core.settings.updateDefaults(admin, { ordinaryTimeoutMs: 60000 }),
+      code('validation_failed'),
+    );
     // The work pool of a connection has CONCURRENCY_PER_CONNECTION (2) sessions.
     assert.throws(
       () => core.settings.updateDefaults(admin, { concurrencyPerConnection: 3 }),
@@ -56,16 +61,25 @@ describe('SettingsService', () => {
     const dir = mkdtempSync(join(tmpdir(), 'workbench-settings-'));
     try {
       const file = join(dir, 'workbench.sqlite');
-      const first = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits });
+      const first = createCore({
+        databaseFile: file,
+        encryptionKey: TEST_KEY,
+        limits: { ...limits, ordinaryTimeoutMs: 120000 },
+      });
       first.users.touch(admin);
       first.settings.updateDefaults(admin, { fullTimeoutMaxMs: 240000, ordinaryTimeoutMs: 120000 });
       first.close();
-      const lower = { ...limits, fullTimeoutMaxMs: 60000, concurrencyPerConnection: 1 };
+      const lower = {
+        ...limits,
+        ordinaryTimeoutMs: 20000,
+        fullTimeoutMaxMs: 60000,
+        concurrencyPerConnection: 1,
+      };
       const second = createCore({ databaseFile: file, encryptionKey: TEST_KEY, limits: lower });
       const d = second.settings.defaults();
       assert.deepEqual(
         [d.fullTimeoutMaxMs, d.ordinaryTimeoutMs, d.concurrencyPerConnection],
-        [60000, 60000, 1],
+        [60000, 20000, 1],
       );
       second.close();
     } finally {

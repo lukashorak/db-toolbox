@@ -57,7 +57,11 @@ export class SettingsService {
     return {
       ...merged,
       fullTimeoutMaxMs,
-      ordinaryTimeoutMs: Math.min(merged.ordinaryTimeoutMs, fullTimeoutMaxMs),
+      ordinaryTimeoutMs: Math.min(
+        merged.ordinaryTimeoutMs,
+        this.ctx.limits.ordinaryTimeoutMs,
+        fullTimeoutMaxMs,
+      ),
       // The work pool of each connection has this many sessions; more slots would wait in the driver.
       concurrencyPerConnection: Math.min(
         merged.concurrencyPerConnection,
@@ -82,6 +86,12 @@ export class SettingsService {
       throw fieldError(
         'concurrencyPerConnection',
         `This exceeds the maximum set by the deployment (CONCURRENCY_PER_CONNECTION, ${this.ctx.limits.concurrencyPerConnection}).`,
+      );
+    }
+    if (next.ordinaryTimeoutMs > this.ctx.limits.ordinaryTimeoutMs) {
+      throw fieldError(
+        'ordinaryTimeoutMs',
+        `This exceeds the maximum set by the deployment (ORDINARY_TIMEOUT_MS, ${this.ctx.limits.ordinaryTimeoutMs} ms).`,
       );
     }
     if (next.ordinaryTimeoutMs > next.fullTimeoutMaxMs) {
