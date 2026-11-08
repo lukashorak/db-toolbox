@@ -93,6 +93,20 @@ describe('LibraryService', () => {
     );
   });
 
+  it('lets a child moved up take the name of the folder being deleted', () => {
+    const { lib } = library();
+    const outer = lib.createFolder(writer, { name: 'Reports', parentId: null });
+    const inner = lib.createFolder(writer, { name: 'Reports', parentId: outer.id });
+    lib.createQuery(writer, { name: 'Monthly', folderId: inner.id, sql: 'SELECT 1' });
+    assert.deepEqual(lib.deleteFolder(writer, outer.id, 'move-to-parent'), {
+      movedQueries: 0,
+      deletedQueries: 0,
+      folders: 1,
+    });
+    const moved = lib.folders(writer).find((f) => f.id === inner.id);
+    assert.deepEqual([moved?.name, moved?.parentId], ['Reports', null]);
+  });
+
   it('refuses a move-to-parent that would create duplicate names', () => {
     const { lib, analytics, revenue } = library();
     lib.createQuery(writer, { name: 'Same', folderId: analytics.id, sql: '' });

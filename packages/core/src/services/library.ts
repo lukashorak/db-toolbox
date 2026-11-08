@@ -189,10 +189,13 @@ export class LibraryService {
             id: folderId,
           },
         );
+        // The folder being deleted leaves that level: a child may take its name (Reports / Reports).
         for (const c of children)
-          this.assertFolderNameFree(actor, folder.parentId, String(c.name), String(c.id));
+          this.assertFolderNameFree(actor, folder.parentId, String(c.name), String(c.id), folderId);
         for (const q of queries)
           this.assertQueryNameFree(actor, folder.parentId, String(q.name), String(q.id));
+        // Its own name must be free in the unique index before a child moves up under it.
+        this.ctx.db.run('UPDATE folders SET name = :id WHERE id = :id', { id: folderId });
         this.ctx.db.run('UPDATE folders SET parent_id = :parent WHERE owner = :owner AND parent_id = :id', {
           owner,
           id: folderId,
@@ -355,11 +358,23 @@ export class LibraryService {
     }
   }
 
-  private assertFolderNameFree(actor: Actor, parentId: string | null, folder: string, except?: string): void {
+  private assertFolderNameFree(
+    actor: Actor,
+    parentId: string | null,
+    folder: string,
+    except?: string,
+    leaving?: string,
+  ): void {
     const taken = this.ctx.db.get(
       `SELECT id FROM folders WHERE owner = :owner AND coalesce(parent_id, '') = :parent AND lower(name) = lower(:name)
-         AND id <> :except`,
-      { owner: actor.subject, parent: parentId ?? '', name: folder, except: except ?? '' },
+         AND id <> :except AND id <> :leaving`,
+      {
+        owner: actor.subject,
+        parent: parentId ?? '',
+        name: folder,
+        except: except ?? '',
+        leaving: leaving ?? '',
+      },
     );
     if (taken)
       throw new AppError('name_conflict', `A folder named “${folder}” already exists here.`, {
