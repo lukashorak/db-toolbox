@@ -6,6 +6,7 @@
   import TreeRow from '../components/TreeRow.svelte';
   import { treeKeyboard } from '../lib/tree';
   import { api, ApiError } from '../lib/api';
+  import { latestOnly } from '../lib/latest';
   import { navigate } from '../lib/router.svelte';
   import { openTab } from '../lib/tabs.svelte';
   import { toast } from '../lib/toasts.svelte';
@@ -33,9 +34,12 @@
     | null
   >(null);
 
+  // A folder or search picked while an earlier one loads: only the newest answer is shown.
+  const begin = latestOnly();
   async function load() {
+    const current = begin();
     try {
-      [folders, queries] = await Promise.all([
+      const [loadedFolders, loadedQueries] = await Promise.all([
         api<Folder[]>('GET', '/folders'),
         api<SavedQuery[]>(
           'GET',
@@ -47,9 +51,11 @@
               : '/queries',
         ),
       ]);
+      if (!current()) return;
+      [folders, queries] = [loadedFolders, loadedQueries];
       error = null;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      if (current()) error = e instanceof Error ? e.message : String(e);
     }
   }
   onMount(async () => {

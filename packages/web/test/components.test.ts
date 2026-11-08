@@ -10,6 +10,9 @@ import Shell from '../src/shell/Shell.svelte';
 import Explorer from '../src/pages/Explorer.svelte';
 import Executions from '../src/pages/Executions.svelte';
 import SavedQueries from '../src/pages/SavedQueries.svelte';
+import Connections from '../src/pages/Connections.svelte';
+import Settings from '../src/pages/Settings.svelte';
+import { session } from '../src/lib/session.svelte';
 import { navigate, route } from '../src/lib/router.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
@@ -600,6 +603,174 @@ describe('saved queries', () => {
       expect(requested.some((u) => u.includes('folderId=root'))).toBe(false);
       expect(screen.getByText('Monthly revenue')).toBeTruthy();
     } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+});
+
+describe('answers that arrive after a newer request', () => {
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await tick();
+    }
+  };
+  const query = (id: string, name: string, folderId: string | null) => ({
+    id,
+    name,
+    folderId,
+    sql: 'SELECT 1',
+    connectionId: null,
+    updatedAt: '2026-11-08T10:00:00.000Z',
+  });
+
+  it('saved queries: a folder picked while another loads keeps its own list', async () => {
+    const original = api.getMockImplementation();
+    let answerAlpha: (value: unknown) => void = () => undefined;
+    api.mockImplementation(((_method: string, url: string) => {
+      if (url === '/folders')
+        return Promise.resolve([
+          { id: 'fa', name: 'Alpha', parentId: null },
+          { id: 'fb', name: 'Beta', parentId: null },
+        ]);
+      if (url === '/queries?folderId=fa') return new Promise((r) => (answerAlpha = r));
+      if (url === '/queries?folderId=fb') return Promise.resolve([query('qb', 'Beta query', 'fb')]);
+      return Promise.resolve([]);
+    }) as never);
+    try {
+      render(SavedQueries);
+      await settle();
+      await fireEvent.click(screen.getByRole('treeitem', { name: /Alpha/ }));
+      await fireEvent.click(screen.getByRole('treeitem', { name: /Beta/ }));
+      await settle();
+      expect(screen.getByText('Beta query')).toBeTruthy();
+      answerAlpha([query('qa', 'Alpha query', 'fa')]);
+      await settle();
+      expect(screen.queryByText('Alpha query')).toBeNull();
+      expect(screen.getByText('Beta query')).toBeTruthy();
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
+  it('execution history: a filter changed while the list loads keeps its own list', async () => {
+    const original = api.getMockImplementation();
+    let answerAll: (value: unknown) => void = () => undefined;
+    const row = (id: string, title: string, status: string) => ({
+      id,
+      title,
+      status,
+      source: 'gui',
+      connection: { id: 'con_1', name: 'Shop', engine: 'postgresql' },
+      submittedAt: '2026-01-01T00:00:00.000Z',
+      finishedAt: null,
+      statements: [],
+      resultSets: [],
+    });
+    api.mockImplementation(((_method: string, url: string) => {
+      if (url === '/executions?limit=100') return new Promise((r) => (answerAll = r));
+      if (url === '/executions?status=failed&limit=100')
+        return Promise.resolve([row('exe_f', 'Failed run', 'failed')]);
+      return Promise.resolve([]);
+    }) as never);
+    try {
+      navigate('/executions');
+      render(Executions);
+      await settle();
+      await fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'failed' } });
+      await settle();
+      expect(screen.getByText('Failed run')).toBeTruthy();
+      answerAll([row('exe_s', 'Succeeded run', 'succeeded')]);
+      await settle();
+      expect(screen.queryByText('Succeeded run')).toBeNull();
+      expect(screen.getByText('Failed run')).toBeTruthy();
+    } finally {
+      if (original) api.mockImplementation(original);
+      navigate('/');
+    }
+  });
+
+  it('connections: the references shown are those of the connection opened last', async () => {
+    const original = api.getMockImplementation();
+    let answerAlpha: (value: unknown) => void = () => undefined;
+    const connection = (id: string, name: string) => ({
+      id,
+      name,
+      engine: 'postgresql',
+      environment: 'development',
+      host: 'db',
+      port: 5432,
+      database: 'app',
+      schema: null,
+      username: 'u',
+      tlsMode: 'disable',
+      readOnly: false,
+      enabled: true,
+      lastTestResult: null,
+    });
+    api.mockImplementation(((_method: string, url: string) => {
+      if (url === '/connections')
+        return Promise.resolve([connection('ca', 'Alpha db'), connection('cb', 'Beta db')]);
+      if (url === '/connections/ca/references') return new Promise((r) => (answerAlpha = r));
+      if (url === '/connections/cb/references')
+        return Promise.resolve({ savedQueries: [], profiles: [], activeExecutions: [] });
+      return Promise.resolve([]);
+    }) as never);
+    try {
+      render(Connections);
+      await settle();
+      await fireEvent.click(screen.getByRole('button', { name: 'Alpha db' }));
+      await fireEvent.click(screen.getByRole('button', { name: 'Beta db' }));
+      await settle();
+      expect(screen.getByTestId('references').textContent).toContain('0 saved queries');
+      answerAlpha({
+        savedQueries: [{ id: 'q1' }, { id: 'q2' }, { id: 'q3' }],
+        profiles: [],
+        activeExecutions: [],
+      });
+      await settle();
+      expect(screen.getByTestId('references').textContent).toContain('0 saved queries');
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+
+  it('settings: an audit filter applied while the events load keeps its own events', async () => {
+    const original = api.getMockImplementation();
+    let answerAll: (value: unknown) => void = () => undefined;
+    const event = (id: string, action: string, source: string) => ({
+      id,
+      at: '2026-11-08T10:00:00.000Z',
+      actorLabel: 'Dana',
+      source,
+      action,
+      targetLabel: null,
+      outcome: 'succeeded',
+      details: {},
+    });
+    api.mockImplementation(((_method: string, url: string) => {
+      if (url === '/settings/execution') return Promise.resolve({ workingRetentionHours: 24 });
+      if (url === '/settings/storage')
+        return Promise.resolve({ usedBytes: 0, totalLimitBytes: 1, executionLimitBytes: 1 });
+      if (url === '/audit?limit=100') return new Promise((r) => (answerAll = r));
+      if (url === '/audit?source=mcp&limit=100')
+        return Promise.resolve([event('a2', 'execution.submit.mcp', 'mcp')]);
+      return Promise.resolve([]);
+    }) as never);
+    session.permissions = ['audit.view'];
+    try {
+      render(Settings);
+      await settle();
+      await fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'mcp' } });
+      await fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+      await settle();
+      expect(screen.getByText('execution.submit.mcp')).toBeTruthy();
+      answerAll([event('a1', 'connection.create.gui', 'gui')]);
+      await settle();
+      expect(screen.queryByText('connection.create.gui')).toBeNull();
+      expect(screen.getByText('execution.submit.mcp')).toBeTruthy();
+    } finally {
+      session.permissions = [];
       if (original) api.mockImplementation(original);
     }
   });

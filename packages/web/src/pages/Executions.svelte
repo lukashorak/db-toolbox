@@ -7,6 +7,7 @@
   import ResultsPanel from '../components/ResultsPanel.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import { api } from '../lib/api';
+  import { latestOnly } from '../lib/latest';
   import { download } from '../lib/download';
   import { TERMINAL, type ExecutionView, type ExportView } from '../lib/execution';
   import { navigate, route } from '../lib/router.svelte';
@@ -34,17 +35,22 @@
   let confirmDelete = $state(false);
   let error = $state<string | null>(null);
 
+  // Filters changed (or a poll) while an earlier list loads: only the newest answer is shown.
+  const beginList = latestOnly();
   async function loadList() {
+    const current = beginList();
     const query = Object.entries(filters)
       .filter(([, v]) => v)
       .map(([k, v]) => `${k}=${encodeURIComponent(k === 'from' ? new Date(v).toISOString() : v)}`)
       .concat('limit=100')
       .join('&');
     try {
-      list = await api<ExecutionView[]>('GET', `/executions?${query}`);
+      const loaded = await api<ExecutionView[]>('GET', `/executions?${query}`);
+      if (!current()) return;
+      list = loaded;
       error = null;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      if (current()) error = e instanceof Error ? e.message : String(e);
     }
   }
   // A load belongs to the execution it asked about and is superseded by a newer one: answers (and

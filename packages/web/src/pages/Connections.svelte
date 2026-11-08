@@ -10,6 +10,7 @@
   import SidePanel from '../components/SidePanel.svelte';
   import TestReportView from '../components/TestReportView.svelte';
   import { api } from '../lib/api';
+  import { latestOnly } from '../lib/latest';
   import { can } from '../lib/session.svelte';
   import { toast } from '../lib/toasts.svelte';
   import type { Connection, References, TestReport } from '../lib/types';
@@ -35,23 +36,32 @@
             : 'limited'
           : 'unreachable';
 
+  // A reload after a change can overlap an earlier one: only the newest answer is shown.
+  const beginLoad = latestOnly();
   async function load() {
+    const current = beginLoad();
     try {
-      connections = await api<Connection[]>('GET', '/connections');
+      const loaded = await api<Connection[]>('GET', '/connections');
+      if (!current()) return;
+      connections = loaded;
       error = null;
       if (selected) selected = connections.find((c) => c.id === selected?.id) ?? null;
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      if (current()) error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
   }
   onMount(load);
 
+  const beginReferences = latestOnly();
   async function open(c: Connection) {
     selected = c;
     references = null;
-    references = await api<References>('GET', `/connections/${c.id}/references`);
+    // Another connection opened meanwhile: its references, not this one's, belong in the panel.
+    const current = beginReferences();
+    const loaded = await api<References>('GET', `/connections/${c.id}/references`);
+    if (current()) references = loaded;
   }
 
   async function test(c: Connection) {

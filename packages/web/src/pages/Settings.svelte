@@ -3,6 +3,7 @@
   import Banner from '../components/Banner.svelte';
   import KeyValueList from '../components/KeyValueList.svelte';
   import { api } from '../lib/api';
+  import { latestOnly } from '../lib/latest';
   import { signOut } from '../lib/auth';
   import { navigate } from '../lib/router.svelte';
   import { can, session } from '../lib/session.svelte';
@@ -42,7 +43,10 @@
   const usage = $derived(storage ? storage.usedBytes / storage.totalLimitBytes : 0);
   const mib = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MiB`;
 
+  // Only the newest audit filter's answer is shown.
+  const beginAudit = latestOnly();
   async function loadAudit() {
+    const current = beginAudit();
     const q = [
       auditFilter.actionPrefix && `actionPrefix=${encodeURIComponent(auditFilter.actionPrefix)}`,
       auditFilter.source && `source=${auditFilter.source}`,
@@ -50,7 +54,8 @@
     ]
       .filter(Boolean)
       .join('&');
-    audit = await api<AuditEvent[]>('GET', `/audit?${q}`);
+    const loaded = await api<AuditEvent[]>('GET', `/audit?${q}`);
+    if (current()) audit = loaded;
   }
   onMount(async () => {
     defaults = await api<Defaults>('GET', '/settings/execution');
