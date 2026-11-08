@@ -282,6 +282,17 @@ for (const { engine, variable, prepare } of engines) {
         );
         assert.equal(throughView.status, 'preflight_rejected');
         assert.match(String(throughView.error?.message), /wb_legacy_notes, a MyISAM table/);
+        // A stored function writes inside the statement that calls it.
+        const throughFunction = await submit(
+          "INSERT INTO wb_items (name) VALUES ('run-fn'); SELECT wb_fn_nested()",
+          { transactionMode: 'atomic' },
+        );
+        assert.equal(throughFunction.status, 'preflight_rejected');
+        assert.match(
+          String(throughFunction.error?.message),
+          /calls wb_fn_nested\(\), which writes to a MyISAM table/,
+        );
+        assert.equal(await count("name = 'run-fn'"), 0);
         // A view over InnoDB tables is fine.
         const innoView = await settle(
           core,

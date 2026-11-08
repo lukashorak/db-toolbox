@@ -239,6 +239,8 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_audited' }), 'unresolved view');
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_orders' }), 'unresolved view');
           assert.equal(await writer.tableEngine({ schema: null, name: 'wb_items' }), 'InnoDB');
+          // A function the account may run but did not define shows no body: its writes are unknown.
+          assert.equal(await writer.functionEngine({ schema: null, name: 'wb_fn_inno' }), 'unresolved view');
           // TRIGGER through an active (default) role counts as well.
           const roleWriter = await registry.get({
             ...target({
@@ -267,6 +269,19 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(
             await partialWriter.tableEngine({ schema: null, name: 'wb_orders' }),
             'unresolved view',
+          );
+          // Stored functions: what they write, through other functions too; built-ins are not stored.
+          const fn = (name: string) => adapter.functionEngine({ schema: null, name });
+          assert.equal(await fn('wb_fn_legacy'), 'MyISAM');
+          assert.equal(await fn('WB_FN_NESTED'), 'MyISAM');
+          assert.equal(await fn('wb_fn_inno'), 'InnoDB');
+          assert.equal(await fn('wb_item_count'), null);
+          assert.equal(await fn('wb_fn_branch'), 'unresolved view');
+          assert.equal(await fn('now'), null);
+          // A trigger that only assigns NEW.v = wb_fn_legacy() still writes MyISAM.
+          assert.equal(
+            await adapter.tableEngine({ schema: null, name: 'wb_fn_trig', events: ['INSERT'] }),
+            'MyISAM (written by a trigger)',
           );
           // A lookup whose signal has aborted starts no query.
           await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {

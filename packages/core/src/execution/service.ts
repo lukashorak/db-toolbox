@@ -274,6 +274,13 @@ export class ExecutionService {
                 return 'unknown (the storage engine could not be checked)';
               }
             },
+            functionEngine: async (fn) => {
+              try {
+                return await adapter.functionEngine(fn);
+              } catch {
+                return 'unknown (the storage engine could not be checked)';
+              }
+            },
           }
         : {}),
     });
@@ -1250,6 +1257,14 @@ export class ExecutionService {
           return 'unknown (the storage engine could not be checked)';
         }
       },
+      functionEngine: async (fn) => {
+        signal.throwIfAborted();
+        try {
+          return await adapter.functionEngine(fn, signal);
+        } catch {
+          return 'unknown (the storage engine could not be checked)';
+        }
+      },
     });
     return problems.filter(
       (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
@@ -1276,6 +1291,18 @@ export class ExecutionService {
       // No engine found: a temporary table (invisible to the metadata connection, possibly MyISAM)
       // or one that is gone. Its rollback is not established.
       if (!engine || engine === UNRESOLVED_VIEW || !TRANSACTIONAL_ENGINES.has(engine.toLowerCase()))
+        return false;
+    }
+    // A stored function may have written a non-transactional table before the statement failed.
+    for (const called of analysis.callsFunctions ?? []) {
+      let engine: string | null;
+      try {
+        engine = await adapter.functionEngine({ ...called, schema: called.schema ?? database });
+      } catch {
+        return false;
+      }
+      const base = engine?.split(' ')[0];
+      if (engine === UNRESOLVED_VIEW || (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())))
         return false;
     }
     return true;

@@ -177,6 +177,9 @@ export class PostgresAdapter implements DbAdapter {
   async tableEngine(): Promise<string | null> {
     return null;
   }
+  async functionEngine(): Promise<string | null> {
+    return null;
+  }
 
   async monitorQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
     try {

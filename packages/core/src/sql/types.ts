@@ -59,6 +59,11 @@ export interface StatementAnalysis {
    * parse), so their storage engines cannot be checked.
    */
   writeTargetsUnknown?: boolean;
+  /**
+   * MySQL: functions the statement calls that may be stored functions (names that are not built in),
+   * whose writes single-transaction mode must check like the statement's own.
+   */
+  callsFunctions?: TableRef[];
   /** MySQL `USE`: the database that later unqualified names in the session refer to. */
   usesDatabase?: string;
   /** `ENGINE=` given in a MySQL CREATE or ALTER TABLE. */

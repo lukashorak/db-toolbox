@@ -70,6 +70,16 @@
     resultTab = 0;
   }
 
+  // The panel stays when another execution is shown (a new run, an earlier one picked): that one
+  // starts at its first statement and result set. Before the jump below, so a failure still wins.
+  let shownExecution = '';
+  $effect(() => {
+    if (execution.id !== shownExecution) {
+      shownExecution = execution.id;
+      showStatement(0);
+    }
+  });
+
   // Statement 1 by default; jump to a failed statement once, when it fails. Not reactive on purpose:
   // the jump must not repeat when the person picks another statement afterwards.
   let jumpedTo = '';

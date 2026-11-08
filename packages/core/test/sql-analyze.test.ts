@@ -40,6 +40,11 @@ describe('statement classification', () => {
     assert.equal((await analyzeStatement('set search_path = x', 'postgresql')).changesSession, true);
     assert.equal((await analyzeStatement('set local search_path = x', 'postgresql')).changesSession, false);
     assert.equal((await analyzeStatement('use other', 'mysql')).changesSession, true);
+    // LAST_INSERT_ID(expr) leaves its value on the connection; the plain form only reads it.
+    for (const sql of ['values row(last_insert_id(424242))', 'update t set id = LAST_INSERT_ID(id + 1)']) {
+      assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
+    }
+    assert.equal((await analyzeStatement('select last_insert_id()', 'mysql')).changesSession, false);
     // Temporary objects outlive the statement: the connection must not be reused by others.
     for (const sql of ['create temporary table t (a int)', 'create temporary table `t` like base']) {
       assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
@@ -309,6 +314,63 @@ describe('preflight', () => {
     });
     assert.equal(unknown[0]?.code, 'unchecked_write_target');
     assert.deepEqual(await run("load data infile '/tmp/x.csv' into table t", 'mysql', { tableEngine }), []);
+  });
+
+  it('lists the MySQL functions a statement calls that may be stored functions', async () => {
+    const calls = async (sql: string) => (await analyzeStatement(sql, 'mysql')).callsFunctions ?? [];
+    assert.deepEqual(
+      await calls('insert into t values (app.f(1), now(), `g`(2), count(*), cast(x as char(3)))'),
+      [
+        { schema: 'app', name: 'f' },
+        { schema: null, name: 'g' },
+      ],
+    );
+    // Table and column lists are not calls.
+    assert.deepEqual(await calls('insert into app.t (a) values (1)'), []);
+    assert.deepEqual(await calls('insert t (a) values (1)'), []);
+    assert.deepEqual(await calls('with a (x) as (select 1), b (y) as (select 2) select f(x) from a, b'), [
+      { schema: null, name: 'f' },
+    ]);
+    assert.deepEqual(await calls('select F(1), f(2)'), [{ schema: null, name: 'f' }]);
+  });
+
+  it('checks what called stored functions write in single-transaction mode', async () => {
+    const tableEngine = async () => 'InnoDB';
+    const asked: string[] = [];
+    const functionEngine = async (fn: { schema: string | null; name: string }) => {
+      asked.push(`${fn.schema}.${fn.name}`);
+      if (fn.name.toLowerCase() === 'audit') return 'MyISAM (written by a trigger)';
+      if (fn.name === 'hidden') return UNRESOLVED_VIEW;
+      return fn.name === 'reads' ? null : 'InnoDB';
+    };
+    const problems = await run(
+      'insert into t values (audit()); use b; select hidden(), reads(), inno(); insert into t values (AUDIT())',
+      'mysql',
+      { transactionMode: 'atomic', tableEngine, functionEngine },
+    );
+    assert.deepEqual(
+      problems.map((p) => [p.code, p.statement]),
+      [
+        ['non_transactional_engine', 0],
+        ['unchecked_write_target', 2],
+        ['non_transactional_engine', 3],
+      ],
+    );
+    assert.match(problems[0]?.message ?? '', /calls audit\(\), which writes to a MyISAM table/);
+    // Unqualified names follow USE; each function is looked up once per database.
+    assert.deepEqual(asked, ['null.audit', 'b.hidden', 'b.reads', 'b.inno', 'b.AUDIT']);
+    // A read-only transaction stops what functions write, and per-statement mode promises nothing.
+    for (const extra of [{ readOnly: true }, { transactionMode: 'per_statement' as const }]) {
+      assert.deepEqual(
+        await run('select audit()', 'mysql', {
+          transactionMode: 'atomic',
+          tableEngine,
+          functionEngine,
+          ...extra,
+        }),
+        [],
+      );
+    }
   });
 
   it('refuses statements with effects a rollback does not undo in single-transaction mode', async () => {

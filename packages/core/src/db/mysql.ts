@@ -2,6 +2,21 @@ import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptio
 import { analyzeMysql } from '../sql/analyze-mysql.js';
 import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
+import { DbError, mapMysqlError } from './errors.js';
+import { MysqlMetadata } from './metadata-mysql.js';
+import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
+import type {
+  Cell,
+  ColumnInfo,
+  ConnectionTarget,
+  DbAdapter,
+  DbSession,
+  Endpoint,
+  ExecuteOptions,
+  PoolSizes,
+  ResultSink,
+  StatementOutcome,
+} from './types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
 
@@ -72,38 +87,34 @@ export function triggerVisible(lines: string[], db: string, table: string, parti
   return !lines.some((line) => scope(line, 'REVOKE') === 'schema');
 }
 
+/** What a trigger or stored-function body writes and which (possibly stored) functions it calls. */
+interface RoutineEffects {
+  tables: TableRef[];
+  functions: TableRef[];
+}
+
 /**
- * Tables a trigger body writes, or null when they cannot be determined (compound statements, calls,
- * anything but plain writes, reads and SET NEW.col = …).
+ * The effects of a trigger or stored-function body, or null when they cannot be determined
+ * (control flow, cursors, handlers, calls, anything but plain writes, reads, SET, DECLARE and RETURN).
  */
-function triggerWrites(body: string): TableRef[] | null {
+function routineEffects(body: string): RoutineEffects | null {
   const block = /^\s*BEGIN\b([\s\S]*)\bEND\s*$/i.exec(body);
-  const tables: TableRef[] = [];
+  const effects: RoutineEffects = { tables: [], functions: [] };
   for (const statement of splitStatements(block ? (block[1] ?? '') : body, 'mysql')) {
-    const a = analyzeMysql(statement.text);
+    // RETURN expr evaluates expr, like SELECT expr.
+    const text = statement.text.replace(/^\s*RETURN\b/i, 'SELECT');
+    const a = analyzeMysql(text);
+    // Expressions anywhere (SET NEW.v = f(), DEFAULT f(), RETURN f()) may call stored functions.
+    effects.functions.push(...(a.callsFunctions ?? []));
     if (a.kind === 'read' && !a.irreversible) continue;
     if (a.kind === 'session' && a.command === 'SET') continue;
+    if (/^\s*DECLARE\b/i.test(text) && !/\b(HANDLER|CURSOR)\b/i.test(text)) continue;
     if (a.kind !== 'write' || a.writeTargetsUnknown || a.mayCommit || a.irreversible) return null;
     if (!a.writesTables.length) return null;
-    tables.push(...a.writesTables);
+    effects.tables.push(...a.writesTables);
   }
-  return tables;
+  return effects;
 }
-import { DbError, mapMysqlError } from './errors.js';
-import { MysqlMetadata } from './metadata-mysql.js';
-import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
-import type {
-  Cell,
-  ColumnInfo,
-  ConnectionTarget,
-  DbAdapter,
-  DbSession,
-  Endpoint,
-  ExecuteOptions,
-  PoolSizes,
-  ResultSink,
-  StatementOutcome,
-} from './types.js';
 
 const BINARY_CHARSET = 63;
 const TYPE_NAMES = new Map<number, string>(
@@ -331,21 +342,17 @@ export class MysqlAdapter implements DbAdapter {
       }
       if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
       for (const trigger of triggers) {
-        const targets = triggerWrites(String(trigger.body));
-        if (!targets) return UNRESOLVED_VIEW;
-        for (const target of targets) {
-          const written = await this.#engineOf(
-            target.schema ?? String(trigger.db),
-            target.name,
-            [...ancestors, key],
-            known,
-            signal,
-            target.events,
-          );
-          if (written === null || written === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
-          const base = written.split(' ')[0] ?? written;
-          if (!TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return `${base} (written by a trigger)`;
-        }
+        const effects = routineEffects(String(trigger.body));
+        const reached = await this.#effectsEngine(
+          effects,
+          String(trigger.db),
+          [...ancestors, key],
+          known,
+          signal,
+        );
+        if (reached === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+        if (reached && !TRANSACTIONAL_ENGINES.has(reached.toLowerCase()))
+          return `${reached} (written by a trigger)`;
       }
       return engine;
     }
@@ -365,6 +372,91 @@ export class MysqlAdapter implements DbAdapter {
       found ??= engine;
     }
     return found;
+  }
+
+  /**
+   * Where the effects of a trigger or function body (defined in `db`) reach: UNRESOLVED_VIEW when
+   * they cannot be determined, else the first non-transactional engine written (directly, through
+   * triggers or through nested functions), else a transactional engine written, else null.
+   */
+  async #effectsEngine(
+    effects: RoutineEffects | null,
+    db: string,
+    path: string[],
+    known: Map<string, string | null>,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    if (!effects) return UNRESOLVED_VIEW;
+    let found: string | null = null;
+    for (const target of effects.tables) {
+      const written = await this.#engineOf(
+        target.schema ?? db,
+        target.name,
+        path,
+        known,
+        signal,
+        target.events,
+      );
+      if (written === null || written === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+      const base = written.split(' ')[0] ?? written;
+      if (!TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return base;
+      found ??= base;
+    }
+    for (const called of effects.functions) {
+      const reached = await this.#functionEngineOf(called.schema ?? db, called.name, path, known, signal);
+      if (reached === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
+      const base = reached?.split(' ')[0] ?? null;
+      if (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())) return base;
+      found ??= base;
+    }
+    return found;
+  }
+
+  /**
+   * Where a call to a function reaches, for single-transaction checks: null when it is not a stored
+   * function (a built-in or loadable one) or writes nothing; the engine a stored function writes
+   * (the first non-transactional one, through triggers and nested functions too); UNRESOLVED_VIEW
+   * when its body is hidden from the account or does more than plain reads and writes.
+   */
+  async functionEngine(fn: TableRef, signal?: AbortSignal): Promise<string | null> {
+    return this.#functionEngineOf(fn.schema, fn.name, [], new Map(), signal);
+  }
+
+  async #functionEngineOf(
+    schema: string | null,
+    name: string,
+    ancestors: string[],
+    known: Map<string, string | null>,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    // Function names are not case-sensitive. A NUL keeps these apart from table keys.
+    const asked = `\u0000fn ${schema ?? ''}.${name.toLowerCase()}`;
+    if (known.has(asked)) return known.get(asked) ?? null;
+    const [row] = await this.#metaQuery(
+      `SELECT ROUTINE_SCHEMA AS db, ROUTINE_DEFINITION AS body FROM information_schema.ROUTINES
+        WHERE ROUTINE_TYPE = 'FUNCTION' AND ROUTINE_SCHEMA = COALESCE(?, DATABASE()) AND ROUTINE_NAME = ?`,
+      [schema, name],
+      signal,
+    );
+    let engine: string | null;
+    if (!row) engine = null;
+    // MySQL shows a function's body only to its definer and to accounts with SHOW_ROUTINE.
+    else if (row.body === null || row.body === undefined) engine = UNRESOLVED_VIEW;
+    else {
+      const key = `${String(row.db)}.${name.toLowerCase()}()`;
+      engine =
+        ancestors.includes(key) || ancestors.length >= 16
+          ? UNRESOLVED_VIEW
+          : await this.#effectsEngine(
+              routineEffects(String(row.body)),
+              String(row.db),
+              [...ancestors, key],
+              known,
+              signal,
+            );
+    }
+    known.set(asked, engine);
+    return engine;
   }
 
   /**

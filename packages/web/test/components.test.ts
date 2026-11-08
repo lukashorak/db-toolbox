@@ -217,6 +217,23 @@ describe('results panel', () => {
     expect(screen.getByText('first')).toBeTruthy();
   });
 
+  it('starts another execution shown in the same panel at its first statement', async () => {
+    const { rerender } = render(ResultsPanel, { execution, onRunFull: () => undefined });
+    await settle();
+    // Statement 2 is selected (it failed); then a single-statement run takes the panel's place.
+    const single = {
+      ...execution,
+      id: 'exe_2',
+      status: 'succeeded',
+      statements: [statement(0, 'SELECT', 'succeeded')],
+      resultSets: [resultSet(0)],
+    } as unknown as ExecutionView;
+    await rerender({ execution: single });
+    await settle();
+    expect(api).toHaveBeenCalledWith('GET', '/executions/exe_2/results/0/rows?limit=1000');
+    expect(screen.getByText('first')).toBeTruthy();
+  });
+
   it('keeps the selected result set’s rows when an older answer arrives late', async () => {
     render(ResultsPanel, { execution, onRunFull: () => undefined });
     await settle();

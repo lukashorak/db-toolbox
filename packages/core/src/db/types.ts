@@ -101,6 +101,11 @@ export interface DbAdapter {
   /** MySQL: storage engine of a table, for single-transaction preflight. */
   /** `signal`: stop looking (no further query starts) once it aborts. */
   tableEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
+  /**
+   * MySQL: where a call to a possibly stored function writes, for single-transaction preflight: null
+   * when it is not a stored function or writes nothing, UNRESOLVED_VIEW when that cannot be told.
+   */
+  functionEngine(fn: TableRef, signal?: AbortSignal): Promise<string | null>;
   /** Sessions currently checked out. */
   activeSessions(): number;
   /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */

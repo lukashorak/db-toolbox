@@ -10,7 +10,10 @@ import type { ConnectionTarget } from '@workbench/core';
 
 export const DATABASE = 'workbench_it';
 export const READER = { username: 'wb_reader', password: 'reader-pw' };
-/** MySQL: may change data, and holds TRIGGER (sees triggers) on wb_items only. */
+/**
+ * MySQL: may change data, holds TRIGGER (sees triggers) on wb_items only, and may run wb_fn_inno
+ * without seeing its body.
+ */
 export const WRITER = { username: 'wb_writer', password: 'writer-pw' };
 /** MySQL: may change data, and sees triggers through a default role that grants TRIGGER. */
 export const ROLE_WRITER = { username: 'wb_role_writer', password: 'role-writer-pw' };
@@ -198,6 +201,25 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE TABLE wb_del_trig (id int PRIMARY KEY) ENGINE=InnoDB;
       CREATE TRIGGER wb_del_trig_legacy AFTER DELETE ON wb_del_trig FOR EACH ROW
         INSERT INTO wb_legacy VALUES (OLD.id + 2000, 'deleted');
+      -- Stored functions write too, inside the statement that calls them: to MyISAM (directly or
+      -- through another function), to InnoDB, or in ways that cannot be followed (control flow).
+      CREATE FUNCTION wb_fn_legacy() RETURNS int DETERMINISTIC MODIFIES SQL DATA BEGIN
+        DECLARE n int DEFAULT 3000;
+        REPLACE INTO wb_legacy VALUES (n, 'by a function');
+        RETURN n;
+      END;
+      CREATE FUNCTION wb_fn_nested() RETURNS int DETERMINISTIC MODIFIES SQL DATA RETURN wb_fn_legacy() + 1;
+      CREATE FUNCTION wb_fn_inno() RETURNS int DETERMINISTIC MODIFIES SQL DATA BEGIN
+        INSERT INTO wb_audit_log VALUES (7);
+        RETURN 7;
+      END;
+      CREATE FUNCTION wb_fn_branch() RETURNS int DETERMINISTIC MODIFIES SQL DATA BEGIN
+        IF (SELECT count(*) FROM wb_items) > 0 THEN INSERT INTO wb_audit_log VALUES (8); END IF;
+        RETURN 8;
+      END;
+      -- An InnoDB table whose trigger reaches MyISAM only through a function in an expression.
+      CREATE TABLE wb_fn_trig (id int PRIMARY KEY, v int) ENGINE=InnoDB;
+      CREATE TRIGGER wb_fn_trig_set BEFORE INSERT ON wb_fn_trig FOR EACH ROW SET NEW.v = wb_fn_legacy();
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       -- Two branches that share one nested view: not a cycle.
@@ -232,6 +254,7 @@ export async function prepareMysql(url: string): Promise<void> {
       CREATE USER '${WRITER.username}'@'%' IDENTIFIED BY '${WRITER.password}';
       GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${WRITER.username}'@'%';
       GRANT TRIGGER ON ${DATABASE}.wb_items TO '${WRITER.username}'@'%';
+      GRANT EXECUTE ON FUNCTION ${DATABASE}.wb_fn_inno TO '${WRITER.username}'@'%';
       DROP USER IF EXISTS '${READER.username}'@'%';
       CREATE USER '${READER.username}'@'%' IDENTIFIED BY '${READER.password}';
       GRANT SELECT ON ${DATABASE}.* TO '${READER.username}'@'%';

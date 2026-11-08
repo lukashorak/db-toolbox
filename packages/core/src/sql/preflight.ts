@@ -38,6 +38,11 @@ export interface PreflightOptions {
    * script writes to.
    */
   tableEngine?: (table: TableRef) => Promise<string | null>;
+  /**
+   * MySQL atomic mode: what a called function writes (see DbAdapter.functionEngine). Called only for
+   * scripts that may write.
+   */
+  functionEngine?: (fn: TableRef) => Promise<string | null>;
 }
 
 const label = (s: AnalyzedStatement) => `Statement ${s.index + 1} (line ${s.range.startLine})`;
@@ -177,6 +182,33 @@ export async function preflight(
             code: 'non_transactional_engine',
             statement: s.index,
             message: `${label(s)} writes to ${table.schema ? `${table.schema}.` : ''}${table.name}, a ${engine} table. Changes to it cannot be rolled back.`,
+            hint: 'Use per-statement mode, which reports each statement’s outcome honestly.',
+          });
+        }
+      }
+      // Stored functions run inside the statement and can write too. A read-only transaction stops
+      // their writes; statements refused above for committing are not looked into.
+      if (!options.functionEngine || options.readOnly || s.analysis.implicitCommit || s.analysis.mayCommit)
+        continue;
+      for (const called of s.analysis.callsFunctions ?? []) {
+        const fn: TableRef = { schema: called.schema ?? database, name: called.name };
+        const name = `${fn.schema ? `${fn.schema}.` : ''}${fn.name}()`;
+        const key = `\u0000fn ${fn.schema ?? ''}.${fn.name.toLowerCase()}`;
+        if (!seen.has(key)) seen.set(key, await options.functionEngine(fn));
+        const engine = seen.get(key);
+        const base = engine?.split(' ')[0];
+        if (engine === UNRESOLVED_VIEW) {
+          problems.push({
+            code: 'unchecked_write_target',
+            statement: s.index,
+            message: `${label(s)} calls ${name}, a stored function whose effects could not be determined (its body is hidden from the account, or does more than plain reads and writes), so whether the script can roll back cannot be checked.`,
+            hint: 'Use per-statement mode. On MySQL, an account sees the body of a function it did not define only with SHOW_ROUTINE.',
+          });
+        } else if (base && !TRANSACTIONAL_ENGINES.has(base.toLowerCase())) {
+          problems.push({
+            code: 'non_transactional_engine',
+            statement: s.index,
+            message: `${label(s)} calls ${name}, which writes to a ${base} table. Those changes cannot be rolled back.`,
             hint: 'Use per-statement mode, which reports each statement’s outcome honestly.',
           });
         }

@@ -109,6 +109,74 @@ function depthAt(tokens: Token[], i: number): number {
   return depth;
 }
 
+/**
+ * Names followed by `(` that never call a stored function: built-in functions (an unqualified call
+ * runs the built-in even when a stored function has the same name), data types and keywords.
+ * Anything else is looked up; a name missing here only costs that lookup.
+ */
+const NOT_STORED_FUNCTIONS = new Set(
+  `
+  values in exists row as on using and or not xor where select any some all over partition window
+  lateral key index primary unique foreign references check constraint interval case when then else
+  distinct by if char varchar binary varbinary decimal numeric dec float double real int integer
+  bigint smallint tinyint mediumint bit enum set datetime timestamp time year text blob json point
+  linestring polygon geometry signed unsigned
+  count sum min max avg group_concat json_arrayagg json_objectagg std stddev stddev_pop stddev_samp
+  variance var_pop var_samp bit_and bit_or bit_xor row_number rank dense_rank percent_rank cume_dist
+  ntile lag lead first_value last_value nth_value grouping any_value
+  now current_timestamp current_date current_time curdate curtime sysdate utc_timestamp utc_date
+  utc_time unix_timestamp from_unixtime date date_add date_sub adddate subdate addtime subtime
+  datediff timediff timestampdiff timestampadd date_format time_format str_to_date extract day
+  dayofmonth dayofweek dayofyear dayname month monthname week weekday weekofyear yearweek hour minute
+  second microsecond quarter last_day makedate maketime period_add period_diff to_days from_days
+  sec_to_time time_to_sec convert_tz
+  concat concat_ws substring substr substring_index left right length char_length
+  character_length octet_length bit_length lower upper lcase ucase trim ltrim rtrim replace repeat
+  reverse lpad rpad locate instr position format hex unhex md5 sha sha1 sha2 uuid uuid_short
+  uuid_to_bin bin_to_uuid is_uuid ascii ord space strcmp field find_in_set elt make_set export_set
+  insert quote soundex regexp_like regexp_replace regexp_substr regexp_instr weight_string
+  coalesce ifnull nullif isnull greatest least cast convert
+  abs ceil ceiling floor round truncate mod pow power sqrt exp ln log log2 log10 sign rand pi sin cos
+  tan asin acos atan atan2 cot degrees radians crc32 bin oct conv
+  json_extract json_unquote json_quote json_object json_array json_contains json_contains_path
+  json_length json_depth json_keys json_set json_insert json_replace json_remove json_merge_patch
+  json_merge_preserve json_valid json_type json_search json_table json_overlaps json_value
+  json_pretty json_storage_size member
+  database schema user current_user session_user system_user current_role version connection_id
+  last_insert_id row_count found_rows charset collation coercion
+  inet_aton inet_ntoa inet6_aton inet6_ntoa is_ipv4 is_ipv6 to_base64 from_base64 compress
+  uncompress uncompressed_length aes_encrypt aes_decrypt random_bytes statement_digest
+  statement_digest_text sleep benchmark get_lock release_lock release_all_locks is_free_lock
+  is_used_lock load_file
+  `
+    .trim()
+    .split(/\s+/),
+);
+
+/** Words before which `name (` (or `schema.name (`) is a table, index or column list. */
+const LIST_POSITIONS = new Set([...NAME_POSITIONS, 'INSERT', 'REPLACE', 'REFERENCES', 'INDEX', 'KEY']);
+
+/** Functions a statement calls that may be stored functions, as written (`f` or `schema.f`). */
+function storedFunctionCalls(tokens: Token[]): TableRef[] {
+  const calls = new Map<string, TableRef>();
+  tokens.forEach((t, i) => {
+    if (tokens[i + 1]?.text !== '(') return;
+    const name = identifier(t);
+    if (name === undefined) return;
+    const qualified = tokens[i - 1]?.text === '.';
+    const schema = qualified ? identifier(tokens[i - 2]) : null;
+    if (schema === undefined) return;
+    if (LIST_POSITIONS.has(word(tokens[qualified ? i - 3 : i - 1]))) return;
+    if (!qualified) {
+      if (t.kind === 'word' && NOT_STORED_FUNCTIONS.has(name.toLowerCase())) return;
+      // A later CTE of a WITH list, `…), name (x) AS (…)`, is not a call.
+      if (t.kind === 'word' && !isFunctionCall(tokens, i)) return;
+    }
+    calls.set(`${schema ?? ''}.${name.toLowerCase()}`, { schema, name });
+  });
+  return [...calls.values()];
+}
+
 /** `name` or `schema.name` starting at tokens[i]. */
 function qualifiedName(tokens: Token[], i: number): TableRef | undefined {
   const first = identifier(tokens[i]);
@@ -497,7 +565,12 @@ export function analyzeMysql(text: string): StatementAnalysis {
     const name = t.text.toLowerCase();
     if (UNSAFE_FUNCTIONS[name]) unsafe(analysis, `${name}() ${UNSAFE_FUNCTIONS[name]}`);
     if (name === 'get_lock') analysis.changesSession = true;
+    // LAST_INSERT_ID(expr) sets what LAST_INSERT_ID() returns later on the connection; a rollback
+    // does not restore it.
+    if (name === 'last_insert_id' && tokens[i + 2]?.text !== ')') analysis.changesSession = true;
   });
+  const calls = storedFunctionCalls(tokens);
+  if (calls.length) analysis.callsFunctions = calls;
   // `@v := …` assigns a user variable, which stays on the connection.
   if (tokens.some((t, i) => t.text === ':' && tokens[i + 1]?.text === '=' && tokens[i + 1]?.start === t.end))
     analysis.changesSession = true;
