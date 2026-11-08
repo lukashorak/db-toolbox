@@ -99,14 +99,26 @@ const TLS_CODES =
   /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER|ERR_TLS|ERR_SSL|HANDSHAKE_NO_SSL|DEPTH_ZERO|HOSTNAME|ALTNAME/;
 
 /** Node and driver errors that are not database errors. */
-function transportError(error: { code?: unknown; message?: string }): DbError | null {
+function transportError(error: { code?: unknown; message?: string; syscall?: unknown }): DbError | null {
   const code = typeof error.code === 'string' ? error.code : '';
   const message = error.message ?? String(error);
   if (TLS_CODES.test(code) || /\bssl\b|\btls\b|certificate/i.test(message)) {
     return new DbError('tls', `TLS failed: ${message}`, { code: code || null });
   }
   if (TIMEOUT_CODES.has(code) || /timeout/i.test(message)) {
-    return new DbError('timeout', `Timed out: ${message}`, { code: code || null });
+    // While connecting, nothing was sent yet. On an open connection, a socket or driver timeout
+    // means the connection went quiet: whatever was in flight may have been applied, so it is a
+    // lost connection, never a statement timeout (which the server confirms, and which promises
+    // that nothing was written). Sign-in timeouts: pg Client ("timeout expired"), pg-pool, and
+    // mysql2 and Node ("connect ETIMEDOUT").
+    const connecting =
+      error.syscall === 'connect' ||
+      /^timeout expired$|\bconnect\b|connection timeout|trying to connect/i.test(message);
+    return connecting
+      ? new DbError('timeout', `Timed out: ${message}`, { code: code || null })
+      : new DbError('connectivity', `Lost the connection to the database server: ${message}`, {
+          code: code || null,
+        });
   }
   if (NETWORK_CODES.has(code) || /connection terminated|socket hang up|connect ECONN/i.test(message)) {
     return new DbError('connectivity', `Cannot reach the database server: ${message}`, {

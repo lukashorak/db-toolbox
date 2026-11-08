@@ -56,6 +56,24 @@ describe('database error mapping', () => {
     );
     assert.equal(mapMysqlError({ code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' }).category, 'timeout');
     assert.equal(
+      mapPostgresError({ message: 'Connection terminated due to connection timeout' }).category,
+      'timeout',
+    );
+    assert.equal(
+      mapPostgresError({ message: 'timeout exceeded when trying to connect' }).category,
+      'timeout',
+    );
+    assert.equal(mapPostgresError({ message: 'timeout expired' }).category, 'timeout');
+    // On an open connection, a timeout is a lost connection: what was in flight may have been applied.
+    const quiet = { code: 'ETIMEDOUT', errno: -110, syscall: 'read', message: 'read ETIMEDOUT' };
+    assert.equal(mapMysqlError(quiet).category, 'connectivity');
+    assert.equal(mapPostgresError(quiet).category, 'connectivity');
+    assert.equal(mapPostgresError({ message: 'Query read timeout' }).category, 'connectivity');
+    assert.equal(
+      mapMysqlError({ code: 'PROTOCOL_SEQUENCE_TIMEOUT', message: 'Query inactivity timeout' }).category,
+      'connectivity',
+    );
+    assert.equal(
       mapPostgresError({
         code: 'ERR_TLS_CERT_ALTNAME_INVALID',
         message: "Hostname/IP does not match certificate's altnames",
@@ -223,8 +241,10 @@ describe('errors after a cancel or the time limit', () => {
   const lost = new DbError('connectivity', 'Connection lost', { code: 'ECONNRESET' });
   const failed = new DbError('syntax', 'Syntax error', { code: '42601', sqlState: '42601' });
   it('keeps a lost connection, whichever came first: the statement may have committed', () => {
+    const quiet = mapPostgresError({ code: 'ETIMEDOUT', syscall: 'read', message: 'read ETIMEDOUT' });
     for (const interrupted of ['cancelled', 'timeout', null] as const) {
       assert.equal(afterInterruption(lost, interrupted, 1000).category, 'connectivity', String(interrupted));
+      assert.equal(afterInterruption(quiet, interrupted, 1000).category, 'connectivity', String(interrupted));
     }
   });
 

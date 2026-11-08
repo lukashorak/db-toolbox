@@ -102,7 +102,7 @@ How read-only is enforced, and where each engine's limits are: [decision 0022](d
 
 Values are lossless text, and binary values are `\x` hex ([decision 0023](decisions/0023-values-as-text.md)). MySQL procedures can return several result sets. Notices and warnings are collected with the outcome.
 
-Errors map to a category with the engine's code (SQLSTATE or MySQL error number), message, detail, hint and position. The categories are `syntax`, `permission`, `read_only`, `not_found`, `constraint`, `conflict`, `timeout`, `cancelled`, `connectivity`, `authentication` and others.
+Errors map to a category with the engine's code (SQLSTATE or MySQL error number), message, detail, hint and position. The categories are `syntax`, `permission`, `read_only`, `not_found`, `constraint`, `conflict`, `timeout`, `cancelled`, `connectivity`, `authentication` and others. A statement's `timeout` is one the server confirmed (or its time limit); a socket or driver timeout on an open connection is `connectivity`, because what was in flight may have been applied. Only a timeout while connecting is `timeout`.
 
 The execution engine (queue, capture, transaction modes) is built on these primitives in step 4.
 

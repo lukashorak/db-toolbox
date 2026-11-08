@@ -6,7 +6,7 @@
  *   POSTGRES_TEST_URL=… MYSQL_TEST_URL=… npm run test:integration
  */
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:net';
+import { createServer, type Server, type Socket } from 'node:net';
 import mysql from 'mysql2/promise';
 import { after, before, describe, it } from 'node:test';
 import {
@@ -174,6 +174,35 @@ for (const { engine, variable, prepare } of engines) {
         }
       },
     );
+
+    it('reports a socket timeout on an open connection as a lost connection, not a statement timeout', async () => {
+      const error = await adapter.withSession(async (s) => {
+        const { sink } = collect();
+        const running = s
+          .execute(engine === 'postgresql' ? 'SELECT pg_sleep(5)' : 'SELECT SLEEP(5)', sink, {
+            timeoutMs: 20_000,
+            batchSize: 100,
+          })
+          .then(
+            () => null,
+            (e: unknown) => e,
+          );
+        await new Promise((r) => setTimeout(r, 300));
+        // What Node reports when the kernel gives up on a connection that stopped answering.
+        const internals = s as unknown as {
+          connection?: { stream?: Socket };
+          client?: { connection?: { stream?: Socket } };
+        };
+        const socket = internals.connection?.stream ?? internals.client?.connection?.stream;
+        assert.ok(socket, 'found the session socket');
+        socket.destroy(
+          Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT', errno: -110, syscall: 'read' }),
+        );
+        return running;
+      });
+      // The statement may have been applied before the connection went quiet: not a statement timeout.
+      assert.equal((error as { category?: string } | null)?.category, 'connectivity');
+    });
 
     it('stops waiting for result type names when cancelled', { skip: engine !== 'postgresql' }, async () => {
       // The metadata connection never answers; a cancel of the work backend does not reach it.
