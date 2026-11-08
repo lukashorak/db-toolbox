@@ -99,7 +99,8 @@ export interface DbAdapter {
   cancel(backendId: number): Promise<boolean>;
   readonly metadata: MetadataReader;
   /** MySQL: storage engine of a table, for single-transaction preflight. */
-  tableEngine(table: TableRef): Promise<string | null>;
+  /** `signal`: stop looking (no further query starts) once it aborts. */
+  tableEngine(table: TableRef, signal?: AbortSignal): Promise<string | null>;
   /** Sessions currently checked out. */
   activeSessions(): number;
   /** Runs one of the fixed monitoring queries on the reserved monitoring connection. */

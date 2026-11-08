@@ -201,6 +201,10 @@ for (const { engine, variable, prepare } of engines) {
           // Views report their base tables' engine; a view reached twice is not a cycle.
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_legacy_notes' }), 'MyISAM');
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_v_both' }), 'InnoDB');
+          // A lookup whose signal has aborted starts no query.
+          await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {
+            name: 'AbortError',
+          });
           // A graph that branches at every level is resolved with one lookup per view, not per path
           // (2^5 paths here). Questions counts the statements the server received.
           const u = new URL(url);

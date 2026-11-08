@@ -569,7 +569,15 @@ for (const { engine, variable, prepare } of engines) {
             transactionMode: 'atomic',
             timeoutMs: 1500,
           });
-          adapter.tableEngine = () => new Promise(() => undefined);
+          // Never answers on its own; stops when its signal aborts (as the MySQL adapter does).
+          const toldToStop: string[] = [];
+          adapter.tableEngine = (table, signal) =>
+            new Promise((_, reject) =>
+              signal?.addEventListener('abort', () => {
+                toldToStop.push(table.name);
+                reject(new Error('stopped'));
+              }),
+            );
           try {
             await settle(single, ahead.id);
             await until(() => single.executions.view(cancelled.id).status === 'running');
@@ -578,6 +586,7 @@ for (const { engine, variable, prepare } of engines) {
             assert.deepEqual([stopped.status, stopped.transactionOutcome], ['cancelled', 'not_started']);
             const timedOut = await settle(single, limited.id);
             assert.deepEqual([timedOut.status, timedOut.transactionOutcome], ['timed_out', 'not_started']);
+            assert.deepEqual(toldToStop, ['wb_items', 'wb_items'], 'both lookups were told to stop');
           } finally {
             adapter.tableEngine = lookup;
           }

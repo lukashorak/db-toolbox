@@ -125,8 +125,15 @@ export class MysqlAdapter implements DbAdapter {
     sql: string,
     params: unknown[] = [],
     timeout?: number,
+    signal?: AbortSignal,
   ): Promise<Record<string, unknown>[]> {
+    signal?.throwIfAborted();
     const connection = await this.#acquire(pool);
+    // Aborted while waiting for a connection: give it back without running anything.
+    if (signal?.aborted) {
+      connection.release();
+      signal.throwIfAborted();
+    }
     let timedOut = false;
     try {
       return await new Promise((resolve, reject) =>
@@ -145,8 +152,8 @@ export class MysqlAdapter implements DbAdapter {
   }
 
   /** Metadata lookups give up after 30 s, so a stalled one cannot hold the metadata connection. */
-  #metaQuery(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return this.#pooledQuery(this.#meta, sql, params, METADATA_TIMEOUT_MS);
+  #metaQuery(sql: string, params: unknown[] = [], signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+    return this.#pooledQuery(this.#meta, sql, params, METADATA_TIMEOUT_MS, signal);
   }
 
   async withSession<T>(fn: (session: DbSession) => Promise<T>): Promise<T> {
@@ -178,8 +185,8 @@ export class MysqlAdapter implements DbAdapter {
    * tables decide, and the first non-transactional one is reported. A view whose base tables cannot
    * be determined (no privilege, a cycle, nesting deeper than 16) reports UNRESOLVED_VIEW.
    */
-  async tableEngine(table: TableRef): Promise<string | null> {
-    return this.#engineOf(table.schema, table.name, [], new Map());
+  async tableEngine(table: TableRef, signal?: AbortSignal): Promise<string | null> {
+    return this.#engineOf(table.schema, table.name, [], new Map(), signal);
   }
 
   /**
@@ -192,10 +199,11 @@ export class MysqlAdapter implements DbAdapter {
     name: string,
     ancestors: string[],
     known: Map<string, string | null>,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     const asked = `${schema ?? ''}.${name}`;
     if (known.has(asked)) return known.get(asked) ?? null;
-    const engine = await this.#resolveEngine(schema, name, ancestors, known);
+    const engine = await this.#resolveEngine(schema, name, ancestors, known, signal);
     known.set(asked, engine);
     return engine;
   }
@@ -205,11 +213,13 @@ export class MysqlAdapter implements DbAdapter {
     name: string,
     ancestors: string[],
     known: Map<string, string | null>,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     const [row] = await this.#metaQuery(
       `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
       [schema, name],
+      signal,
     );
     if (!row) return null;
     if (row.type !== 'VIEW') return row.engine ? String(row.engine) : null;
@@ -219,11 +229,12 @@ export class MysqlAdapter implements DbAdapter {
     const bases = await this.#metaQuery(
       'SELECT TABLE_SCHEMA AS db, TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = ? AND VIEW_NAME = ?',
       [row.db, name],
+      signal,
     );
     if (!bases.length) return UNRESOLVED_VIEW;
     let found: string | null = null;
     for (const base of bases) {
-      const engine = await this.#engineOf(String(base.db), String(base.name), path, known);
+      const engine = await this.#engineOf(String(base.db), String(base.name), path, known, signal);
       if (engine === null || engine === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
       if (!TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
       found ??= engine;

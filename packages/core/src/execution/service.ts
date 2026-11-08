@@ -927,8 +927,15 @@ export class ExecutionService {
     // connection may point elsewhere now (another database or host), and tables may have changed:
     // check again against the adapter that will run the script.
     if (atomic && !readOnly && row.engine === 'mysql') {
-      // Bounded like the run itself: a cancel or the time limit ends it even if a lookup stalls.
-      const problems = await untilDone(this.#engineProblems(adapter, String(row.sql)), signal, deadline);
+      // Bounded like the run itself: a cancel or the time limit ends it even if a lookup stalls, and
+      // then stops the lookups too, so none is left waiting for the metadata connection.
+      const lookups = new AbortController();
+      const problems = await untilDone(
+        this.#engineProblems(adapter, String(row.sql), lookups.signal),
+        signal,
+        deadline,
+      );
+      if (problems === 'cancelled' || problems === 'timeout') lookups.abort();
       if (problems === 'cancelled') {
         this.#finalize(id, 'cancelled', 'not_started', null, 'Cancelled before it started.');
         return;
@@ -1225,15 +1232,16 @@ export class ExecutionService {
    * stays queued and is authorized again when it starts.
    */
   /** MySQL single transaction: storage-engine problems of the script, checked through `adapter`. */
-  async #engineProblems(adapter: DbAdapter, sql: string) {
+  async #engineProblems(adapter: DbAdapter, sql: string, signal: AbortSignal) {
     const statements = await analyzeScript(sql, 'mysql');
     const problems = await preflight(statements, {
       engine: 'mysql',
       transactionMode: 'atomic',
       readOnly: false,
       tableEngine: async (table) => {
+        signal.throwIfAborted();
         try {
-          return await adapter.tableEngine(table);
+          return await adapter.tableEngine(table, signal);
         } catch {
           return 'unknown (the storage engine could not be checked)';
         }
