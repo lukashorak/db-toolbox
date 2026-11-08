@@ -172,6 +172,11 @@ export async function prepareMysql(url: string): Promise<void> {
         COMMIT;
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'failed after a commit';
       END;
+      -- Writes (committed, per statement), then fails on a missing table at run time.
+      CREATE PROCEDURE wb_write_then_missing() BEGIN
+        INSERT INTO wb_items (name) VALUES ('proc-before-missing');
+        SELECT * FROM wb_no_such_table;
+      END;
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
       -- Two branches that share one nested view: not a cycle.

@@ -72,6 +72,16 @@ describe('statement classification', () => {
       assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
     }
     assert.equal((await analyzeStatement("select 'get_lock(' as s", 'mysql')).changesSession, false);
+    // User variables assigned inside writes stay on the connection too.
+    for (const sql of ["insert into t (v) select @s := 'x'", 'update t set v = (@x := 1)']) {
+      assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
+    }
+    // VALUES ROW(…) evaluates functions: the same unsafe-function checks as SELECT apply.
+    const file = await analyzeStatement("values row(load_file('/etc/passwd'))", 'mysql');
+    assert.equal(file.readOnlySafe, false);
+    const lock = await analyzeStatement("values row(get_lock('n', 60))", 'mysql');
+    assert.deepEqual([lock.readOnlySafe, lock.changesSession], [false, true]);
+    assert.equal((await analyzeStatement('values row(1, 2)', 'mysql')).readOnlySafe, true);
     assert.equal((await analyzeStatement('call p()', 'postgresql')).changesSession, true);
     assert.equal((await analyzeStatement('create table t (a int)', 'mysql')).changesSession, false);
     assert.equal((await analyzeStatement('savepoint a', 'postgresql')).transactionControl, 'savepoint');

@@ -425,9 +425,17 @@ export function analyzeMysql(text: string): StatementAnalysis {
   const tokens = significant(raw);
   if (!tokens.length) return unsafe(baseAnalysis('unknown', 'EMPTY'), 'no statement found');
   const analysis = analyzeByKeyword(text, tokens);
-  // A named lock belongs to the connection, wherever the call appears (SELECT, INSERT … VALUES,
-  // UPDATE … SET): the connection must not be reused by someone else.
-  if (tokens.some((t, i) => word(t) === 'GET_LOCK' && tokens[i + 1]?.text === '('))
+  // Wherever they appear (SELECT, VALUES ROW(…), INSERT … VALUES, UPDATE … SET), functions with
+  // effects a read-only transaction does not stop make the statement unsafe, and a named lock
+  // belongs to the connection, which must then not be reused by someone else.
+  tokens.forEach((t, i) => {
+    if (t.kind !== 'word' || tokens[i + 1]?.text !== '(') return;
+    const name = t.text.toLowerCase();
+    if (UNSAFE_FUNCTIONS[name]) unsafe(analysis, `${name}() ${UNSAFE_FUNCTIONS[name]}`);
+    if (name === 'get_lock') analysis.changesSession = true;
+  });
+  // `@v := …` assigns a user variable, which stays on the connection.
+  if (tokens.some((t, i) => t.text === ':' && tokens[i + 1]?.text === '=' && tokens[i + 1]?.start === t.end))
     analysis.changesSession = true;
   return analysis;
 }

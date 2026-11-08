@@ -550,6 +550,16 @@ for (const { engine, variable, prepare } of engines) {
       });
     }
 
+    it('keeps results as long as Retain asked, even when chosen while the run was going', async () => {
+      const started = await submit(`${sleep(1.5)}, 1 AS one`);
+      await until(() => core.executions.view(started.id).status === 'running');
+      core.executions.retain(writer, started.id, 7);
+      const done = await settle(core, started.id);
+      assert.equal(done.status, 'succeeded');
+      const expires = Date.parse(String(done.resultSets[0]?.expiresAt));
+      assert.ok(expires > Date.now() + 6 * 86_400_000, `results expire at ${done.resultSets[0]?.expiresAt}`);
+    });
+
     it('cancels a queued execution before it starts', async () => {
       await core.executions.idle();
       const a = await submit(sleep(1));
@@ -622,6 +632,13 @@ for (const { engine, variable, prepare } of engines) {
         );
         assert.match(String(view.error?.message), /failed after a commit/);
         assert.equal(await count("name = 'proc-committed'"), 1, 'the committed part stays');
+        // A "not found" error raised inside the procedure says nothing about what ran before it.
+        const missing = await run('CALL wb_write_then_missing()', { connectionId: writable });
+        assert.deepEqual(
+          [missing.status, missing.statements[0]?.transactionOutcome, missing.transactionOutcome],
+          ['failed', 'unknown', 'unknown'],
+        );
+        assert.equal(await count("name = 'proc-before-missing'"), 1);
       });
 
       it('lets a procedure finish its writes when its rows reach the preview limit', async () => {

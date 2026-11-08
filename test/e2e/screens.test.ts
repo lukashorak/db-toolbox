@@ -116,6 +116,35 @@ describe(
       await page.getByRole('button', { name: 'Preview data' }).click();
       await page.getByRole('grid').getByText('alpha').waitFor({ timeout: 15_000 });
 
+      // A preview that answers after another object was selected is not shown under it.
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const isSubmit = (r: { method(): string; url(): string }) =>
+        r.method() === 'POST' && /\/api\/v1\/executions$/.test(r.url());
+      await page.route('**/api/v1/executions', async (route) => {
+        if (isSubmit(route.request())) await held;
+        await route.continue();
+      });
+      const answered = page.waitForResponse((r) => isSubmit(r.request()));
+      await page.getByRole('button', { name: 'Preview data' }).click();
+      await page
+        .getByRole('treeitem', { name: /wb_orders/ })
+        .first()
+        .click();
+      release();
+      await answered;
+      await page.unroute('**/api/v1/executions');
+      await new Promise((r) => setTimeout(r, 2000));
+      assert.equal(
+        await page.getByRole('grid').getByText('alpha').count(),
+        0,
+        'no wb_items rows under wb_orders',
+      );
+      await page
+        .getByRole('treeitem', { name: /wb_items/ })
+        .first()
+        .click();
+
       await page.getByRole('button', { name: 'Open SELECT' }).click();
       await page.waitForURL(/\/workbench$/);
       assert.match(String(await page.getByTestId('sql-editor').textContent()), /FROM "public"\."wb_items"/);

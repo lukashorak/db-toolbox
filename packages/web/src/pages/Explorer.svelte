@@ -34,6 +34,11 @@
     error?: string;
   } | null>(null);
 
+  /** Changes with every selection (and connection): answers for an earlier one are dropped. */
+  let selection = 0;
+  /** Changes with every preview run, so only the latest one shows its rows. */
+  let previewRun = 0;
+
   const connection = $derived(connections.find((c) => c.id === connectionId) ?? null);
   const engine = $derived(connection?.engine ?? 'postgresql');
   const KIND_ICON: Record<string, string> = {
@@ -93,21 +98,24 @@
   }
 
   async function select(o: ObjectInfo) {
+    const mine = ++selection;
     selected = o;
     detail = null;
     preview = null;
     tab = isRelation(o) ? 'columns' : 'definition';
     const base = `/connections/${connectionId}/metadata/schemas/${encodeURIComponent(o.schema)}`;
     try {
-      detail = isRelation(o)
+      const loaded = isRelation(o)
         ? { table: await api<TableDetail>('GET', `${base}/tables/${encodeURIComponent(o.name)}`) }
         : {
-            routine: await api(
+            routine: await api<{ status: string; text: string | null; reason?: string }>(
               'GET',
               `${base}/routines/${encodeURIComponent(o.name)}${o.signature !== undefined ? `?signature=${encodeURIComponent(o.signature)}` : ''}`,
             ),
           };
+      if (mine === selection) detail = loaded;
     } catch (e) {
+      if (mine !== selection) return;
       if (e instanceof ApiError && e.code === 'not_found') detail = { missing: true };
       else failure = e instanceof Error ? e.message : String(e);
     }
@@ -121,6 +129,13 @@
 
   async function previewData() {
     if (!selected || !connectionId) return;
+    // The preview belongs to this selection and this run: a later selection or run drops it.
+    const forSelection = selection;
+    const run = ++previewRun;
+    const current = () => forSelection === selection && run === previewRun;
+    const show = (value: NonNullable<typeof preview>) => {
+      if (current()) preview = value;
+    };
     preview = { status: 'queued', columns: [], rows: [] };
     try {
       let view = await api<{
@@ -134,26 +149,27 @@
         title: `Preview ${selected.name}`,
         scope: 'Explorer preview',
       });
-      while (['queued', 'running', 'cancel_requested'].includes(view.status)) {
+      while (current() && ['queued', 'running', 'cancel_requested'].includes(view.status)) {
         await new Promise((r) => setTimeout(r, 300));
         view = await api('GET', `/executions/${view.id}`);
       }
+      if (!current()) return;
       if (view.status !== 'succeeded' || !view.resultSets.length) {
-        preview = { status: view.status, columns: [], rows: [], error: view.error?.message ?? 'No result.' };
+        show({ status: view.status, columns: [], rows: [], error: view.error?.message ?? 'No result.' });
         return;
       }
       const page = await api<{
         columns: { name: string; type: string; binary: boolean }[];
         rows: (string | null)[][];
       }>('GET', `/executions/${view.id}/results/0/rows?limit=100`);
-      preview = { status: view.status, columns: page.columns, rows: page.rows };
+      show({ status: view.status, columns: page.columns, rows: page.rows });
     } catch (e) {
-      preview = {
+      show({
         status: 'failed',
         columns: [],
         rows: [],
         error: e instanceof ApiError ? `${e.message}` : String(e),
-      };
+      });
     }
   }
 
@@ -170,7 +186,14 @@
         <span>Connection</span>
         <select
           bind:value={connectionId}
-          onchange={() => ((objects = {}), (expanded = {}), (selected = null), void refresh())}
+          onchange={() => (
+            selection++,
+            (objects = {}),
+            (expanded = {}),
+            (selected = null),
+            (preview = null),
+            void refresh()
+          )}
         >
           {#each connections as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
         </select>

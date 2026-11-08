@@ -918,9 +918,12 @@ export class ExecutionService {
     let atomicOutcome: TransactionOutcome = 'not_started';
 
     const expiresAt = () => {
+      // Read now, not from the snapshot at start: Retain may have been chosen while it ran.
+      const current =
+        this.ctx.db.get('SELECT retention, retain_days FROM executions WHERE id = :id', { id }) ?? row;
       const hours =
-        row.retention === 'retained'
-          ? Number(row.retain_days ?? defaults.retainedMaxDays) * 24
+        current.retention === 'retained'
+          ? Number(current.retain_days ?? defaults.retainedMaxDays) * 24
           : defaults.workingRetentionHours;
       return new Date(Date.now() + hours * 3_600_000).toISOString();
     };
@@ -947,8 +950,10 @@ export class ExecutionService {
             break;
           }
           const writes = !(st.kind === 'read' || (readOnly && st.kind === 'session'));
-          // A procedure can COMMIT part of its work and then fail: its failure promises no rollback.
-          const mayCommit = String(st.command).toUpperCase() === 'CALL';
+          // A procedure (or, in MySQL, a prepared statement, which may itself be a CALL or DDL) can
+          // commit part of its work and then fail: its failure promises no rollback, whatever the error.
+          const command = String(st.command).toUpperCase();
+          const mayCommit = command === 'CALL' || (row.engine === 'mysql' && command === 'EXECUTE');
           const startedAt = isoNow(this.ctx);
           const t0 = performance.now();
           this.ctx.db.run(
@@ -1020,13 +1025,13 @@ export class ExecutionService {
                     : 'failed';
             if (!atomic && readOnly)
               await session.rollback().catch(() => session.markDirty('rollback failed'));
-            // Errors raised before anything is written (syntax, a missing table or column, a
-            // missing privilege, read-only) leave nothing behind. Otherwise, per statement, a failed
-            // write rolls back only if every table it writes is known to roll back.
+            // For a single statement, errors raised before anything is written (syntax, a missing
+            // table or column, a missing privilege, read-only) leave nothing behind. Otherwise, per
+            // statement, a failed write rolls back only if every table it writes is known to roll back.
             const nothingWritten = ['syntax', 'not_found', 'permission', 'read_only'].includes(category);
             const uncertain =
               lost ||
-              (mayCommit && !nothingWritten) ||
+              mayCommit ||
               (row.engine === 'mysql' &&
                 !atomic &&
                 writes &&
