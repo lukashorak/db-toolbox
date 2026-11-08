@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createCore, type Core } from '../src/core.js';
 import { AppError } from '../src/domain/errors.js';
+import { withinBounds } from '../src/execution/service.js';
 import { actor, admin, limits, pgInput, reader, steppingClock, TEST_KEY, writer } from './helpers.js';
 
 /** A core whose scheduler never starts anything, so queued state can be inspected. */
@@ -432,5 +433,57 @@ describe('restart reconciliation and retention', () => {
     assert.equal(removed.executionsDeleted, 1);
     assert.throws(() => core.executions.view(view.id), code('not_found'));
     core.close();
+  });
+});
+
+describe('checks after a failed statement', () => {
+  /** A lookup that never answers on its own; it ends only when aborted. */
+  const silent = (signal: AbortSignal) =>
+    new Promise<boolean>((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))));
+
+  it('get the grace period after a cancel or the deadline, then count as not established', async () => {
+    const cancelled = new AbortController();
+    cancelled.abort();
+    let started = Date.now();
+    let aborted = false;
+    const afterCancel = await withinBounds(
+      (signal) => {
+        signal.addEventListener('abort', () => (aborted = true));
+        return silent(signal);
+      },
+      { signal: cancelled.signal, deadline: Date.now() + 60_000 },
+      false,
+      30,
+    );
+    assert.deepEqual([afterCancel, aborted], [false, true]);
+    assert.ok(Date.now() - started < 1000);
+    // Past the deadline (a time limit): the same grace period.
+    started = Date.now();
+    const pastDeadline = await withinBounds(
+      silent,
+      { signal: new AbortController().signal, deadline: Date.now() - 1 },
+      false,
+      30,
+    );
+    assert.equal(pastDeadline, false);
+    assert.ok(Date.now() - started < 1000);
+  });
+
+  it('stop at a cancel that arrives while they run, and give their answer when it comes in time', async () => {
+    const execution = new AbortController();
+    const started = Date.now();
+    setTimeout(() => execution.abort(), 20);
+    assert.equal(
+      await withinBounds(silent, { signal: execution.signal, deadline: Date.now() + 60_000 }, false, 30),
+      false,
+    );
+    assert.ok(Date.now() - started < 1000, 'not held until the deadline');
+    const answered = await withinBounds(
+      async () => true,
+      { signal: new AbortController().signal, deadline: Date.now() + 60_000 },
+      false,
+      30,
+    );
+    assert.equal(answered, true);
   });
 });

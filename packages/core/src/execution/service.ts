@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { z } from 'zod';
 import { DbError } from '../db/errors.js';
+import { STALL_GRACE_MS } from '../db/stall.js';
 import type { Cell, ColumnInfo, DbAdapter, DbSession } from '../db/types.js';
 import { AppError, assert } from '../domain/errors.js';
 import { newId } from '../domain/ids.js';
@@ -139,6 +140,49 @@ interface Running {
  * Status, transaction outcome and result completeness are reported separately and honestly.
  */
 /** `work`, unless the signal aborts or the deadline (epoch ms) passes first. */
+/**
+ * Runs a check after a statement failed, within the execution's bounds: until the deadline, and for
+ * the grace period once the execution is cancelled or past its deadline (the failure may be that
+ * cancel or time limit). A check that has not finished then gives `fallback`, and its lookups are
+ * aborted.
+ */
+export async function withinBounds<T>(
+  check: (signal: AbortSignal) => Promise<T>,
+  bounds: { signal: AbortSignal; deadline: number },
+  fallback: T,
+  graceMs = STALL_GRACE_MS,
+): Promise<T> {
+  const lookups = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let giveUp: (value: T) => void = () => undefined;
+  const gaveUp = new Promise<T>((resolve) => (giveUp = resolve));
+  const until = (at: number) => {
+    clearTimeout(timer);
+    timer = setTimeout(
+      () => {
+        // Settled first, so the race gives the fallback, not the aborted lookup's error.
+        giveUp(fallback);
+        lookups.abort();
+      },
+      Math.max(0, at - Date.now()),
+    );
+  };
+  const onAbort = () => until(Date.now() + graceMs);
+  if (bounds.signal.aborted) onAbort();
+  else {
+    until(bounds.deadline + graceMs);
+    bounds.signal.addEventListener('abort', onAbort, { once: true });
+  }
+  const work = check(lookups.signal);
+  work.catch(() => undefined); // An abandoned check may still fail later.
+  try {
+    return await Promise.race([work, gaveUp]);
+  } finally {
+    clearTimeout(timer);
+    bounds.signal.removeEventListener('abort', onAbort);
+  }
+}
+
 async function untilDone<T>(
   work: Promise<T>,
   signal: AbortSignal,
@@ -1154,7 +1198,20 @@ export class ExecutionService {
                 writes &&
                 !readOnly &&
                 !nothingWritten &&
-                !(await this.#failedWriteRolledBack(adapter, String(st.sql), database, missingIsHarmless)));
+                // Bounded: a cancel or the time limit (perhaps the failure itself) leaves the check
+                // the grace period; one that does not finish leaves the outcome unknown.
+                !(await withinBounds(
+                  (lookups) =>
+                    this.#failedWriteRolledBack(
+                      adapter,
+                      String(st.sql),
+                      database,
+                      missingIsHarmless,
+                      lookups,
+                    ),
+                  { signal, deadline },
+                  false,
+                )));
             const txOutcome: TransactionOutcome = atomic
               ? 'not_started'
               : uncertain && writes && !readOnly
@@ -1356,7 +1413,8 @@ export class ExecutionService {
     adapter: DbAdapter,
     sql: string,
     database: string | null,
-    missingIsHarmless = false,
+    missingIsHarmless: boolean,
+    signal: AbortSignal,
   ): Promise<boolean> {
     const analysis = await analyzeStatement(sql, 'mysql');
     if (analysis.writeTargetsUnknown || analysis.mayCommit || analysis.irreversible) return false;
@@ -1365,7 +1423,7 @@ export class ExecutionService {
     for (const table of analysis.writesTables) {
       let engine: string | null;
       try {
-        engine = await adapter.tableEngine({ ...table, schema: table.schema ?? database });
+        engine = await adapter.tableEngine({ ...table, schema: table.schema ?? database }, signal);
       } catch {
         return false;
       }
@@ -1382,10 +1440,10 @@ export class ExecutionService {
     // before the statement failed.
     const reached = [
       ...(analysis.callsFunctions ?? []).map(
-        (fn) => () => adapter.functionEngine({ ...fn, schema: fn.schema ?? database }),
+        (fn) => () => adapter.functionEngine({ ...fn, schema: fn.schema ?? database }, signal),
       ),
       ...(analysis.referencesTables ?? []).map(
-        (t) => () => adapter.viewEngine({ ...t, schema: t.schema ?? database }),
+        (t) => () => adapter.viewEngine({ ...t, schema: t.schema ?? database }, signal),
       ),
     ];
     for (const lookup of reached) {
