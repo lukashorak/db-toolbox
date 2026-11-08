@@ -66,7 +66,23 @@ describe('lost session', () => {
     await tick();
     const dialog = screen.getByRole('alertdialog', { name: 'Your session has ended' });
     expect(dialog.getAttribute('aria-modal')).toBe('true');
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sign in again' }));
+    const button = screen.getByRole('button', { name: 'Sign in again' });
+    expect(document.activeElement).toBe(button);
+    // Tab and Shift+Tab stay on its only control, also from outside the dialog.
+    for (const shiftKey of [false, true]) {
+      expect(await fireEvent.keyDown(button, { key: 'Tab', shiftKey })).toBe(false);
+      document.body.focus();
+      expect(await fireEvent.keyDown(document.body, { key: 'Tab', shiftKey })).toBe(false);
+      expect(document.activeElement).toBe(button);
+    }
+  });
+
+  it('leaves Tab alone on the other gates', async () => {
+    render(Gate, { kind: 'denied' });
+    await tick();
+    expect(await fireEvent.keyDown(screen.getByRole('button', { name: 'Sign out' }), { key: 'Tab' })).toBe(
+      true,
+    );
   });
 
   it('makes the app behind the dialog inert, and only then', async () => {

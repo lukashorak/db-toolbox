@@ -5,12 +5,20 @@
   /** Pages shown instead of the app: access denied, sign-in failure, and a lost session. */
   let { kind }: { kind: 'denied' | 'failed' | 'lost' } = $props();
 
-  // A lost session is a modal over the app (which is inert meanwhile): focus moves into it.
+  // A lost session is a modal over the app (which is inert meanwhile): focus moves into it and stays
+  // there. "Sign in again" is its only control, so Tab and Shift+Tab keep the focus on it.
   let action = $state<HTMLButtonElement>();
   $effect(() => {
     if (kind === 'lost') action?.focus();
   });
+  const keepFocus = (event: KeyboardEvent) => {
+    if (kind !== 'lost' || event.key !== 'Tab') return;
+    event.preventDefault();
+    action?.focus();
+  };
 </script>
+
+<svelte:window onkeydown={keepFocus} />
 
 <div
   class="gate"

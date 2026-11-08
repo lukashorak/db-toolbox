@@ -199,17 +199,17 @@ describe(
         await page.getByRole('link', { name: 'Settings' }).click();
         await page.getByRole('alertdialog', { name: 'Your session has ended' }).waitFor();
         await page.locator('[role="alertdialog"] button:focus', { hasText: 'Sign in again' }).waitFor();
-        for (let i = 0; i < 4; i++) {
-          await page.keyboard.press('Tab');
+        // Tab and Shift+Tab keep the focus on the dialog's only control.
+        for (const key of ['Tab', 'Tab', 'Shift+Tab', 'Shift+Tab']) {
+          await page.keyboard.press(key);
           const focused = await page.evaluate(() => {
-            const doc = (globalThis as unknown as { document: { activeElement: unknown; body: unknown } })
-              .document;
-            const active = doc.activeElement as { closest(s: string): unknown; outerHTML: string } | null;
-            return !active || active === doc.body || active.closest('[role="alertdialog"]')
+            const doc = (globalThis as unknown as { document: { activeElement: unknown } }).document;
+            const active = doc.activeElement as { textContent: string | null; outerHTML: string } | null;
+            return active?.textContent?.trim() === 'Sign in again'
               ? null
-              : active.outerHTML.slice(0, 120);
+              : (active?.outerHTML.slice(0, 120) ?? 'nothing');
           });
-          assert.equal(focused, null, `Tab ${i + 1} left the dialog`);
+          assert.equal(focused, null, `after ${key}, the focus left "Sign in again"`);
         }
         const violations = await audit();
         assert.equal(violations.length, 0, describeViolations(violations));
