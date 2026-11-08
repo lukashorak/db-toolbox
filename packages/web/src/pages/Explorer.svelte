@@ -59,27 +59,48 @@
     if (connectionId) await refresh();
   });
 
+  // A refresh belongs to the connection it asked about and is superseded by a newer one: answers
+  // (and failures) that arrive after another connection was picked are dropped, so one database's
+  // schemas are never shown under another.
+  let refreshing = 0;
   async function refresh() {
-    if (!connectionId) return;
+    const id = connectionId;
+    if (!id) return;
+    const mine = ++refreshing;
+    const current = () => mine === refreshing && connectionId === id;
     loading = true;
     try {
-      schemas = await api<MetadataResult<SchemaInfo>>('GET', `/connections/${connectionId}/metadata/schemas`);
-      for (const name of Object.keys(expanded)) if (expanded[name]) await loadObjects(name);
+      const next = await api<MetadataResult<SchemaInfo>>('GET', `/connections/${id}/metadata/schemas`);
+      if (!current()) return;
+      schemas = next;
+      for (const name of Object.keys(expanded)) {
+        if (!expanded[name]) continue;
+        const loaded = await fetchObjects(id, name);
+        if (!current()) return;
+        objects[name] = loaded;
+      }
       loadedAt = new Date();
       failure = null;
     } catch (e) {
       // Keep what was shown and say it is stale.
-      failure = e instanceof Error ? e.message : String(e);
+      if (current()) failure = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (mine === refreshing) loading = false;
     }
   }
 
-  async function loadObjects(schema: string) {
-    objects[schema] = await api<MetadataResult<ObjectInfo>>(
+  function fetchObjects(id: string, schema: string) {
+    return api<MetadataResult<ObjectInfo>>(
       'GET',
-      `/connections/${connectionId}/metadata/schemas/${encodeURIComponent(schema)}/objects`,
+      `/connections/${id}/metadata/schemas/${encodeURIComponent(schema)}/objects`,
     );
+  }
+
+  async function loadObjects(schema: string) {
+    const id = connectionId;
+    if (!id) return;
+    const loaded = await fetchObjects(id, schema);
+    if (connectionId === id) objects[schema] = loaded;
   }
 
   async function toggle(schema: string) {

@@ -5,6 +5,7 @@ import DataGrid from '../src/components/DataGrid.svelte';
 import ResultsPanel from '../src/components/ResultsPanel.svelte';
 import PolicyChip from '../src/components/PolicyChip.svelte';
 import Monitoring from '../src/pages/Monitoring.svelte';
+import Explorer from '../src/pages/Explorer.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
 import { columnComparator } from '../src/lib/compare';
@@ -377,6 +378,48 @@ describe('monitoring', () => {
       answerAlpha(snapshotOf('alpha_account'));
       await settle();
       expect(screen.getByTestId('sample-time').textContent).toMatch(/account beta_account/);
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+});
+
+describe('explorer', () => {
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      await tick();
+    }
+  };
+  const schemasOf = (name: string) => ({
+    status: 'complete',
+    items: [{ name, system: false, usable: true }],
+  });
+
+  it('never shows one connection’s schemas under another', async () => {
+    const original = api.getMockImplementation();
+    let answerAlpha: (value: unknown) => void = () => undefined;
+    api.mockImplementation((async (_method: string, url: string) => {
+      if (url === '/connections')
+        return [
+          { id: 'a', name: 'Alpha', enabled: true, engine: 'postgresql' },
+          { id: 'b', name: 'Beta', enabled: true, engine: 'postgresql' },
+        ];
+      // Alpha answers slowly; Beta at once.
+      if (url === '/connections/a/metadata/schemas') return new Promise((r) => (answerAlpha = r));
+      if (url === '/connections/b/metadata/schemas') return schemasOf('beta_schema');
+      return { status: 'complete', items: [] };
+    }) as never);
+    try {
+      render(Explorer);
+      await settle();
+      await fireEvent.change(screen.getByLabelText('Connection'), { target: { value: 'b' } });
+      await settle();
+      expect(screen.getByText('beta_schema')).toBeTruthy();
+      answerAlpha(schemasOf('alpha_schema'));
+      await settle();
+      expect(screen.getByText('beta_schema')).toBeTruthy();
+      expect(screen.queryByText('alpha_schema')).toBeNull();
     } finally {
       if (original) api.mockImplementation(original);
     }
