@@ -12,6 +12,8 @@ set -euo pipefail
 KEYCLOAK_IMAGE="${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.4}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-18080}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16}"
+# Set to 1 to preload pg_stat_statements (the extension itself is created by the tests that need it).
+POSTGRES_STATEMENTS="${POSTGRES_STATEMENTS:-0}"
 POSTGRES_PORT="${POSTGRES_PORT:-15432}"
 MYSQL_IMAGE="${MYSQL_IMAGE:-mysql:8.4}"
 MYSQL_PORT="${MYSQL_PORT:-13306}"
@@ -59,11 +61,13 @@ for service in "${services[@]}"; do
       ;;
     postgres)
       docker rm -f "$PREFIX-postgres" >/dev/null 2>&1 || true
+      preload=""
+      [ "$POSTGRES_STATEMENTS" = "1" ] && preload="-c shared_preload_libraries=pg_stat_statements"
       docker run -d --name "$PREFIX-postgres" -p "127.0.0.1:${POSTGRES_PORT}:5432" \
-        -e POSTGRES_PASSWORD="$PASSWORD" -v "$CERTS:/certs:ro" --entrypoint bash "$POSTGRES_IMAGE" -c '
+        -e POSTGRES_PASSWORD="$PASSWORD" -e PRELOAD="$preload" -v "$CERTS:/certs:ro" --entrypoint bash "$POSTGRES_IMAGE" -c '
           install -o postgres -g postgres -m 600 /certs/server.key /var/lib/postgresql/server.key
           install -o postgres -g postgres -m 644 /certs/server.crt /var/lib/postgresql/server.crt
-          exec docker-entrypoint.sh postgres -c ssl=on \
+          exec docker-entrypoint.sh postgres -c ssl=on $PRELOAD \
             -c ssl_cert_file=/var/lib/postgresql/server.crt -c ssl_key_file=/var/lib/postgresql/server.key' >/dev/null
       wait_exec postgres pg_isready -h 127.0.0.1 -U postgres
       echo "POSTGRES_TEST_URL=postgres://postgres:${PASSWORD}@localhost:${POSTGRES_PORT}/postgres"

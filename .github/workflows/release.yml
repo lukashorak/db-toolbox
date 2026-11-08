@@ -1,0 +1,82 @@
+name: Release image
+
+# Builds the production image and pushes it to the private registry.
+#   - on a version tag:  git tag v0.1.0 && git push origin v0.1.0
+#   - or by hand:        Actions → Release image → Run workflow (version 0.1.0)
+# Needs the repository secrets REGISTRY_USERNAME and REGISTRY_PASSWORD
+# (Settings → Secrets and variables → Actions).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version, for example 0.1.0'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: registry.sensay-learning.com
+  IMAGE: registry.sensay-learning.com/db-tool
+
+jobs:
+  check:
+    name: Format, lint, types, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  image:
+    name: Build and push
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$version' is not a version such as 0.1.0"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Registry credentials are configured
+        env:
+          USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+            echo "::error::Add the repository secrets REGISTRY_USERNAME and REGISTRY_PASSWORD first."
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - name: Summary
+        run: echo "Pushed \`${IMAGE}:${{ steps.version.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"

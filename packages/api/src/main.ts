@@ -49,9 +49,11 @@ for (const [name, dir] of [
   }
 }
 
-const { version } = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as {
-  version: string;
-};
+// Release images set WORKBENCH_VERSION (the Git tag); a checkout reports package.json.
+const version =
+  process.env.WORKBENCH_VERSION ||
+  (JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as { version: string })
+    .version;
 function openCore(): Core {
   try {
     return createCore({

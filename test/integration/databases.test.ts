@@ -101,7 +101,10 @@ for (const { engine, variable, prepare } of engines) {
           ],
         );
         assert.equal(report.tls.encrypted, true);
-        assert.match(report.server?.version ?? '', engine === 'postgresql' ? /^16\./ : /^8\.4\./);
+        assert.match(
+          report.server?.version ?? '',
+          engine === 'postgresql' ? /^(1[6-9]|[2-9]\d)\./ : /^8\.4\./,
+        );
         const caps = Object.fromEntries(report.capabilities.map((c) => [c.name, c.available]));
         assert.equal(caps.read_only_transactions, true);
         assert.equal(caps.read_only_account, false, 'the admin account can write');

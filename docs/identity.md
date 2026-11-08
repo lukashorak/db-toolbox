@@ -64,6 +64,13 @@ claude mcp add --transport http --client-id workbench-mcp --callback-port 8765 w
 
 Then run `/mcp` in Claude Code, choose **workbench** and sign in in the browser. The tools are described in [mcp.md](mcp.md).
 
+What Claude Code does, according to its documentation:
+
+- `--client-id` makes it use the pre-registered public client instead of dynamic client registration;
+- `--callback-port` fixes its redirect URI to `http://localhost:8765/callback`, which the realm registers;
+- it finds Keycloak through the protected resource metadata;
+- it requests `offline_access` when Keycloak offers it, so it stays signed in beyond the browser session. Remove that scope from the `workbench-mcp` client to prevent this.
+
 ## Automated verification
 
 - Unit tests sign tokens with a local key set and cover each row of the table above (`packages/core/test/identity.test.ts`, `packages/api/test/auth.test.ts`).
@@ -82,12 +89,12 @@ scripts/integration/stop.sh
 
 ## Manual check with the real Keycloak and Claude Code
 
-To be done once the Keycloak URL, realm, public URL and Claude Code version are known. Record the results in [implementation-status.md](implementation-status.md).
+For production: Keycloak `https://kc.sensay-learning.com`, realm `db-tool`, public URL `https://db-tool.sensay-learning.com`, a current Claude Code. The setup steps are in [deploy/sensay-learning/README.md](../deploy/sensay-learning/README.md). Record the results in [implementation-status.md](implementation-status.md).
 
-1. Import the generated realm into the real Keycloak and assign `query:read` to a test user.
-2. Start the workbench with `PUBLIC_URL` and `KEYCLOAK_ISSUER` set; `GET /api/v1/client-config` shows them.
-3. Create an MCP profile bound to `workbench-mcp` (API in step 6; until then with a one-off script).
-4. Add the server in Claude Code with the command above, then run `/mcp` and sign in.
+1. Import `deploy/sensay-learning/keycloak-db-tool.json` into realm `db-tool` (partial import), and assign `query:read` to a test user.
+2. Start the workbench; `GET https://db-tool.sensay-learning.com/api/v1/client-config` shows the issuer `https://kc.sensay-learning.com/realms/db-tool`.
+3. Under **MCP access**, create a read-only profile bound to `workbench-mcp`.
+4. Add the server in Claude Code (`claude mcp add --transport http --client-id workbench-mcp --callback-port 8765 db-tool https://db-tool.sensay-learning.com/mcp`), then run `/mcp` and sign in.
 5. Ask Claude Code to call `whoami` and `list_connections`. Expect the user, the profile and read-only access.
 6. Wait more than 5 minutes and call `whoami` again: Claude Code refreshes the token without a new sign-in.
 7. Disable the profile and call `whoami`: expect `profile_disabled`.

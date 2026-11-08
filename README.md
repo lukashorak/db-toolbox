@@ -43,6 +43,7 @@ Integration tests run against disposable containers (Docker required):
 
 ```sh
 scripts/integration/start.sh             # Keycloak, PostgreSQL 16, MySQL 8.4; prints the variables to export
+# POSTGRES_IMAGE=postgres:18 POSTGRES_STATEMENTS=1 scripts/integration/start.sh   # PostgreSQL 18 with pg_stat_statements
 export KEYCLOAK_TEST_URL=http://127.0.0.1:18080 INTEGRATION_CERTS=$PWD/.integration/certs
 export POSTGRES_TEST_URL=postgres://postgres:workbench-it@localhost:15432/postgres
 export MYSQL_TEST_URL=mysql://root:workbench-it@localhost:13306/mysql

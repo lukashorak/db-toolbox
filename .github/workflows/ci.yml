@@ -32,12 +32,23 @@ jobs:
       - run: npm run build
 
   integration:
-    name: Integration and GUI tests (Keycloak, PostgreSQL 16, MySQL 8.4, Chromium)
+    name: Integration and GUI tests (Keycloak, PostgreSQL ${{ matrix.postgres }}, MySQL 8.4, Chromium)
     needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: '16'
+            statements: '0'
+          # The version in production, with pg_stat_statements loaded.
+          - postgres: '18'
+            statements: '1'
     env:
       WORKBENCH_REQUIRE_INTEGRATION: '1'
+      POSTGRES_IMAGE: postgres:${{ matrix.postgres }}
+      POSTGRES_STATEMENTS: ${{ matrix.statements }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

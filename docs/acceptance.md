@@ -3,7 +3,7 @@
 Each of the fourteen acceptance criteria in [requirements.md](requirements.md#acceptance-criteria), split into its clauses, with the automated tests that prove them. Every test listed runs in CI:
 
 - **check** job: unit, contract and component tests;
-- **integration** job: Keycloak 26.4, PostgreSQL 16 and MySQL 8.4, then Playwright in Chromium;
+- **integration** job, once with PostgreSQL 16 and once with PostgreSQL 18 (with `pg_stat_statements`): Keycloak 26.4 and MySQL 8.4, then load tests and Playwright in Chromium;
 - **deploy** job: the built image with the compose file.
 
 Integration tests in `test/integration/executions.test.ts`, `databases.test.ts` and `monitoring.test.ts` run once per engine.

@@ -179,12 +179,35 @@ for (const { engine, variable, prepare } of [
     });
 
     it('reports statement statistics, or why they are unavailable', async () => {
-      const stats = await core.monitoring.statements(operator, ids.admin as string);
       if (engine === 'postgresql') {
-        assert.equal(stats.availability, 'unavailable');
-        assert.match(String(stats.reason), /pg_stat_statements is not installed/);
-        assert.deepEqual(stats.items, []);
+        const client = await rawClient(engine, url);
+        try {
+          const preload = (await client.query('SHOW shared_preload_libraries')) as unknown as {
+            rows: { shared_preload_libraries: string }[];
+          };
+          const before = await core.monitoring.statements(operator, ids.admin as string);
+          assert.equal(before.availability, 'unavailable');
+          assert.match(String(before.reason), /pg_stat_statements is not installed/);
+          assert.deepEqual(before.items, []);
+          if (!preload.rows[0]?.shared_preload_libraries.includes('pg_stat_statements')) return;
+          // With the library preloaded (POSTGRES_STATEMENTS=1), the extension makes statistics available.
+          await client.query('CREATE EXTENSION IF NOT EXISTS pg_stat_statements');
+          try {
+            for (let i = 0; i < 3; i++) await client.query('SELECT count(*) FROM wb_items');
+            await new Promise((r) => setTimeout(r, 2100));
+            const stats = await core.monitoring.statements(operator, ids.admin as string, 100);
+            assert.equal(stats.availability, 'available', String(stats.reason));
+            assert.ok(stats.items.some((s) => /wb_items/.test(String(s.text)) && s.calls >= 3));
+            assert.ok(stats.items.every((s) => s.calls > 0 && s.totalMs >= 0));
+          } finally {
+            // Later suites (the GUI's unavailable state) expect the extension to be absent again.
+            await client.query('DROP EXTENSION pg_stat_statements');
+          }
+        } finally {
+          await client.close();
+        }
       } else {
+        const stats = await core.monitoring.statements(operator, ids.admin as string);
         assert.equal(stats.availability, 'available');
         assert.ok(stats.items.length > 0);
         assert.ok(stats.items.every((s) => s.calls > 0 && s.totalMs >= 0));

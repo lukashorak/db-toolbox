@@ -87,4 +87,12 @@ describe('ids', () => {
     assert.match(a, /^ex_[0-9A-HJKMNP-TV-Z]{26}$/);
     assert.ok(a < b);
   });
+
+  it('keep creation order within one millisecond (the queue is first in, first out)', () => {
+    const at = new Date(Date.UTC(2026, 10, 8, 9));
+    const ids = Array.from({ length: 1000 }, () => newId('execution', at));
+    assert.deepEqual([...ids].sort(), ids);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const id of ids) assert.match(id, /^ex_[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
 });

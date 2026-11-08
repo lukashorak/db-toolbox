@@ -59,7 +59,10 @@ describe(
       const panel = await addConnection('Fixture', t().username, t().password);
       await panel.getByRole('button', { name: 'Test connection' }).click();
       await page.locator('[data-testid="test-report"][data-ok="true"]').waitFor();
-      assert.match(String(await page.getByTestId('test-report').textContent()), /Connected to PostgreSQL 16/);
+      assert.match(
+        String(await page.getByTestId('test-report').textContent()),
+        /Connected to PostgreSQL (1[6-9]|[2-9]\d)/,
+      );
       await panel.getByRole('button', { name: 'Add connection' }).click();
       await page.locator('tr[data-name="Fixture"]').waitFor();
 

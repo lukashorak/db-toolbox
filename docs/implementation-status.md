@@ -2,23 +2,68 @@
 
 Tracks progress against the [implementation plan](implementation-plan.md). Each step updates this file.
 
-| Step | Title                                                | Status                                                    |
-| ---- | ---------------------------------------------------- | --------------------------------------------------------- |
-| 0    | Foundation and decision records                      | Done (in review)                                          |
-| 1    | Domain model, persistence, policy and audit          | Done (in review)                                          |
-| 2    | Identity with Keycloak                               | Done (in review); manual Claude Code check pending inputs |
-| 3    | Database adapters, SQL analysis and read-only checks | Done (in review); real target versions pending inputs     |
-| 4    | Execution engine, queue and result capture           | Done (in review)                                          |
-| 5    | Exports and retention                                | Done (in review)                                          |
-| 6    | HTTP API                                             | Done (in review)                                          |
-| 7    | MCP server and disclosure control (M1)               | Done (in review)                                          |
-| 8    | Monitoring backend                                   | Done (in review); real monitoring accounts pending inputs |
-| 9    | GUI foundation                                       | Done (in review)                                          |
-| 10   | GUI: Connections, Explorer, Saved queries            | Done (in review)                                          |
-| 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                          |
-| 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                          |
-| 13   | Packaging and operations                             | Done (in review), apart from parts that need the host     |
-| 14   | Acceptance and hardening (M3)                        | Done (in review), apart from the manual checks            |
+| Step | Title                                                | Status                                               |
+| ---- | ---------------------------------------------------- | ---------------------------------------------------- |
+| 0    | Foundation and decision records                      | Done (in review)                                     |
+| 1    | Domain model, persistence, policy and audit          | Done (in review)                                     |
+| 2    | Identity with Keycloak                               | Done (in review); manual Claude Code check to run    |
+| 3    | Database adapters, SQL analysis and read-only checks | Done (in review); verified on PostgreSQL 16 and 18   |
+| 4    | Execution engine, queue and result capture           | Done (in review)                                     |
+| 5    | Exports and retention                                | Done (in review)                                     |
+| 6    | HTTP API                                             | Done (in review)                                     |
+| 7    | MCP server and disclosure control (M1)               | Done (in review)                                     |
+| 8    | Monitoring backend                                   | Done (in review); real monitoring accounts to create |
+| 9    | GUI foundation                                       | Done (in review)                                     |
+| 10   | GUI: Connections, Explorer, Saved queries            | Done (in review)                                     |
+| 11   | GUI: Workbench, results and Executions (M2)          | Done (in review)                                     |
+| 12   | GUI: Monitoring, MCP access, Settings and audit      | Done (in review)                                     |
+| 13   | Packaging and operations                             | Done (in review); production deployment to run       |
+| 14   | Acceptance and hardening (M3)                        | Done (in review), apart from the manual checks       |
+
+## Production inputs (2026-11-08)
+
+- Keycloak `https://kc.sensay-learning.com`, realm `db-tool`, public URL `https://db-tool.sensay-learning.com`, a current Claude Code.
+- PostgreSQL 18 (Docker on Hetzner), MySQL 8.4 (managed by DigitalOcean).
+- nginx on the Hetzner server, image registry `registry.sensay-learning.com`.
+
+### What was done with them
+
+- [deploy/sensay-learning/](../deploy/sensay-learning/README.md) holds:
+  - the realm import;
+  - the nginx site;
+  - the stack's `.env`;
+  - an optional network override for the PostgreSQL container;
+  - the step-by-step deployment.
+
+  [database-accounts.md](database-accounts.md) has the account SQL for both engines, and the DigitalOcean specifics.
+
+- Checked from here:
+  - realm `db-tool` exists with the expected issuer;
+  - the registry answers (authentication required).
+- The realm import was tested with Keycloak 26.4's partial import into an existing realm: 4 roles and 2 clients added; the MCP client is public with PKCE S256.
+- The nginx site passes `nginx -t` (nginx 1.30). The image behind it, in production mode with the real URLs, serves:
+  - the app's CSP (with the Keycloak origin) and HSTS;
+  - the MCP discovery document naming the realm;
+  - the 401 challenge;
+  - the SPA and the client configuration.
+- PostgreSQL 18.6 with `pg_stat_statements`: the integration, load and GUI suites pass. The "statistics available" path is now tested, too. CI runs the integration job on PostgreSQL 16 and on 18 with statistics.
+- Found and fixed on PostgreSQL 18, which is fast enough to show it: executions submitted in the same millisecond could start out of order, because identifiers were not monotonic within a millisecond. Identifiers now count up within a millisecond, and the queue is strictly first in, first out.
+- **Release image** workflow (`.github/workflows/release.yml`): on a `v*` tag or by hand, it runs the checks, then pushes `registry.sensay-learning.com/db-tool:<version>` and `:latest`. The image reports that version.
+- Claude Code's documentation confirms:
+  - the `claude mcp add --transport http --client-id … --callback-port 8765` form;
+  - the `http://localhost:8765/callback` redirect;
+  - discovery through the protected resource metadata;
+  - that it adds `offline_access` when Keycloak offers it.
+
+### To do on the production side
+
+1. Add the registry secrets in GitHub and release `v0.1.0`.
+2. Do the Keycloak partial import and assign roles.
+3. Set up DNS, the certificate and the nginx site.
+4. Create the Dockge stack with its `.env` and `ENCRYPTION_KEY`.
+5. Create the database accounts; add the DigitalOcean trusted source.
+6. Add the connections, the MCP profile and Claude Code, then run the [manual check](identity.md#manual-check-with-the-real-keycloak-and-claude-code).
+7. Set up the nightly backup.
 
 ## Step 14 — Acceptance and hardening (milestone M3)
 

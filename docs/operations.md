@@ -17,6 +17,8 @@ State lives in two folders:
 
 ## What still depends on your environment
 
+For the production deployment (Hetzner, nginx, `registry.sensay-learning.com`, Keycloak realm `db-tool`), the concrete files and steps are in [deploy/sensay-learning/README.md](../deploy/sensay-learning/README.md).
+
 Some parts wait for details of the target host (see the [implementation plan](implementation-plan.md#inputs-needed-from-the-owner)):
 
 - the reverse proxy in use, which decides the concrete proxy configuration below;

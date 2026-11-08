@@ -40,9 +40,32 @@ function encodeRandom(bytes: Buffer): string {
   return out.slice(0, 16);
 }
 
-/** ULID-style identifier: 10 characters of time, 16 of randomness, sortable by creation time. */
+let lastMs = -1;
+let lastRandom: Buffer = Buffer.alloc(10);
+
+/** Adds one to a big-endian number; it would only wrap after 2^80 identifiers in one millisecond. */
+function increment(bytes: Buffer): Buffer {
+  const next = Buffer.from(bytes);
+  for (let i = next.length - 1; i >= 0; i--) {
+    if (next[i] === 255) next[i] = 0;
+    else {
+      next[i] = (next[i] as number) + 1;
+      break;
+    }
+  }
+  return next;
+}
+
+/**
+ * ULID-style identifier: 10 characters of time, 16 of randomness, sortable by creation time.
+ * Within one millisecond the random part counts up (monotonic ULID), so identifiers made in the
+ * same millisecond still sort in creation order; the queue relies on that for first in, first out.
+ */
 export function newId(kind: IdKind, now: Date = new Date()): string {
-  return `${ID_PREFIXES[kind]}_${encodeTime(now.getTime())}${encodeRandom(randomBytes(10))}`;
+  const ms = now.getTime();
+  lastRandom = ms === lastMs ? increment(lastRandom) : randomBytes(10);
+  lastMs = ms;
+  return `${ID_PREFIXES[kind]}_${encodeTime(ms)}${encodeRandom(lastRandom)}`;
 }
 
 export const ID_PATTERN = /^[a-z]{1,4}_[0-9A-HJKMNP-TV-Z]{26}$/;
