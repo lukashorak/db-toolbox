@@ -62,7 +62,7 @@ Statements that change session state mark the session dirty, and the session is 
 - Queued: cancelled at once.
 - Running: the status becomes `cancel_requested` and the database is asked to cancel over the reserved control connection. The final status depends on what happened:
   - `cancelled` when the database confirms;
-  - `succeeded`, with the note "Completed before the cancellation took effect", when the statement finished first (also a MySQL write whose OK answer, with the rows it changed, arrives after the cancel: outside a transaction it has committed);
+  - `succeeded`, with the note "Completed before the cancellation took effect", when the statement finished first (also a single MySQL `INSERT`, `UPDATE`, `DELETE` or `REPLACE` whose OK answer, with the rows it changed, arrives after the cancel: outside a transaction it has committed; a `CALL` stays cancelled, with an unknown outcome, since its answer counts only its last inner statement);
   - `unknown` when the connection was lost, including a connection that stopped answering: 5 s after the cancel or the time limit it is closed, whatever it was waiting for (a statement, `BEGIN`, `COMMIT`), so an execution cannot hold its slot or delay shutdown forever.
 - The check after a failed MySQL write (whether everything it reached rolls back) gets the same bounds: after a cancel or the time limit it has the grace period, and if it cannot finish, the outcome is `unknown`.
 - The time limit applies to the whole execution. Each statement runs with the time that is left, and the result is `timed_out`.

@@ -125,6 +125,9 @@ function routineEffects(body: string): RoutineEffects | null {
   return effects;
 }
 
+/** Statements whose OK answer counts everything they changed. */
+const SINGLE_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE']);
+
 const BINARY_CHARSET = 63;
 const TYPE_NAMES = new Map<number, string>(
   Object.entries(mysql.Types).map(([name, id]) => [Number(id), name]),
@@ -884,10 +887,17 @@ class MysqlSession implements DbSession {
     // without an error of its own, but the result is incomplete and must not pass as finished.
     if (failed) throw failed;
     // An interrupted SLEEP() or BENCHMARK() ends without an error; the interruption still counts.
-    // But a statement the server answered with rows changed has finished: outside a transaction
-    // (autocommit) it has committed, so a cancel or time limit that came too late does not make it
-    // read as rolled back. Inside one the interruption stands, and the transaction is rolled back.
-    const committed = !this.#inTransaction && outcome.resultSets === 0 && (outcome.affectedRows ?? 0) > 0;
+    // But a single INSERT, UPDATE, DELETE or REPLACE that the server answered with rows changed has
+    // finished: outside a transaction (autocommit) it has committed, so a cancel or time limit that
+    // came too late does not make it read as rolled back. Inside one the interruption stands, and
+    // the transaction is rolled back. A CALL's answer counts only its last inner statement, so it
+    // proves nothing about the rest: an interrupted CALL stays interrupted (its outcome is unknown).
+    const committed =
+      !!interrupted &&
+      !this.#inTransaction &&
+      outcome.resultSets === 0 &&
+      (outcome.affectedRows ?? 0) > 0 &&
+      SINGLE_DML.has(analyzeMysql(sql).command.toUpperCase());
     if (interrupted === 'timeout' && !committed) {
       throw new DbError('timeout', `The statement exceeded its time limit of ${timeout} ms.`);
     }

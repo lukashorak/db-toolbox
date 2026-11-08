@@ -216,6 +216,11 @@ export async function prepareMysql(url: string): Promise<void> {
         INSERT INTO wb_items (name)
           SELECT CONCAT('proc-after-report-', count(*)) FROM wb_numbers a CROSS JOIN wb_numbers b WHERE b.n <= 1000;
       END;
+      -- Waits, then writes: its answer counts only the last inner statement.
+      CREATE PROCEDURE wb_proc_late() BEGIN
+        DO SLEEP(1);
+        INSERT INTO wb_items (name) VALUES ('late-procedure');
+      END;
       -- Commits part of its work, then fails: the failure promises no rollback.
       CREATE PROCEDURE wb_commit_then_fail() BEGIN
         INSERT INTO wb_items (name) VALUES ('proc-committed');

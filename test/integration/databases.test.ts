@@ -279,8 +279,24 @@ for (const { engine, variable, prepare } of engines) {
             'cancelled',
             'in a transaction: interrupted',
           );
+          // A CALL's answer counts only its last inner statement, which proves nothing about the
+          // rest of the procedure: it stays interrupted (the run reports an unknown outcome).
+          const call = await adapter.withSession(async (s) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 300);
+            return s
+              .execute('CALL wb_proc_late()', collect().sink, {
+                timeoutMs: 20_000,
+                signal: controller.signal,
+              })
+              .then(
+                (o) => o.affectedRows,
+                (e: { category?: string }) => e.category,
+              );
+          });
+          assert.equal(call, 'cancelled', 'a CALL stays interrupted');
           const rows = await run("SELECT name FROM wb_items WHERE name LIKE 'late-%' ORDER BY name");
-          assert.deepEqual(rows.sets[0]?.rows, [['late-autocommit-0']]);
+          assert.deepEqual(rows.sets[0]?.rows, [['late-autocommit-0'], ['late-procedure']]);
         } finally {
           adapter.cancel = cancel;
         }
