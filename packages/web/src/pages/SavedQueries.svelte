@@ -39,9 +39,12 @@
         api<Folder[]>('GET', '/folders'),
         api<SavedQuery[]>(
           'GET',
+          // "All queries" is every query, in folders too: no folder filter.
           search
             ? `/queries?search=${encodeURIComponent(search)}`
-            : `/queries?folderId=${folderId ?? 'root'}`,
+            : folderId
+              ? `/queries?folderId=${encodeURIComponent(folderId)}`
+              : '/queries',
         ),
       ]);
       error = null;
