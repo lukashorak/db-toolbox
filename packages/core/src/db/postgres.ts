@@ -221,8 +221,6 @@ class PostgresSession implements DbSession {
   readonly backendId: number;
   dirty: string | null = null;
   #inTransaction = false;
-  #sessionTimeoutSet = false;
-  #tagged = false;
   /**
    * A cursor could not be closed, so the connection still has a query in progress and anything
    * sent now would wait behind it. Nothing more is sent; the connection is closed on release, which
@@ -257,7 +255,6 @@ class PostgresSession implements DbSession {
   async tag(executionId: string): Promise<void> {
     const label = `database-workbench ${executionId}`.replace(/[^\w .:-]/g, '');
     await this.#run(`SET application_name = '${label}'`);
-    this.#tagged = true;
   }
 
   async begin(options: { readOnly: boolean }): Promise<void> {
@@ -304,10 +301,7 @@ class PostgresSession implements DbSession {
   async execute(sql: string, sink: ResultSink, options: ExecuteOptions): Promise<StatementOutcome> {
     const timeout = Math.max(1, Math.floor(options.timeoutMs));
     if (this.#inTransaction) await this.#run(`SET LOCAL statement_timeout = ${timeout}`);
-    else {
-      await this.#run(`SET statement_timeout = ${timeout}`);
-      this.#sessionTimeoutSet = true;
-    }
+    else await this.#run(`SET statement_timeout = ${timeout}`);
 
     const notices: string[] = [];
     const onNotice = (notice: { message?: string; severity?: string }) => {
@@ -440,8 +434,11 @@ class PostgresSession implements DbSession {
         this.#inTransaction = false;
         await this.client.query('ROLLBACK');
       }
-      if (this.#sessionTimeoutSet && !this.dirty) await this.client.query('RESET statement_timeout');
-      if (this.#tagged && !this.dirty) await this.client.query('RESET application_name');
+      // Whatever the run left on the connection is cleared before another execution, perhaps
+      // another user's, gets it: settings (set_config, statement_timeout, application_name),
+      // temporary tables, advisory locks, prepared statements, LISTEN, also when a function set
+      // them, which the statement analysis cannot see.
+      if (!this.dirty) await this.client.query('DISCARD ALL');
     } catch {
       this.markDirty('could not restore the session');
     } finally {

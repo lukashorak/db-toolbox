@@ -98,6 +98,36 @@ for (const { engine, variable, prepare } of engines) {
     });
     after(() => registry.closeAll());
 
+    it('clears what a run left on the connection before the next run uses it', async () => {
+      // One work connection, so the second run gets the same one.
+      const single = new AdapterRegistry({
+        sizes: { work: 1, metadata: 1, control: 1 },
+        connectTimeoutMs: 5000,
+      });
+      try {
+        const one = await single.get({ ...target({ id: `cn_reset_${engine}` }), updatedAt: 'v1' });
+        const runOn = (sql: string) =>
+          one.withSession(async (s) => {
+            const { sets, sink } = collect();
+            await s.execute(sql, sink, { timeoutMs: 10_000, batchSize: 1000 });
+            return { rows: sets[0]?.rows ?? [], backendId: s.backendId };
+          });
+        const first = await runOn('SELECT wb_fn_leave_state()');
+        const second = await runOn(
+          engine === 'mysql'
+            ? "SELECT @wb_leak AS v, IS_USED_LOCK('wb_leak') AS l, @@collation_connection AS c"
+            : "SELECT coalesce(current_setting('wb.leak', true), '') AS v, (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()) AS l",
+        );
+        assert.equal(second.backendId, first.backendId, 'the same connection');
+        assert.deepEqual(
+          second.rows,
+          engine === 'mysql' ? [[null, null, 'utf8mb4_general_ci']] : [['', '0']],
+        );
+      } finally {
+        await single.closeAll();
+      }
+    });
+
     describe('connection test', () => {
       it('succeeds with verify-full against the custom CA and reports capabilities', async () => {
         const report = await registry.test(target());

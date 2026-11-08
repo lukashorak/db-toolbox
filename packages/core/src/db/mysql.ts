@@ -19,6 +19,8 @@ import type {
 } from './types.js';
 
 const METADATA_TIMEOUT_MS = 30_000;
+/** The character set and collation sessions use: negotiated at connect, set again after a reset. */
+const CONNECTION_COLLATION = 'UTF8MB4_GENERAL_CI';
 
 /** Where a lookup keeps the session's SHOW GRANTS lines (no table name contains a NUL). */
 const GRANTS_KEY = '\u0000grants';
@@ -168,7 +170,7 @@ export function mysqlConnectionOptions(
     database: target.database,
     ...(ssl ? { ssl } : {}),
     connectTimeout: connectTimeoutMs,
-    charset: 'utf8mb4',
+    charset: CONNECTION_COLLATION,
     multipleStatements: false,
     supportBigNumbers: true,
     bigNumberStrings: true,
@@ -765,6 +767,20 @@ class MysqlSession implements DbSession {
       }
     } catch {
       this.markDirty('could not roll back');
+    }
+    // Whatever the run left on the connection is cleared before another execution, perhaps another
+    // user's, gets it: user variables, named locks, temporary tables, LAST_INSERT_ID and session
+    // variables, also when a stored function, trigger or procedure set them, which the statement
+    // analysis cannot see. A reset also restores the server's default collation: set ours again.
+    try {
+      if (!this.dirty) {
+        await new Promise<void>((resolve, reject) =>
+          this.connection.reset((error) => (error ? reject(mapMysqlError(error)) : resolve())),
+        );
+        await this.#run(`SET NAMES utf8mb4 COLLATE ${CONNECTION_COLLATION.toLowerCase()}`);
+      }
+    } catch {
+      this.markDirty('could not reset the session');
     } finally {
       this.connection.removeListener('error', this.#onError);
     }
