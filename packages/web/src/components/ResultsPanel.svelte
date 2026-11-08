@@ -89,16 +89,21 @@
     }
   });
   $effect(() => {
-    const key = `${execution.id}:${set?.index}:${set?.completeness}:${set?.rowCount}`;
-    if (!set || key === loadedFor || set.completeness === 'capturing') {
-      if (!set) {
-        rows = [];
-        loadedFor = '';
-      }
+    if (!set) {
+      rows = [];
+      loadedFor = '';
       return;
     }
-    // Another result set: never show the previous set's rows under this one's heading while loading.
-    if (!loadedFor.startsWith(`${execution.id}:${set.index}:`)) rows = [];
+    const identity = `${execution.id}:${set.index}:`;
+    const key = `${identity}${set.completeness}:${set.rowCount}`;
+    if (key === loadedFor) return;
+    // Another execution or result set: never show the previous rows under its heading, also while
+    // it is still capturing, and let no late answer for the previous one land (its key is gone).
+    if (!loadedFor.startsWith(identity)) {
+      rows = [];
+      loadedFor = `${identity}pending`;
+    }
+    if (set.completeness === 'capturing') return;
     loadedFor = key;
     sortBy = null;
     filter = '';

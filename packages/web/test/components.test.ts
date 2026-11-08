@@ -7,6 +7,7 @@ import PolicyChip from '../src/components/PolicyChip.svelte';
 import Monitoring from '../src/pages/Monitoring.svelte';
 import Explorer from '../src/pages/Explorer.svelte';
 import Executions from '../src/pages/Executions.svelte';
+import SavedQueries from '../src/pages/SavedQueries.svelte';
 import { navigate, route } from '../src/lib/router.svelte';
 import StatusPill from '../src/components/StatusPill.svelte';
 import Toasts from '../src/components/Toasts.svelte';
@@ -239,6 +240,27 @@ describe('results panel', () => {
     expect(screen.getByText('first')).toBeTruthy();
   });
 
+  it('shows no rows of the previous result while the next one is still capturing', async () => {
+    const { rerender } = render(ResultsPanel, { execution, onRunFull: () => undefined });
+    await settle();
+    await fireEvent.click(
+      screen.getByRole('tablist', { name: 'Statements' }).querySelectorAll('[role="tab"]')[0] as HTMLElement,
+    );
+    await settle();
+    expect(screen.getByText('first')).toBeTruthy();
+    const capturing = {
+      ...execution,
+      id: 'exe_capturing',
+      status: 'running',
+      statements: [statement(0, 'SELECT', 'running')],
+      resultSets: [{ ...resultSet(0), completeness: 'capturing' }],
+    } as unknown as ExecutionView;
+    await rerender({ execution: capturing });
+    await settle();
+    expect(screen.queryByText('first')).toBeNull();
+    expect(api).not.toHaveBeenCalledWith('GET', '/executions/exe_capturing/results/0/rows?limit=1000');
+  });
+
   it('shows a notice repeated by the database as often as it came', async () => {
     const repeated = {
       ...execution,
@@ -419,6 +441,42 @@ describe('monitoring', () => {
       answerAlpha(snapshotOf('alpha_account'));
       await settle();
       expect(screen.getByTestId('sample-time').textContent).toMatch(/account beta_account/);
+    } finally {
+      if (original) api.mockImplementation(original);
+    }
+  });
+});
+
+describe('saved queries', () => {
+  it('"All queries" lists the queries in folders too', async () => {
+    const original = api.getMockImplementation();
+    const requested: string[] = [];
+    api.mockImplementation((async (_method: string, url: string) => {
+      requested.push(url);
+      if (url === '/folders') return [{ id: 'f1', name: 'Reports', parentId: null }];
+      if (url === '/queries')
+        return [
+          {
+            id: 'q1',
+            name: 'Monthly revenue',
+            folderId: 'f1',
+            sql: 'SELECT 1',
+            connectionId: null,
+            updatedAt: '2026-11-08T10:00:00.000Z',
+          },
+        ];
+      if (url.startsWith('/queries')) return [];
+      return [];
+    }) as never);
+    try {
+      render(SavedQueries);
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 0));
+        await tick();
+      }
+      expect(requested).toContain('/queries');
+      expect(requested.some((u) => u.includes('folderId=root'))).toBe(false);
+      expect(screen.getByText('Monthly revenue')).toBeTruthy();
     } finally {
       if (original) api.mockImplementation(original);
     }
