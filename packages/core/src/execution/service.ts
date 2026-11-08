@@ -896,6 +896,21 @@ export class ExecutionService {
       return;
     }
 
+    // The storage engines were checked at submission against the connection as it was then. The
+    // connection may point elsewhere now (another database or host), and tables may have changed:
+    // check again against the adapter that will run the script.
+    if (atomic && !readOnly && row.engine === 'mysql') {
+      const problems = await this.#engineProblems(adapter, String(row.sql));
+      if (problems.length) {
+        this.#finalize(id, 'rejected', 'not_started', {
+          code: 'preflight_rejected',
+          message: problems.map((p) => p.message).join(' '),
+          detail: { problems },
+        });
+        return;
+      }
+    }
+
     let resultIndex = 0;
     let committedWrites = 0;
     let unknownOutcome = false;
@@ -1165,6 +1180,26 @@ export class ExecutionService {
    * After a restart: work that was running is marked interrupted and never replayed. Queued work
    * stays queued and is authorized again when it starts.
    */
+  /** MySQL single transaction: storage-engine problems of the script, checked through `adapter`. */
+  async #engineProblems(adapter: DbAdapter, sql: string) {
+    const statements = await analyzeScript(sql, 'mysql');
+    const problems = await preflight(statements, {
+      engine: 'mysql',
+      transactionMode: 'atomic',
+      readOnly: false,
+      tableEngine: async (table) => {
+        try {
+          return await adapter.tableEngine(table);
+        } catch {
+          return 'unknown (the storage engine could not be checked)';
+        }
+      },
+    });
+    return problems.filter(
+      (p) => p.code === 'non_transactional_engine' || p.code === 'unchecked_write_target',
+    );
+  }
+
   /**
    * MySQL, per statement: whether a write that failed is known to have changed nothing. InnoDB
    * undoes a failed statement; MyISAM and other non-transactional tables keep the rows written
@@ -1172,7 +1207,7 @@ export class ExecutionService {
    */
   async #failedWriteRolledBack(adapter: DbAdapter, sql: string, database: string | null): Promise<boolean> {
     const analysis = await analyzeStatement(sql, 'mysql');
-    if (analysis.writeTargetsUnknown) return false;
+    if (analysis.writeTargetsUnknown || analysis.mayCommit) return false;
     const declared = analysis.declaredEngine?.toLowerCase();
     if (declared && !TRANSACTIONAL_ENGINES.has(declared)) return false;
     for (const table of analysis.writesTables) {

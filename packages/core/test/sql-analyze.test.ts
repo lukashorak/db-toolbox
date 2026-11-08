@@ -253,6 +253,17 @@ describe('preflight', () => {
       problems.map((p) => [p.code, p.statement]),
       [['routine_may_commit', 1]],
     );
+    // A prepared statement may be DDL, which commits implicitly.
+    const prepared = await run(
+      "insert into a values (1); prepare s from 'create table committed (id int)'; execute s; select 1 from missing",
+      'mysql',
+      { transactionMode: 'atomic' },
+    );
+    assert.deepEqual(
+      prepared.map((p) => [p.code, p.statement]),
+      [['routine_may_commit', 2]],
+    );
+    assert.match(String(prepared[0]?.message), /prepared statement/);
     // In PostgreSQL a procedure that commits inside a transaction block fails, so CALL may stay.
     assert.equal(
       (await run('call p()', 'postgresql', { transactionMode: 'atomic' })).some(

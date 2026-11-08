@@ -109,7 +109,10 @@ export async function preflight(
       problems.push({
         code: 'routine_may_commit',
         statement: s.index,
-        message: `${label(s)} (${a.command}) runs a procedure, which can commit on its own in MySQL, so the script cannot be promised to run as one transaction.`,
+        message:
+          a.command === 'EXECUTE'
+            ? `${label(s)} (EXECUTE) runs a prepared statement that cannot be checked; it can commit implicitly in MySQL, so the script cannot be promised to run as one transaction.`
+            : `${label(s)} (${a.command}) runs a procedure, which can commit on its own in MySQL, so the script cannot be promised to run as one transaction.`,
         hint: 'Use per-statement mode.',
       });
     }

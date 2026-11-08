@@ -214,7 +214,7 @@
 
   async function run(
     kind: 'statement' | 'script',
-    sqlOverride?: { sql: string; base: number; scope: string; captureMode?: 'full' },
+    sqlOverride?: { sql: string; base: number; scope: string; captureMode?: 'full'; connectionId?: string },
   ) {
     if (!tab || !tab.connectionId || busy) return;
     // Running "the statement" must never fall back to the whole script: until the statement check
@@ -235,7 +235,8 @@
     rejected = null;
     // The tab this run belongs to, even if the person switches tabs before the answer arrives.
     const origin = tab;
-    const connectionId = tab.connectionId;
+    // A full-result rerun goes to the connection of the result it repeats, not the tab's current one.
+    const connectionId = sqlOverride?.connectionId ?? tab.connectionId;
     const submittedSql = tab.sql;
     // Set before the first await, so a second call in the meantime returns above.
     const tabId = tab.id;
@@ -261,7 +262,8 @@
       const message = e instanceof Error ? e.message : String(e);
       // Rejection marks belong to exactly the text that was submitted, in the tab it came from:
       // after a tab switch or an edit, the reason is shown as a message instead.
-      const unchanged = () => workbench.active === tabId && origin.sql === submittedSql;
+      // A rerun's SQL is not the editor's text, so its rejection is never marked there.
+      const unchanged = () => !sqlOverride && workbench.active === tabId && origin.sql === submittedSql;
       let marked = false;
       if (
         e instanceof ApiError &&
@@ -468,7 +470,18 @@
   {#if current}
     <ResultsPanel
       execution={current}
-      onRunFull={(sql) => void run('statement', { sql, base: 0, scope: 'Full result', captureMode: 'full' })}
+      onRunFull={(sql) => {
+        const from = current?.connection.id;
+        if (!from) toast('The connection of this result no longer exists.', 'danger');
+        else
+          void run('statement', {
+            sql,
+            base: 0,
+            scope: 'Full result',
+            captureMode: 'full',
+            connectionId: from,
+          });
+      }}
     />
   {/if}
 {/if}

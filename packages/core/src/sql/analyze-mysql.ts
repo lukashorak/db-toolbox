@@ -398,11 +398,15 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       a.changesSession = true;
       return a;
     }
-    case 'EXECUTE':
-      return unsafe(
+    case 'EXECUTE': {
+      const a = unsafe(
         baseAnalysis('unknown', 'EXECUTE'),
         'EXECUTE runs a prepared statement that cannot be checked',
       );
+      // The prepared statement is unknown here: it may be DDL, which commits implicitly.
+      a.mayCommit = true;
+      return a;
+    }
     default:
       if (ADMIN.has(first)) return write(`${first}${second ? ` ${second}` : ''}`, 'administrative command');
       if (tokens[0]?.text === '(') return analyzeQuery(text);

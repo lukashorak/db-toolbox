@@ -55,6 +55,21 @@ describe(
         caPem: t.caPem,
         readOnly: false,
       });
+      // A second connection, to switch to after a preview (sorts after Fixture).
+      env.core.connections.create(setup, {
+        name: 'Zeta copy',
+        engine: 'postgresql',
+        environment: 'development',
+        host: t.host,
+        port: t.port,
+        database: t.database,
+        schema: 'public',
+        username: t.username,
+        password: t.password,
+        tlsMode: 'verify-full',
+        caPem: t.caPem,
+        readOnly: false,
+      });
       page = await env.browser.newPage();
       page.on('request', (r) => {
         if (r.url().includes('/api/v1/')) apiRequests++;
@@ -221,6 +236,21 @@ describe(
         .first()
         .waitFor();
       assert.equal(await page.getByText('Not run.').count(), 0, 'no rejection marks on the new text');
+    });
+
+    it('runs the full result on the connection of the result shown, not the one selected since', async () => {
+      await page.getByLabel('Connection').selectOption({ label: 'Fixture' });
+      await setSql('SELECT n FROM wb_numbers ORDER BY n');
+      await page.getByTestId('run-target').click();
+      await finished();
+      const preview = await results().getAttribute('data-execution-id');
+      await page.getByLabel('Connection').selectOption({ label: 'Zeta copy' });
+      await results().getByRole('button', { name: 'Run full result' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Run full result' }).click();
+      await page.locator(`[data-testid="results"]:not([data-execution-id="${preview}"])`).waitFor();
+      await finished();
+      assert.match(String(await results().locator('.meta').textContent()), /^Fixture · Full result/);
+      await page.getByLabel('Connection').selectOption({ label: 'Fixture' });
     });
 
     it('never runs a statement range of an earlier text', async () => {

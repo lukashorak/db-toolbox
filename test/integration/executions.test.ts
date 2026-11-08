@@ -511,6 +511,45 @@ for (const { engine, variable, prepare } of engines) {
       }
     });
 
+    if (engine === 'mysql') {
+      it('checks storage engines again when the connection changes while a run is queued', async () => {
+        const single = makeCore(join(dir, 'moved.sqlite'), { CONCURRENCY_PER_CONNECTION: '1' });
+        try {
+          const t = targetFrom(url, engine);
+          const id = single.connections.create(writer, {
+            name: 'Movable',
+            engine,
+            environment: 'development',
+            host: t.host,
+            port: t.port,
+            database: t.database,
+            schema: t.schema,
+            username: t.username,
+            password: t.password,
+            tlsMode: 'verify-full',
+            caPem: t.caPem,
+            readOnly: false,
+          }).id;
+          const busy = await single.executions.submit(writer, { connectionId: id, sql: 'SELECT SLEEP(1)' });
+          // Checked at submission against workbench_it, where wb_items is InnoDB.
+          const queued = await single.executions.submit(writer, {
+            connectionId: id,
+            sql: "INSERT INTO wb_items (id, name) VALUES (7, 'run-moved')",
+            transactionMode: 'atomic',
+          });
+          assert.equal(single.executions.view(queued.id).status, 'queued');
+          // Now the connection points at a database whose wb_items is MyISAM.
+          single.connections.update(writer, id, { database: 'workbench_it_other' });
+          const done = await settle(single, queued.id);
+          assert.deepEqual([done.status, done.transactionOutcome], ['rejected', 'not_started']);
+          assert.match(String(done.error?.message), /MyISAM/);
+          await settle(single, busy.id);
+        } finally {
+          await single.shutdown();
+        }
+      });
+    }
+
     it('cancels a queued execution before it starts', async () => {
       await core.executions.idle();
       const a = await submit(sleep(1));
