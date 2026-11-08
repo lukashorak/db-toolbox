@@ -168,6 +168,23 @@ describe('preflight', () => {
     assert.deepEqual(await run('select 1; select 2', 'postgresql', { readOnly: true }), []);
   });
 
+  it('refuses PostgreSQL server actions under read-only, which a read-only transaction does not stop', async () => {
+    for (const sql of [
+      'select pg_wal_replay_pause()',
+      'select pg_wal_replay_resume()',
+      "select pg_replication_slot_advance('slot', '0/1000000')",
+      "select * from pg_logical_slot_get_changes('slot', null, null)",
+      "select pg_copy_physical_replication_slot('slot', 'copy')",
+      "select pg_backup_start('label')",
+      'select * from pg_backup_stop()',
+      "select pg_replication_origin_advance('origin', '0/1')",
+      'select pg_terminate_backend(12345)',
+    ]) {
+      const problems = await run(sql, 'postgresql', { readOnly: true });
+      assert.equal(problems[0]?.code, 'read_only_violation', sql);
+    }
+  });
+
   it('rejects writes and unparsable SQL under read-only, naming the policy source', async () => {
     const problems = await run('select 1;\nupdate t set a = 1;\nselec 2', 'postgresql', {
       readOnly: true,

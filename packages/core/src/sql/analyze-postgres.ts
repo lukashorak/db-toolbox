@@ -283,8 +283,11 @@ function checkTree(analysis: StatementAnalysis, tree: unknown): void {
       const inCatalog = called.length === 1 || called.at(-2) === 'pg_catalog';
       if (inCatalog && Object.hasOwn(WRITING_BUILT_INS, exact))
         analysis.builtinWrite ??= `${exact}() ${WRITING_BUILT_INS[exact]}`;
-      if (inCatalog && Object.hasOwn(SERVER_ACTIONS, exact))
+      // A read-only transaction does not stop them either (a standby is always read-only).
+      if (inCatalog && Object.hasOwn(SERVER_ACTIONS, exact)) {
+        unsafe(analysis, `${exact}() ${SERVER_ACTIONS[exact]}`);
         analysis.irreversible ??= `${exact}() ${SERVER_ACTIONS[exact]}, which no rollback undoes`;
+      }
       if (inCatalog && exact.startsWith('pg_stat_reset'))
         analysis.irreversible ??= `${exact}() resets statistics, which no rollback undoes`;
       if (inCatalog && exact === 'set_config') {
