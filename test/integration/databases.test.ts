@@ -200,17 +200,33 @@ for (const { engine, variable, prepare } of engines) {
           new Promise((r) => setTimeout(() => r('still waiting'), 5000)),
         ]);
         assert.equal(outcome, 'cancelled');
-        // A single batch timing out during the wait is a timeout, not a success.
-        const single = adapter.withSession(async (s) => {
-          const { sink } = collect();
-          return s.execute('SELECT 1 AS n', sink, { timeoutMs: 300, batchSize: 100 }).then(
-            () => 'finished',
-            (e: unknown) => (e as { category?: string }).category,
-          );
-        });
+        const settleWithin = (work: Promise<unknown>) =>
+          Promise.race([work, new Promise((r) => setTimeout(() => r('still waiting'), 8000))]);
+        const run = (sql: string, options: { timeoutMs: number; signal?: AbortSignal }) =>
+          adapter.withSession(async (s) => {
+            const { sink } = collect();
+            return s.execute(sql, sink, { batchSize: 100, ...options }).then(
+              () => 'finished',
+              (e: unknown) => (e as { category?: string }).category,
+            );
+          });
+        // A statement still being read when its time runs out during the wait is a timeout.
         assert.equal(
-          await Promise.race([single, new Promise((r) => setTimeout(() => r('still waiting'), 8000))]),
+          await settleWithin(run('SELECT n FROM generate_series(1, 5000) AS n', { timeoutMs: 300 })),
           'timeout',
+        );
+        // One the server already reported complete has finished: an INSERT … RETURNING outside a
+        // transaction has committed, and is not reported as cancelled (nor as rolled back).
+        const inserting = new AbortController();
+        setTimeout(() => inserting.abort(), 300);
+        assert.equal(
+          await settleWithin(
+            run('INSERT INTO wb_audit_log VALUES (77) RETURNING id', {
+              timeoutMs: 20_000,
+              signal: inserting.signal,
+            }),
+          ),
+          'finished',
         );
       } finally {
         pg.typeNames = typeNames;

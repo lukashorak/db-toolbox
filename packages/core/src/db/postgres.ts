@@ -435,6 +435,9 @@ class PostgresSession implements DbSession {
       for (;;) {
         // Between batches the server has no running query, so pg_cancel_backend (and
         // statement_timeout, which counts per fetch) cannot stop a long read: stop reading here.
+        // A statement the server already reported complete has finished (and, outside a
+        // transaction, committed): it is not reported as cancelled or timed out.
+        if (interrupted && outcome.command) break;
         if (interrupted) {
           await cursor.close().catch(() => undefined);
           throw new DbError(
@@ -473,8 +476,10 @@ class PostgresSession implements DbSession {
               .typeNames(result.fields.map((f) => f.dataTypeID))
               .then(resolve, () => resolve(new Map()));
           }).finally(() => (onInterrupt = null));
-          // Interrupted meanwhile: stop here, even if this was the last batch.
-          if (interrupted) {
+          // Interrupted meanwhile: stop here, even if this was the last batch, unless the server
+          // already reported the statement complete. Then it has finished (an INSERT … RETURNING,
+          // outside a transaction, has committed) and is reported as such, with OIDs for type names.
+          if (interrupted && !result.command) {
             await cursor.close().catch(() => undefined);
             throw new DbError(
               interrupted,
