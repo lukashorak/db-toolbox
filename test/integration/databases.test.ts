@@ -6,7 +6,7 @@
  *   POSTGRES_TEST_URL=… MYSQL_TEST_URL=… npm run test:integration
  */
 import assert from 'node:assert/strict';
-import { createServer, type Server, type Socket } from 'node:net';
+import { connect, createServer, type Server, type Socket } from 'node:net';
 import mysql from 'mysql2/promise';
 import { after, before, describe, it } from 'node:test';
 import {
@@ -59,6 +59,41 @@ async function silentServer(): Promise<{ server: Server; port: number }> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   return { server, port: typeof address === 'object' && address ? address.port : 0 };
+}
+
+/** A TCP proxy whose connections so far can be frozen: they stay open, but nothing more arrives. */
+async function freezableProxy(host: string, port: number) {
+  const pairs: { client: Socket; upstream: Socket }[] = [];
+  const server = createServer((client) => {
+    const upstream = connect(port, host);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const close = () => {
+      client.destroy();
+      upstream.destroy();
+    };
+    for (const socket of [client, upstream]) socket.on('error', close).on('close', close);
+    pairs.push({ client, upstream });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return {
+    port: typeof address === 'object' && address ? address.port : 0,
+    connections: () => pairs.length,
+    freeze: () => {
+      for (const { client, upstream } of pairs) {
+        upstream.unpipe(client);
+        upstream.pause();
+      }
+    },
+    close: () => {
+      for (const { client, upstream } of pairs) {
+        client.destroy();
+        upstream.destroy();
+      }
+      server.close();
+    },
+  };
 }
 
 const engines: { engine: Engine; variable: string; prepare: (url: string) => Promise<void> }[] = [
@@ -247,6 +282,53 @@ for (const { engine, variable, prepare } of engines) {
           return sets[0]?.rows;
         });
         assert.deepEqual(next, [['1']]);
+      },
+    );
+
+    it(
+      'gives up on a cancel whose control connection stops answering, and the next cancel gets a fresh one',
+      { timeout: 40_000 },
+      async () => {
+        const real = target();
+        const proxy = await freezableProxy(real.host, real.port);
+        const proxied = new AdapterRegistry({
+          sizes: { work: 1, metadata: 1, control: 1 },
+          connectTimeoutMs: 5000,
+        });
+        try {
+          const via = await proxied.get({
+            ...target({
+              id: `cn_stall_${engine}`,
+              host: '127.0.0.1',
+              port: proxy.port,
+              tlsMode: 'verify-ca',
+            }),
+            updatedAt: 'v1',
+          });
+          // No such backend: answered at once, and the control connection goes back to the pool.
+          const unknown = 2_000_000_000;
+          assert.equal(await via.cancel(unknown), false);
+          assert.equal(proxy.connections(), 1, 'only the control connection is open');
+          proxy.freeze();
+          // The second waits for the only control connection, which the first holds.
+          let started = Date.now();
+          assert.deepEqual(await Promise.all([via.cancel(unknown), via.cancel(unknown)]), [false, false]);
+          const waited = Date.now() - started;
+          assert.ok(waited >= 4000 && waited < 9000, `gave up after ${waited} ms`);
+          // The stalled connection left the pool: the next cancel opens a new one and is answered.
+          started = Date.now();
+          assert.equal(await via.cancel(unknown), false);
+          assert.ok(Date.now() - started < 3000, 'answered at once');
+          // Closing the adapter does not wait for the stalled connection.
+          const closed = await Promise.race([
+            proxied.closeAll().then(() => true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+          ]);
+          assert.ok(closed, 'closed promptly');
+        } finally {
+          proxy.close();
+          await proxied.closeAll();
+        }
       },
     );
 

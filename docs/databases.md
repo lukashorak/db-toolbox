@@ -98,7 +98,7 @@ How read-only is enforced, and where each engine's limits are: [decision 0022](d
 
 ## Execution primitives
 
-`DbSession.execute` streams rows in batches to a sink, which can stop reading at any point (the preview capture stops after 1,001 rows). Statements run with a server-side time limit (PostgreSQL `statement_timeout`; MySQL `KILL QUERY` on a timer) and can be cancelled through an `AbortSignal`. A cancel travels over another connection, so it cannot end a wait on a connection that stopped answering without closing (a network partition, a frozen host): when the statement's connection stays silent for 5 s after a cancel or the time limit, it is closed and the statement ends as a lost connection (`connectivity`, outcome `unknown` for a write).
+`DbSession.execute` streams rows in batches to a sink, which can stop reading at any point (the preview capture stops after 1,001 rows). Statements run with a server-side time limit (PostgreSQL `statement_timeout`; MySQL `KILL QUERY` on a timer) and can be cancelled through an `AbortSignal`. A cancel travels over another connection, so it cannot end a wait on a connection that stopped answering without closing (a network partition, a frozen host): when the statement's connection stays silent for 5 s after a cancel or the time limit, it is closed and the statement ends as a lost connection (`connectivity`, outcome `unknown` for a write). Cancel requests themselves give up after 5 s without an answer; that control connection is closed, so a stalled one cannot hold up later cancels or shutdown.
 
 Values are lossless text, and binary values are `\x` hex ([decision 0023](decisions/0023-values-as-text.md)). MySQL procedures can return several result sets. Notices and warnings are collected with the outcome.
 

@@ -3,6 +3,14 @@ import { DbError } from './errors.js';
 /** How long a statement's connection may stay silent after a cancel or the time limit. */
 export const STALL_GRACE_MS = 5000;
 
+/**
+ * A cancel request on the control connection gives up after this long without an answer, and that
+ * connection is closed, not reused: a stalled one cannot hold the control pool and every later
+ * cancel behind it. Waiting for a control connection is bounded too (MySQL: this long; PostgreSQL:
+ * the connection timeout), and a request still waiting then is withdrawn, so it cannot run later.
+ */
+export const CONTROL_TIMEOUT_MS = 5000;
+
 /** True if the promise settles (either way) within `ms`. */
 export async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;

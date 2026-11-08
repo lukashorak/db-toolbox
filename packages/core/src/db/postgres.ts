@@ -1,7 +1,7 @@
 import pg from 'pg';
 import Cursor from 'pg-cursor';
 import { afterInterruption, DbError, mapPostgresError } from './errors.js';
-import { settlesWithin, StallGuard } from './stall.js';
+import { CONTROL_TIMEOUT_MS, settlesWithin, StallGuard } from './stall.js';
 import { PostgresMetadata } from './metadata-postgres.js';
 import { postgresTls } from './tls.js';
 import { analyzeStatement } from '../sql/analyze.js';
@@ -130,7 +130,9 @@ export class PostgresAdapter implements DbAdapter {
     // Metadata lookups end on the server after 30 s, so one that stalls (even one a statement no
     // longer waits for) cannot hold the metadata connection.
     this.#meta = pool(options.sizes.metadata, 'metadata', null, { statement_timeout: METADATA_TIMEOUT_MS });
-    this.#control = pool(options.sizes.control, 'control');
+    // A cancel that is not answered fails and its client is removed from the pool (a query error
+    // releases it as broken); waiting for a client is bounded by the connection timeout.
+    this.#control = pool(options.sizes.control, 'control', null, { query_timeout: CONTROL_TIMEOUT_MS });
     this.#monitor = pool(options.sizes.monitor ?? 1, 'monitor', target.monitor);
     this.monitorAccount = target.monitor?.username ?? target.username;
     this.metadata = new PostgresMetadata((sql, params) => this.#metaQuery(sql, params), target.schema);

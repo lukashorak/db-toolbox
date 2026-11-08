@@ -4,7 +4,7 @@ import { splitStatements } from '../sql/split.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW, type TableRef, type TriggerEvent } from '../sql/types.js';
 import { afterInterruption, DbError, mapMysqlError } from './errors.js';
 import { MysqlMetadata } from './metadata-mysql.js';
-import { settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
+import { CONTROL_TIMEOUT_MS, settlesWithin, STALL_GRACE_MS, StallGuard } from './stall.js';
 import { mysqlTls, mysqlVerifyFullProblem } from './tls.js';
 import type {
   Cell,
@@ -217,11 +217,27 @@ export class MysqlAdapter implements DbAdapter {
     this.metadata = new MysqlMetadata((sql, params) => this.#metaQuery(sql, params), target.database);
   }
 
-  async #acquire(pool: Pool): Promise<PoolConnection> {
+  /** A connection from the pool; with `waitMs`, a request still waiting then is withdrawn. */
+  async #acquire(pool: Pool, waitMs?: number): Promise<PoolConnection> {
     if (this.#refusal) throw this.#refusal;
-    return new Promise<PoolConnection>((resolve, reject) =>
-      pool.getConnection((error, c) => (error ? reject(mapMysqlError(error)) : resolve(c))),
-    );
+    return new Promise<PoolConnection>((resolve, reject) => {
+      let withdrawn = false;
+      const timer =
+        waitMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              withdrawn = true;
+              reject(new DbError('resource', `No database connection became free within ${waitMs} ms.`));
+            }, waitMs);
+      pool.getConnection((error, c) => {
+        clearTimeout(timer);
+        // Withdrawn meanwhile: nothing runs on this connection.
+        if (withdrawn) {
+          if (!error) c.release();
+        } else if (error) reject(mapMysqlError(error));
+        else resolve(c);
+      });
+    });
   }
 
   async #pooledQuery(
@@ -232,7 +248,8 @@ export class MysqlAdapter implements DbAdapter {
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>[]> {
     signal?.throwIfAborted();
-    const connection = await this.#acquire(pool);
+    // A query with a time limit waits at most as long for a connection.
+    const connection = await this.#acquire(pool, timeout);
     // Aborted while waiting for a connection: give it back without running anything.
     if (signal?.aborted) {
       connection.release();
@@ -274,10 +291,13 @@ export class MysqlAdapter implements DbAdapter {
     }
   }
 
-  /** KILL QUERY over the control pool; resolves once the server has accepted it. */
+  /**
+   * KILL QUERY over the control pool; resolves once the server has accepted it. A control
+   * connection that does not answer is closed, so it cannot hold up later cancels.
+   */
   async cancel(backendId: number): Promise<boolean> {
     try {
-      await this.#pooledQuery(this.#control, 'KILL QUERY ?', [backendId]);
+      await this.#pooledQuery(this.#control, 'KILL QUERY ?', [backendId], CONTROL_TIMEOUT_MS);
       return true;
     } catch {
       return false;
