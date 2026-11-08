@@ -342,6 +342,59 @@ describe('results panel', () => {
     expect(screen.getByText('second')).toBeTruthy();
   });
 
+  it('shares the result the dialog was opened for, and drops it when another run is shown', async () => {
+    const single = (id: string, title: string) =>
+      ({
+        ...execution,
+        id,
+        title,
+        status: 'succeeded',
+        statements: [statement(0, 'SELECT', 'succeeded')],
+        resultSets: [resultSet(0)],
+      }) as unknown as ExecutionView;
+    const profiles = [{ id: 'mcp_1', name: 'Claude Code' }];
+    const { rerender } = render(ResultsPanel, {
+      execution: single('exe_a', 'A'),
+      onRunFull: () => undefined,
+    });
+    await settle();
+    const shareButton = () => screen.getByRole('button', { name: 'Share full result with MCP' });
+
+    // The profiles load slowly, and the person shows another run meanwhile: no dialog for it.
+    let answer: (value: unknown) => void = () => undefined;
+    api.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    await fireEvent.click(shareButton());
+    await rerender({ execution: single('exe_b', 'B') });
+    await settle();
+    answer(profiles);
+    await settle();
+    const dialog = () => screen.queryByRole('dialog', { name: 'Share full result with MCP' });
+    expect(dialog()).toBeNull();
+
+    // Opened for B, then A is shown: the dialog closes instead of applying to A.
+    api.mockImplementationOnce(async () => profiles);
+    await fireEvent.click(shareButton());
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(screen.getByTestId('share-target').textContent).toContain('“B”');
+    await rerender({ execution: single('exe_a', 'A') });
+    await settle();
+    expect(dialog()).toBeNull();
+
+    // Opened and confirmed on the same result: the share is for that result.
+    api.mockImplementationOnce(async () => profiles);
+    await fireEvent.click(shareButton());
+    await settle();
+    api.mockImplementationOnce(async () => ({}));
+    await fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    await settle();
+    expect(api).toHaveBeenLastCalledWith('POST', '/executions/exe_a/results/0/share', {
+      profileId: 'mcp_1',
+      minutes: 60,
+    });
+    expect(api).not.toHaveBeenCalledWith('POST', '/executions/exe_b/results/0/share', expect.anything());
+  });
+
   it('shows every result set a statement returned', async () => {
     render(ResultsPanel, { execution, onRunFull: () => undefined });
     await settle();

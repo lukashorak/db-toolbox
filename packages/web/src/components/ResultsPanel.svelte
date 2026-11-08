@@ -35,6 +35,13 @@
   let shareForm = $state({ profileId: '', minutes: 60 });
   let profiles = $state<{ id: string; name: string }[]>([]);
   let busy = $state(false);
+  /**
+   * The result a side panel acts on, fixed when it opens. Showing another execution or result set
+   * closes the panel (and drops one still loading), so a confirmation never applies to a result
+   * other than the one it was opened for.
+   */
+  type Target = { execution: string; title: string; index: number; sql: string; rows: number };
+  let target = $state.raw<Target | null>(null);
 
   const statement = $derived(execution.statements[statementTab] ?? null);
   const sets = $derived(execution.resultSets.filter((r) => r.statement === statementTab));
@@ -88,6 +95,28 @@
       showStatement(failed);
     }
   });
+  $effect(() => {
+    const now = set ? `${execution.id}:${set.index}` : '';
+    if (target && `${target.execution}:${target.index}` !== now) {
+      target = null;
+      panel = null;
+    }
+  });
+  function openPanel(kind: 'full' | 'export' | 'preview-export'): void {
+    if (!set) return;
+    target = targetOf();
+    panel = kind;
+  }
+  function targetOf(): Target | null {
+    if (!set) return null;
+    return {
+      execution: execution.id,
+      title: execution.title,
+      index: set.index,
+      sql: statement?.sql ?? '',
+      rows: set.rowCount,
+    };
+  }
   $effect(() => {
     if (!set) {
       rows = [];
@@ -148,14 +177,14 @@
   });
 
   async function exportResult(previewOnly: boolean) {
-    if (!set) return;
+    const t = target;
+    if (!t) return;
     busy = true;
     try {
-      let created = await api<ExportView>(
-        'POST',
-        `/executions/${execution.id}/results/${set.index}/exports`,
-        { format: exportFormat, previewOnly },
-      );
+      let created = await api<ExportView>('POST', `/executions/${t.execution}/results/${t.index}/exports`, {
+        format: exportFormat,
+        previewOnly,
+      });
       while (created.status === 'generating') {
         await new Promise((r) => setTimeout(r, 300));
         created = await api<ExportView>('GET', `/exports/${created.id}`);
@@ -172,16 +201,22 @@
   }
 
   async function openShare() {
-    profiles = await api<{ id: string; name: string }[]>('GET', '/profiles');
-    shareForm.profileId = profiles[0]?.id ?? '';
+    const opened = (target = targetOf());
+    if (!opened) return;
+    const list = await api<{ id: string; name: string }[]>('GET', '/profiles');
+    // Another result was shown while the profiles loaded: that dropped this dialog.
+    if (target !== opened) return;
+    profiles = list;
+    shareForm.profileId = list[0]?.id ?? '';
     panel = 'share';
   }
 
   async function share() {
-    if (!set) return;
+    const t = target;
+    if (!t) return;
     busy = true;
     try {
-      await api('POST', `/executions/${execution.id}/results/${set.index}/share`, {
+      await api('POST', `/executions/${t.execution}/results/${t.index}/share`, {
         profileId: shareForm.profileId,
         minutes: Number(shareForm.minutes),
       });
@@ -302,19 +337,19 @@
           class="button"
           disabled={Boolean(reasons.full)}
           title={reasons.full ?? ''}
-          onclick={() => (panel = 'full')}>Run full result</button
+          onclick={() => openPanel('full')}>Run full result</button
         >
         <button
           class="button"
           disabled={Boolean(reasons.export)}
           title={reasons.export ?? ''}
-          onclick={() => (panel = 'export')}>Export full result</button
+          onclick={() => openPanel('export')}>Export full result</button
         >
         <button
           class="button dashed"
           disabled={Boolean(reasons.previewExport)}
           title={reasons.previewExport ?? ''}
-          onclick={() => (panel = 'preview-export')}>Export preview only</button
+          onclick={() => openPanel('preview-export')}>Export preview only</button
         >
         <button
           class="button policy"
@@ -372,7 +407,7 @@
   </p>
   {#snippet footer()}
     <button class="button" onclick={() => (panel = null)}>Cancel</button>
-    <button class="button primary" onclick={() => ((panel = null), statement && onRunFull(statement.sql))}
+    <button class="button primary" onclick={() => ((panel = null), target && onRunFull(target.sql))}
       >Run full result</button
     >
   {/snippet}
@@ -385,7 +420,7 @@
 >
   {#if panel === 'preview-export'}
     <Banner tone="warning" title="Partial file"
-      >Only the {set?.rowCount.toLocaleString()} captured rows. The file name says PREVIEW-ONLY.</Banner
+      >Only the {target?.rows.toLocaleString()} captured rows. The file name says PREVIEW-ONLY.</Banner
     >
   {:else}
     <p>Writes a file from the captured result. No SQL runs.</p>
@@ -410,6 +445,9 @@
     Lets one MCP profile read this result beyond its allowance, until the approval expires. It grants no write
     permission.
   </p>
+  {#if target}<p class="note" data-testid="share-target">
+      Result {target.index + 1} of “{target.title}”.
+    </p>{/if}
   {#if profiles.length}
     <label class="field"
       ><span>Profile</span><select bind:value={shareForm.profileId}
