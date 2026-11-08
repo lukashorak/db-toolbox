@@ -187,6 +187,29 @@ describe('API contract', () => {
       readOnly: undefined,
     });
     assert.deepEqual([draft.status, draft.body.failure?.category], [200, 'connectivity']);
+    // Edited settings of a saved connection: an omitted CA means the stored one, as saving would keep it.
+    const pem = '-----BEGIN CERTIFICATE-----\nMIIBtest\n-----END CERTIFICATE-----';
+    const withCa = (
+      await call('POST', '/connections', 'admin', {
+        ...connectionBody('With CA'),
+        tlsMode: 'verify-ca',
+        caPem: pem,
+      })
+    ).body.id;
+    const edited = {
+      ...connectionBody('With CA'),
+      name: undefined,
+      environment: undefined,
+      readOnly: undefined,
+      password: undefined,
+      tlsMode: 'verify-ca',
+      connectionId: withCa,
+    };
+    const kept = await call('POST', '/connections/test', 'admin', edited);
+    assert.match(String(kept.body.tls?.description), /against the custom CA/);
+    const cleared = await call('POST', '/connections/test', 'admin', { ...edited, caPem: null });
+    assert.doesNotMatch(String(cleared.body.tls?.description), /custom CA/);
+    assert.equal((await call('DELETE', `/connections/${withCa}`, 'admin')).status, 200);
     assert.equal((await call('POST', '/connections/test', 'admin', { engine: 'postgresql' })).status, 400);
   });
 

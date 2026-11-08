@@ -26,13 +26,15 @@ const draftSchema = z
     username: z.string().trim().min(1).max(128),
     password: z.string().max(4096).default(''),
     tlsMode: z.enum(TLS_MODES),
+    // Omitted (not null) means "the stored CA" when testing a saved connection's edited settings,
+    // so no default here: route validation would otherwise turn an omitted CA into null.
     caPem: z
       .string()
       .trim()
       .max(65536)
       .refine(isPemCertificate, 'Paste a PEM certificate.')
       .nullable()
-      .default(null),
+      .optional(),
   })
   .strict();
 
@@ -96,14 +98,14 @@ export class DatabaseService {
     requirePermission(actor, 'connections.manage');
     const draft = parseInput(draftSchema, input);
     let password = draft.password;
-    let caPem = draft.caPem;
+    let caPem = draft.caPem ?? null;
     let name = 'Unsaved connection';
     if (draft.connectionId) {
       const stored = this.connections.credentials(draft.connectionId);
       if (stored.engine !== draft.engine)
         throw fieldError('engine', 'The engine of a connection cannot change.');
       if (!password) password = stored.password;
-      if (input.caPem === undefined) caPem = stored.caPem;
+      if (draft.caPem === undefined) caPem = stored.caPem;
       name = stored.name;
     }
     if (!password) throw fieldError('password', 'Enter the password to test a new connection.');
