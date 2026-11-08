@@ -434,6 +434,40 @@ describe('restart reconciliation and retention', () => {
     assert.throws(() => core.executions.view(view.id), code('not_found'));
     core.close();
   });
+
+  it('closes a result left capturing by an execution that ended, so it expires and its execution goes', async () => {
+    const { core, connection } = pausedCore();
+    const view = await core.executions.submit(writer, { connectionId: connection, sql: 'SELECT 1' });
+    const db = core.db;
+    // Storing the result failed, and so did closing it: the execution ended with its result set
+    // still capturing, without a deadline, its row and byte counts behind the stored chunk.
+    db.run(
+      "UPDATE executions SET status = 'failed', finished_at = '2026-11-08T10:00:00.000Z' WHERE id = :id",
+      { id: view.id },
+    );
+    db.run(
+      `INSERT INTO result_sets (execution_id, result_index, statement, columns, row_count, byte_count, completeness, expires_at)
+       VALUES (:id, 0, 0, '[]', 0, 0, 'capturing', NULL)`,
+      { id: view.id },
+    );
+    db.run(
+      `INSERT INTO result_chunks (execution_id, result_index, chunk_index, row_start, row_count, byte_count, data)
+       VALUES (:id, 0, 0, 0, 1, 10, :data)`,
+      { id: view.id, data: Buffer.from('[["1"]]') },
+    );
+    const hours = core.settings.defaults().workingRetentionHours;
+    core.executions.cleanup(new Date('2026-11-08T10:10:00Z'));
+    const set = core.executions.view(view.id).resultSets[0];
+    assert.deepEqual(
+      [set?.completeness, set?.rowCount, set?.byteCount, set?.expiresAt],
+      ['interrupted', 1, 10, new Date(Date.parse('2026-11-08T10:00:00Z') + hours * 3_600_000).toISOString()],
+    );
+    assert.deepEqual(core.executions.rows(writer, view.id, 0).rows, [['1']]);
+    const removed = core.executions.cleanup(new Date('2027-06-01T00:00:00Z'));
+    assert.deepEqual([removed.resultsExpired, removed.bytesFreed, removed.executionsDeleted], [1, 10, 1]);
+    assert.throws(() => core.executions.view(view.id), code('not_found'));
+    core.close();
+  });
 });
 
 describe('checks after a failed statement', () => {

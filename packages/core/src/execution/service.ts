@@ -19,13 +19,13 @@ import type { ConnectionService } from '../services/connections.js';
 import { isoNow, type ServiceContext } from '../services/context.js';
 import type { DatabaseService } from '../services/databases.js';
 import type { ProfileService } from '../services/profiles.js';
-import type { SettingsService } from '../services/settings.js';
+import type { ExecutionDefaults, SettingsService } from '../services/settings.js';
 import { parseInput } from '../services/validation.js';
 import { analyzeScript, analyzeStatement } from '../sql/analyze.js';
 import { TRANSACTIONAL_ENGINES, UNRESOLVED_VIEW } from '../sql/types.js';
 import { preflight, type PreflightProblem } from '../sql/preflight.js';
 import type { StatementKind } from '../sql/types.js';
-import { bool, int, type Row } from '../store/database.js';
+import { bool, int, type Database, type Row } from '../store/database.js';
 import { METADATA_DUE, readRows, ResultCapture, StorageBudget, resultGone } from './capture.js';
 import { canSeeExecution } from './visibility.js';
 
@@ -127,6 +127,31 @@ const parse = (v: unknown, fallback: unknown = null) =>
   v === null || v === undefined ? fallback : JSON.parse(String(v));
 const TERMINAL =
   "('succeeded', 'failed', 'rejected', 'preflight_rejected', 'cancelled', 'timed_out', 'interrupted', 'unknown')";
+
+/** How long an execution's results are kept, in hours, from its retention choice. */
+function retentionHours(e: Row, defaults: ExecutionDefaults): number {
+  return e.retention === 'retained'
+    ? Number(e.retain_days ?? defaults.retainedMaxDays) * 24
+    : defaults.workingRetentionHours;
+}
+
+/**
+ * Closes an execution's result sets still `capturing` (a restart, or closing them failed): they are
+ * marked interrupted, counted from the chunks stored, so quotas and disclosure see those rows, and
+ * given a retention deadline, so cleanup removes them in time.
+ */
+function closeCapturing(db: Database, id: string, expires: string): void {
+  db.run(
+    `UPDATE result_sets SET completeness = 'interrupted',
+       row_count = (SELECT coalesce(sum(c.row_count), 0) FROM result_chunks c
+                     WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
+       byte_count = (SELECT coalesce(sum(c.byte_count), 0) FROM result_chunks c
+                      WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
+       expires_at = coalesce(expires_at, :expires)
+     WHERE execution_id = :id AND completeness = 'capturing'`,
+    { id, expires },
+  );
+}
 
 interface Running {
   controller: AbortController;
@@ -1055,11 +1080,7 @@ export class ExecutionService {
       // Read now, not from the snapshot at start: Retain may have been chosen while it ran.
       const current =
         this.ctx.db.get('SELECT retention, retain_days FROM executions WHERE id = :id', { id }) ?? row;
-      const hours =
-        current.retention === 'retained'
-          ? Number(current.retain_days ?? defaults.retainedMaxDays) * 24
-          : defaults.workingRetentionHours;
-      return new Date(Date.now() + hours * 3_600_000).toISOString();
+      return new Date(Date.now() + retentionHours(current, defaults) * 3_600_000).toISOString();
     };
 
     let skippedForCancel = false;
@@ -1551,21 +1572,11 @@ export class ExecutionService {
             WHERE execution_id = :id AND status = 'running'`,
           { id },
         );
-        // Chunks written before the crash stay readable: count them, so quotas and disclosure see
-        // them, and give them a retention deadline, so cleanup removes them in time.
-        const hours =
-          e.retention === 'retained'
-            ? Number(e.retain_days ?? defaults.retainedMaxDays) * 24
-            : defaults.workingRetentionHours;
-        this.ctx.db.run(
-          `UPDATE result_sets SET completeness = 'interrupted',
-             row_count = (SELECT coalesce(sum(c.row_count), 0) FROM result_chunks c
-                           WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
-             byte_count = (SELECT coalesce(sum(c.byte_count), 0) FROM result_chunks c
-                            WHERE c.execution_id = result_sets.execution_id AND c.result_index = result_sets.result_index),
-             expires_at = coalesce(expires_at, :expires)
-           WHERE execution_id = :id AND completeness = 'capturing'`,
-          { id, expires: new Date(Date.parse(now) + hours * 3_600_000).toISOString() },
+        // Chunks written before the crash stay readable.
+        closeCapturing(
+          this.ctx.db,
+          id,
+          new Date(Date.parse(now) + retentionHours(e, defaults) * 3_600_000).toISOString(),
         );
         this.ctx.db.run(
           `UPDATE executions SET status = 'interrupted', transaction_outcome = :outcome, finished_at = :now,
@@ -1604,6 +1615,29 @@ export class ExecutionService {
     executionsDeleted: number;
   } {
     const at = now.toISOString();
+    // A result still capturing after its execution ended was never closed (closing it after a
+    // failure failed too). Without a deadline it would never expire, and it would keep its
+    // execution's metadata as well: close it, due a retention period after the execution ended.
+    const stray = this.ctx.db.all(
+      `SELECT DISTINCT e.id, e.retention, e.retain_days, e.finished_at FROM result_sets r
+         JOIN executions e ON e.id = r.execution_id
+        WHERE r.completeness = 'capturing' AND e.status IN ${TERMINAL}`,
+    );
+    if (stray.length) {
+      const defaults = this.deps.settings.defaults();
+      this.ctx.db.transaction(() => {
+        for (const e of stray) {
+          const ended = Date.parse(String(e.finished_at));
+          const from = Number.isNaN(ended) ? now.getTime() : ended;
+          closeCapturing(
+            this.ctx.db,
+            String(e.id),
+            new Date(from + retentionHours(e, defaults) * 3_600_000).toISOString(),
+          );
+        }
+      });
+      this.#budget.recount(this.ctx.db);
+    }
     const expired = this.ctx.db.all(
       `SELECT r.execution_id, r.result_index, r.byte_count FROM result_sets r
          JOIN executions e ON e.id = r.execution_id

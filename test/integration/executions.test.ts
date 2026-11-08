@@ -379,6 +379,25 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(settled.resultSets[0]?.completeness, 'interrupted');
           db.run = run; // counting stores its own result
           assert.equal(await count("name = 'run-chunks-failed'"), 1, 'the row was committed');
+
+          // Closing the result after the failure fails as well: the execution still ends, and the
+          // next cleanup closes the result, so it expires in time.
+          db.run = (sql: string, params?: unknown) => {
+            if (sql.includes('INSERT INTO result_chunks') || sql.includes("completeness = 'interrupted'"))
+              throw new Error('database or disk is full');
+            return run(sql, params);
+          };
+          const stuck = await submit("INSERT INTO wb_items (name) VALUES ('run-close-failed') RETURNING id");
+          const ended = await settle(core, stuck.id);
+          db.run = run;
+          assert.deepEqual(
+            [ended.status, ended.transactionOutcome, ended.resultSets[0]?.completeness],
+            ['failed', 'unknown', 'capturing'],
+          );
+          core.executions.cleanup();
+          const closed = core.executions.view(stuck.id).resultSets[0];
+          assert.equal(closed?.completeness, 'interrupted');
+          assert.ok(closed?.expiresAt, 'the result has a retention deadline');
         } finally {
           db.run = run;
         }

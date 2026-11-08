@@ -77,7 +77,7 @@ Statements that change session state mark the session dirty, and the session is 
 | full    | Everything within 100 MiB per execution and 1 GiB in total                        | `complete` or `quota_limited` (never complete) |
 
 - When a read has enough rows, the database stops it. A statement that changes data (a procedure that returns rows and then writes, `INSERT … RETURNING`) always runs to its end; only its further rows are discarded.
-- A result set cut short by an error, a cancel or a restart is `interrupted`. Results are removed after their retention and become `expired`.
+- A result set cut short by an error, a cancel or a restart is `interrupted`. Results are removed after their retention and become `expired`. If even closing a result fails (the application database refusing writes), the periodic cleanup closes it later as `interrupted`, with the rows stored so far, and its retention counts from when the execution ended.
 - Values are lossless text, and binary values are `\x` hex ([decision 0023](decisions/0023-values-as-text.md)). Duplicate column names are kept, and each result set (several per MySQL procedure) is stored separately.
 - Rows are stored as JSON chunks of up to 1,000 rows or 1 MiB. Pages of up to 1,000 rows are read back by offset.
 - The 1 GiB total is shared by all executions. Five per cent of it (at most 64 MiB) stays free for metadata.
