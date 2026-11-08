@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "iconv-lite": "0.7.3",
     "jose": "6.2.15",
     "libpg-query": "18.1.5",
     "mysql2": "3.24.6",

@@ -711,6 +711,28 @@ for (const { engine, variable, prepare } of engines) {
 
     describe('execution', () => {
       it(
+        'decodes MySQL text in the character set the server sends',
+        { skip: engine !== 'mysql' },
+        async () => {
+          const rows = await adapter.withSession(async (s) => {
+            const run = async (sql: string) => {
+              const { sets, sink } = collect();
+              await s.execute(sql, sink, { timeoutMs: 5000 });
+              return sets[0]?.rows;
+            };
+            // Results in latin1 (MySQL's latin1 is cp1252, which has the euro sign).
+            await run('SET character_set_results = latin1');
+            const latin1 = await run("SELECT CONVERT(0xE9 USING latin1) AS a, 'é€' AS b");
+            // NULL: every column in its own character set.
+            await run('SET character_set_results = NULL');
+            const own = await run('SELECT CONVERT(0xE9 USING latin1) AS a');
+            return [latin1, own];
+          });
+          assert.deepEqual(rows, [[['é', 'é€']], [['é']]]);
+        },
+      );
+
+      it(
         'captures bytea in the hex form whatever bytea_output says',
         { skip: engine !== 'postgresql' },
         async () => {

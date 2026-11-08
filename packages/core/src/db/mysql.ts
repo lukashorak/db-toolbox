@@ -1,3 +1,4 @@
+import iconv from 'iconv-lite';
 import mysql, { type FieldPacket, type Pool, type PoolConnection, type PoolOptions } from 'mysql2';
 import { analyzeMysql } from '../sql/analyze-mysql.js';
 import { splitStatements } from '../sql/split.js';
@@ -138,7 +139,7 @@ const STRING_TYPES = new Set([
   'LONG_BLOB',
 ]);
 
-type RawField = FieldPacket & { columnType?: number; characterSet?: number };
+type RawField = FieldPacket & { columnType?: number; characterSet?: number; encoding?: string };
 
 function columnInfo(field: RawField): ColumnInfo {
   const type = TYPE_NAMES.get(Number(field.columnType ?? field.type)) ?? 'UNKNOWN';
@@ -151,10 +152,19 @@ function columnInfo(field: RawField): ColumnInfo {
 
 /** Raw bytes for every value; turned into text (or `\x` hex for binary columns) per column. */
 const RAW = (field: { buffer(): Buffer | null }) => field.buffer();
-const toCell = (value: unknown, binary: boolean): Cell => {
+/**
+ * Text is decoded in the character set the server sent it in, which the column definition names:
+ * `character_set_results` (a script can change it, with SET NAMES for example), or the column's own
+ * when that is NULL. Decoding everything as UTF-8 would turn latin1 `é` into U+FFFD.
+ */
+const toCell = (value: unknown, binary: boolean, encoding = 'utf8'): Cell => {
   if (value === null || value === undefined) return null;
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
-  return binary ? `\\x${bytes.toString('hex')}` : bytes.toString('utf8');
+  if (binary) return `\\x${bytes.toString('hex')}`;
+  if (encoding === 'utf8' || encoding === 'binary' || !iconv.encodingExists(encoding))
+    return bytes.toString('utf8');
+  // MySQL's latin1 is cp1252 (with the euro sign at 0x80), not ISO-8859-1.
+  return iconv.decode(bytes, encoding === 'latin1' ? 'cp1252' : encoding);
 };
 
 export interface MysqlOptions {
@@ -742,6 +752,7 @@ class MysqlSession implements DbSession {
       await guard.wait(
         new Promise<void>((resolve, reject) => {
           let columns: ColumnInfo[] = [];
+          let encodings: string[] = [];
           let batch: Cell[][] = [];
           let index = -1;
           let pending: Promise<void> = Promise.resolve();
@@ -795,6 +806,7 @@ class MysqlSession implements DbSession {
               flush();
               index++;
               columns = fields.map(columnInfo);
+              encodings = fields.map((f) => f.encoding ?? 'utf8');
               outcome.resultSets = index + 1;
               const cols = columns;
               const at = index;
@@ -812,7 +824,7 @@ class MysqlSession implements DbSession {
             guard((row: unknown) => {
               if (Array.isArray(row)) {
                 if (interrupted || discarded.has(index)) return;
-                batch.push(row.map((value, i) => toCell(value, columns[i]?.binary ?? false)));
+                batch.push(row.map((value, i) => toCell(value, columns[i]?.binary ?? false, encodings[i])));
                 if (batch.length >= batchSize) flush();
               } else if (row && typeof row === 'object') {
                 const header = row as { affectedRows?: number; warningStatus?: number };
