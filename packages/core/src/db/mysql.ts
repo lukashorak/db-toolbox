@@ -7,44 +7,69 @@ const METADATA_TIMEOUT_MS = 30_000;
 
 /** Where a lookup keeps the session's SHOW GRANTS lines (no table name contains a NUL). */
 const GRANTS_KEY = '\u0000grants';
+/** Where a lookup keeps whether the server has partial revokes on ('1') or off ('0'). */
+const PARTIAL_REVOKES_KEY = '\u0000partial_revokes';
 
 /** A backticked or bare identifier, unquoted. */
 const unquote = (name: string) =>
   name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1).replace(/``/g, '`') : name;
 
-/** A grant's schema pattern (`app\\_%` style: % and _ are wildcards, \\ escapes) against a name. */
-function schemaMatches(pattern: string, name: string): boolean {
+/**
+ * A grant's schema pattern against a name. `\\` escapes; unescaped % and _ are wildcards, except with
+ * partial revokes on, where the server reads them literally.
+ */
+function schemaMatches(pattern: string, name: string, wildcards: boolean): boolean {
   let regex = '';
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i] as string;
     if (c === '\\' && i + 1 < pattern.length)
       regex += (pattern[++i] as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    else if (c === '%') regex += '.*';
-    else if (c === '_') regex += '.';
+    else if (c === '%' && wildcards) regex += '.*';
+    else if (c === '_' && wildcards) regex += '.';
     else regex += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
   return new RegExp(`^${regex}$`).test(name);
 }
 
 /**
- * A SHOW GRANTS line (`GRANT …` or, with partial revokes, `REVOKE …`) that covers TRIGGER on the
- * table: on *.*, on its schema (or a matching pattern), or on the table itself.
+ * The scope at which a SHOW GRANTS line (`GRANT …`, or with partial revokes `REVOKE …`) covers
+ * TRIGGER on the table: `*.*`, its schema (or a matching pattern), or the table itself.
  */
-function grantsTrigger(line: string, verb: 'GRANT' | 'REVOKE', db: string, table: string): boolean {
+function triggerScope(
+  line: string,
+  verb: 'GRANT' | 'REVOKE',
+  db: string,
+  table: string,
+  partialRevokes: boolean,
+): 'global' | 'schema' | 'table' | null {
   const m = new RegExp(`^${verb} (.+?) ON (.+?) (?:TO|FROM) `).exec(line);
-  if (!m) return false;
+  if (!m) return null;
   const privileges = (m[1] ?? '')
     .replace(/\([^)]*\)/g, '')
     .split(',')
     .map((p) => p.trim().toUpperCase());
-  if (!privileges.some((p) => p === 'TRIGGER' || p === 'ALL PRIVILEGES' || p === 'ALL')) return false;
+  if (!privileges.some((p) => p === 'TRIGGER' || p === 'ALL PRIVILEGES' || p === 'ALL')) return null;
   const target = (m[2] ?? '').trim();
-  if (target === '*.*') return true;
+  if (target === '*.*') return 'global';
   const parts = /^(`(?:[^`]|``)*`|[^.`]+)\.(`(?:[^`]|``)*`|\*)$/.exec(target);
-  if (!parts) return false;
+  if (!parts) return null;
   const schema = unquote(parts[1] ?? '');
-  if (parts[2] === '*') return schemaMatches(schema, db);
-  return schema === db && unquote(parts[2] ?? '') === table;
+  if (parts[2] === '*') return schemaMatches(schema, db, !partialRevokes) ? 'schema' : null;
+  return schema === db && unquote(parts[2] ?? '') === table ? 'table' : null;
+}
+
+/**
+ * Whether SHOW GRANTS lines give TRIGGER on the table. A partial revoke (`REVOKE … ON db.*`, only with
+ * the server's partial_revokes on) narrows only the global grant; a table-level grant still gives
+ * the privilege.
+ */
+export function triggerVisible(lines: string[], db: string, table: string, partialRevokes = false): boolean {
+  const scope = (line: string, verb: 'GRANT' | 'REVOKE') =>
+    triggerScope(line, verb, db, table, partialRevokes);
+  const granted = new Set(lines.map((line) => scope(line, 'GRANT')));
+  if (granted.has('table') || granted.has('schema')) return true;
+  if (!granted.has('global')) return false;
+  return !lines.some((line) => scope(line, 'REVOKE') === 'schema');
 }
 
 /**
@@ -355,8 +380,13 @@ export class MysqlAdapter implements DbAdapter {
     // The session's grants, read once per lookup.
     let grants = known.get(GRANTS_KEY);
     if (grants === undefined) {
-      const [current] = await this.#metaQuery('SELECT CURRENT_ROLE() AS roles', [], signal);
+      const [current] = await this.#metaQuery(
+        'SELECT CURRENT_ROLE() AS roles, @@global.partial_revokes AS partialRevokes',
+        [],
+        signal,
+      );
       const roles = String(current?.roles ?? 'NONE');
+      known.set(PARTIAL_REVOKES_KEY, Number(current?.partialRevokes) === 1 ? '1' : '0');
       // The role list comes from the server, already quoted (`role`@`host`, …).
       const rows = await this.#metaQuery(
         roles && roles !== 'NONE' ? `SHOW GRANTS FOR CURRENT_USER() USING ${roles}` : 'SHOW GRANTS',
@@ -366,11 +396,7 @@ export class MysqlAdapter implements DbAdapter {
       grants = rows.map((row) => String(Object.values(row)[0] ?? '')).join('\n');
       known.set(GRANTS_KEY, grants);
     }
-    const lines = (grants ?? '').split('\n');
-    return (
-      lines.some((line) => grantsTrigger(line, 'GRANT', db, table)) &&
-      !lines.some((line) => grantsTrigger(line, 'REVOKE', db, table))
-    );
+    return triggerVisible((grants ?? '').split('\n'), db, table, known.get(PARTIAL_REVOKES_KEY) === '1');
   }
 
   activeSessions(): number {

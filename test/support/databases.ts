@@ -14,6 +14,11 @@ export const READER = { username: 'wb_reader', password: 'reader-pw' };
 export const WRITER = { username: 'wb_writer', password: 'writer-pw' };
 /** MySQL: may change data, and sees triggers through a default role that grants TRIGGER. */
 export const ROLE_WRITER = { username: 'wb_role_writer', password: 'role-writer-pw' };
+/**
+ * MySQL: may change data, holds TRIGGER globally with a partial revoke on the test schema, and
+ * TRIGGER again on wb_items only.
+ */
+export const PARTIAL_WRITER = { username: 'wb_partial_writer', password: 'partial-writer-pw' };
 
 export function certs() {
   const dir = process.env.INTEGRATION_CERTS ?? '.integration/certs';
@@ -216,6 +221,13 @@ export async function prepareMysql(url: string): Promise<void> {
       GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${ROLE_WRITER.username}'@'%';
       GRANT 'wb_trigger_viewer' TO '${ROLE_WRITER.username}'@'%';
       SET DEFAULT ROLE 'wb_trigger_viewer' TO '${ROLE_WRITER.username}'@'%';
+      SET GLOBAL partial_revokes = ON;
+      DROP USER IF EXISTS '${PARTIAL_WRITER.username}'@'%';
+      CREATE USER '${PARTIAL_WRITER.username}'@'%' IDENTIFIED BY '${PARTIAL_WRITER.password}';
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${PARTIAL_WRITER.username}'@'%';
+      GRANT TRIGGER ON *.* TO '${PARTIAL_WRITER.username}'@'%';
+      REVOKE TRIGGER ON ${DATABASE}.* FROM '${PARTIAL_WRITER.username}'@'%';
+      GRANT TRIGGER ON ${DATABASE}.wb_items TO '${PARTIAL_WRITER.username}'@'%';
       DROP USER IF EXISTS '${WRITER.username}'@'%';
       CREATE USER '${WRITER.username}'@'%' IDENTIFIED BY '${WRITER.password}';
       GRANT SELECT, INSERT, UPDATE, DELETE ON ${DATABASE}.* TO '${WRITER.username}'@'%';

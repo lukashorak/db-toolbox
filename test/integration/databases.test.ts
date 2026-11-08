@@ -28,6 +28,7 @@ import {
   DATABASE,
   prepareMysql,
   preparePostgres,
+  PARTIAL_WRITER,
   READER,
   ROLE_WRITER,
   targetFrom,
@@ -251,6 +252,21 @@ for (const { engine, variable, prepare } of engines) {
           assert.equal(
             await roleWriter.tableEngine({ schema: null, name: 'wb_audited' }),
             'MyISAM (written by a trigger)',
+          );
+          // A partial revoke on the schema hides triggers, except where TRIGGER is granted again on
+          // the table.
+          const partialWriter = await registry.get({
+            ...target({
+              id: 'cn_partial_writer_mysql',
+              username: PARTIAL_WRITER.username,
+              password: PARTIAL_WRITER.password,
+            }),
+            updatedAt: 'v1',
+          });
+          assert.equal(await partialWriter.tableEngine({ schema: null, name: 'wb_items' }), 'InnoDB');
+          assert.equal(
+            await partialWriter.tableEngine({ schema: null, name: 'wb_orders' }),
+            'unresolved view',
           );
           // A lookup whose signal has aborted starts no query.
           await assert.rejects(adapter.tableEngine({ schema: null, name: 'wb_items' }, AbortSignal.abort()), {

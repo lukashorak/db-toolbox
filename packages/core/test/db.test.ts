@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { mapMysqlError, mapPostgresError } from '../src/db/errors.js';
 import { describeTls, mysqlTls, mysqlVerifyFullProblem, postgresTls } from '../src/db/tls.js';
+import { triggerVisible } from '../src/db/mysql.js';
 import { AppError } from '../src/domain/errors.js';
 import { actor, admin, pgInput, testCore } from './helpers.js';
 
@@ -183,5 +184,37 @@ describe('connection use', () => {
       (e: unknown) => e instanceof AppError && e.code === 'forbidden',
     );
     core.close();
+  });
+});
+
+describe('MySQL TRIGGER visibility from SHOW GRANTS', () => {
+  const user = '`u`@`%`';
+  it('counts global, schema and table grants', () => {
+    assert.equal(triggerVisible([`GRANT TRIGGER ON *.* TO ${user}`], 'app', 't'), true);
+    assert.equal(triggerVisible([`GRANT SELECT, TRIGGER ON \`app\`.* TO ${user}`], 'app', 't'), true);
+    assert.equal(triggerVisible([`GRANT ALL PRIVILEGES ON \`app\`.\`t\` TO ${user}`], 'app', 't'), true);
+    assert.equal(triggerVisible([`GRANT TRIGGER ON \`app\`.\`other\` TO ${user}`], 'app', 't'), false);
+    assert.equal(triggerVisible([`GRANT SELECT, INSERT ON \`app\`.* TO ${user}`], 'app', 't'), false);
+  });
+
+  it('applies a partial revoke to the global grant only', () => {
+    const global = `GRANT TRIGGER ON *.* TO ${user}`;
+    const revoke = `REVOKE TRIGGER ON \`app\`.* FROM ${user}`;
+    assert.equal(triggerVisible([global, revoke], 'app', 't', true), false);
+    assert.equal(triggerVisible([global, revoke], 'other', 't', true), true);
+    assert.equal(
+      triggerVisible([global, revoke, `GRANT TRIGGER ON \`app\`.\`t\` TO ${user}`], 'app', 't', true),
+      true,
+      'a table-level grant restores what the partial revoke took',
+    );
+  });
+
+  it('reads schema wildcards literally when partial revokes are on', () => {
+    const grant = [`GRANT TRIGGER ON \`app_%\`.* TO ${user}`];
+    assert.equal(triggerVisible(grant, 'app_1', 't'), true);
+    assert.equal(triggerVisible(grant, 'appx1', 't'), true);
+    assert.equal(triggerVisible(grant, 'app_1', 't', true), false);
+    assert.equal(triggerVisible([`GRANT TRIGGER ON \`app\\_1\`.* TO ${user}`], 'appx1', 't'), false);
+    assert.equal(triggerVisible([`GRANT TRIGGER ON \`app\\_1\`.* TO ${user}`], 'app_1', 't', true), true);
   });
 });
