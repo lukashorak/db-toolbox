@@ -267,8 +267,13 @@ function analyzeNode(type: string, body: Node): StatementAnalysis {
       return unsafe(kindOf('unknown'), 'EXECUTE runs a prepared statement that cannot be checked');
     case 'DoStmt':
       return unsafe(kindOf('unknown'), 'DO runs procedural code that cannot be checked');
-    case 'CallStmt':
-      return unsafe(kindOf('write'), 'procedures can modify data and control transactions');
+    case 'CallStmt': {
+      const a = unsafe(kindOf('write'), 'procedures can modify data and control transactions');
+      // What the procedure leaves on the connection (settings, temporary tables, advisory locks) is
+      // unknown: the connection is not reused.
+      a.changesSession = true;
+      return a;
+    }
     case 'ListenStmt':
     case 'UnlistenStmt':
     case 'DiscardStmt': {

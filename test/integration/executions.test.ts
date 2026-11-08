@@ -495,6 +495,17 @@ for (const { engine, variable, prepare } of engines) {
           ['0', 'false', 'f'].includes(String(single.executions.rows(writer, check.id, 0).rows[0]?.[0])),
           'the lock was released with the connection',
         );
+        if (engine === 'mysql') {
+          // The same for a lock taken inside a write.
+          const write = "INSERT INTO wb_items (name) VALUES (CONCAT('lock-', GET_LOCK('wb_lock_2', 0)))";
+          assert.equal((await runOn(write)).status, 'succeeded');
+          const after = await runOn("SELECT IS_USED_LOCK('wb_lock_2') IS NOT NULL AS held");
+          assert.equal(
+            single.executions.rows(writer, after.id, 0).rows[0]?.[0],
+            '0',
+            'released after a write',
+          );
+        }
       } finally {
         await single.shutdown();
       }

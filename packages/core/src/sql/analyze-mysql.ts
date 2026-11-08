@@ -157,8 +157,6 @@ function analyzeQuery(text: string): StatementAnalysis {
     if (node.type === 'function') {
       const name = functionName(node);
       if (UNSAFE_FUNCTIONS[name]) unsafe(a, `${name}() ${UNSAFE_FUNCTIONS[name]}`);
-      // A named lock belongs to the connection, not the transaction: it must not be reused.
-      if (name === 'get_lock') a.changesSession = true;
     }
     if (node.type === 'assign' || (node.type === 'binary_expr' && node.operator === ':='))
       a.changesSession = true;
@@ -382,6 +380,9 @@ function analyzeByKeyword(text: string, tokens: Token[]): StatementAnalysis {
       const a = write('CALL', 'procedures can modify data and control transactions');
       a.returnsRows = true;
       a.mayCommit = true;
+      // What the procedure leaves on the connection (variables, temporary tables, named locks) is
+      // unknown: the connection is not reused.
+      a.changesSession = true;
       return a;
     }
     case 'DO':
@@ -419,5 +420,10 @@ export function analyzeMysql(text: string): StatementAnalysis {
   }
   const tokens = significant(raw);
   if (!tokens.length) return unsafe(baseAnalysis('unknown', 'EMPTY'), 'no statement found');
-  return analyzeByKeyword(text, tokens);
+  const analysis = analyzeByKeyword(text, tokens);
+  // A named lock belongs to the connection, wherever the call appears (SELECT, INSERT … VALUES,
+  // UPDATE … SET): the connection must not be reused by someone else.
+  if (tokens.some((t, i) => word(t) === 'GET_LOCK' && tokens[i + 1]?.text === '('))
+    analysis.changesSession = true;
+  return analysis;
 }

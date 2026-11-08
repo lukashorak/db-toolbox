@@ -63,7 +63,16 @@ describe('statement classification', () => {
       (await analyzeStatement('select pg_advisory_xact_lock(1)', 'postgresql')).changesSession,
       false,
     );
-    assert.equal((await analyzeStatement("select get_lock('x', 0)", 'mysql')).changesSession, true);
+    for (const sql of [
+      "select get_lock('x', 0)",
+      "insert into t (v) values (get_lock('x', 0))",
+      "update t set v = GET_LOCK ('x', 0)",
+      'call p()',
+    ]) {
+      assert.equal((await analyzeStatement(sql, 'mysql')).changesSession, true, sql);
+    }
+    assert.equal((await analyzeStatement("select 'get_lock(' as s", 'mysql')).changesSession, false);
+    assert.equal((await analyzeStatement('call p()', 'postgresql')).changesSession, true);
     assert.equal((await analyzeStatement('create table t (a int)', 'mysql')).changesSession, false);
     assert.equal((await analyzeStatement('savepoint a', 'postgresql')).transactionControl, 'savepoint');
     assert.equal(

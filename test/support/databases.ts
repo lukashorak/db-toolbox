@@ -152,6 +152,11 @@ export async function prepareMysql(url: string): Promise<void> {
       END;
       -- An updatable view over a MyISAM table (single-transaction checks).
       CREATE VIEW wb_legacy_notes AS SELECT id, note FROM wb_legacy;
+      -- Two branches that share one nested view: not a cycle.
+      CREATE VIEW wb_v_base AS SELECT id, name FROM wb_items;
+      CREATE VIEW wb_v_left AS SELECT id, name FROM wb_v_base;
+      CREATE VIEW wb_v_right AS SELECT id FROM wb_v_base;
+      CREATE VIEW wb_v_both AS SELECT l.id, l.name FROM wb_v_left l JOIN wb_v_right r ON r.id = l.id;
       CREATE FUNCTION wb_item_count() RETURNS int READS SQL DATA RETURN (SELECT count(*) FROM wb_items);
       CREATE TABLE wb_numbers (n int PRIMARY KEY);
       SET SESSION cte_max_recursion_depth = 10000;

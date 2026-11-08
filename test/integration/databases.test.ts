@@ -197,6 +197,9 @@ for (const { engine, variable, prepare } of engines) {
 
         it('finds non-transactional tables for single-transaction preflight', async () => {
           assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_legacy' }), 'MyISAM');
+          // Views report their base tables' engine; a view reached twice is not a cycle.
+          assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_legacy_notes' }), 'MyISAM');
+          assert.equal(await adapter.tableEngine({ schema: null, name: 'wb_v_both' }), 'InnoDB');
           assert.equal(await adapter.tableEngine({ schema: DATABASE, name: 'wb_items' }), 'InnoDB');
           const problems = await preflight(
             await analyzeScript(
@@ -327,6 +330,35 @@ for (const { engine, variable, prepare } of engines) {
         }
         assert.equal((await run('SELECT 1')).sets[0]?.rows[0]?.[0], '1');
       });
+
+      if (engine === 'postgresql') {
+        it('keeps the command and row count of a write whose rows end on a batch boundary', async () => {
+          // RETURNING rows in batches of 100. The command tag of a fetch counts only that fetch's rows,
+          // and 300 rows end exactly on a batch boundary.
+          for (const [total, onStop] of [
+            [300, 'cancel'],
+            [300, 'drain'],
+            [250, 'cancel'],
+            [250, 'drain'],
+          ] as const) {
+            const update = `UPDATE wb_numbers SET n = n WHERE n <= ${total} RETURNING n`;
+            const outcome = await adapter.withSession(async (s) => {
+              await s.begin({ readOnly: false });
+              try {
+                const { sink } = collect(onStop === 'drain' ? 100 : undefined);
+                return await s.execute(update, sink, { timeoutMs: 10_000, batchSize: 100, onStop });
+              } finally {
+                await s.rollback();
+              }
+            });
+            assert.deepEqual(
+              [outcome.command, outcome.affectedRows],
+              ['UPDATE', total],
+              `${total} ${onStop}`,
+            );
+          }
+        });
+      }
 
       it('reports affected rows of writes', async () => {
         const { outcome } = await run("UPDATE wb_items SET name = name WHERE name = 'alpha'", {

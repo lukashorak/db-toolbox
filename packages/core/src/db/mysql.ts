@@ -164,13 +164,14 @@ export class MysqlAdapter implements DbAdapter {
   /**
    * The storage engine a write to this table reaches. A view has no engine of its own: its base
    * tables decide, and the first non-transactional one is reported. A view whose base tables cannot
-   * be determined (no privilege, nesting too deep) reports UNRESOLVED_VIEW.
+   * be determined (no privilege, a cycle, nesting deeper than 16) reports UNRESOLVED_VIEW.
    */
   async tableEngine(table: TableRef): Promise<string | null> {
-    return this.#engineOf(table.schema, table.name, new Set());
+    return this.#engineOf(table.schema, table.name, []);
   }
 
-  async #engineOf(schema: string | null, name: string, seen: Set<string>): Promise<string | null> {
+  /** `ancestors`: the views above this one on the current path (a view used twice is not a cycle). */
+  async #engineOf(schema: string | null, name: string, ancestors: string[]): Promise<string | null> {
     const [row] = await this.#metaQuery(
       `SELECT TABLE_SCHEMA AS db, TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES
         WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?`,
@@ -179,8 +180,8 @@ export class MysqlAdapter implements DbAdapter {
     if (!row) return null;
     if (row.type !== 'VIEW') return row.engine ? String(row.engine) : null;
     const key = `${String(row.db)}.${name}`;
-    if (seen.has(key) || seen.size >= 16) return UNRESOLVED_VIEW;
-    seen.add(key);
+    if (ancestors.includes(key) || ancestors.length >= 16) return UNRESOLVED_VIEW;
+    const path = [...ancestors, key];
     const bases = await this.#metaQuery(
       'SELECT TABLE_SCHEMA AS db, TABLE_NAME AS name FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = ? AND VIEW_NAME = ?',
       [row.db, name],
@@ -188,7 +189,7 @@ export class MysqlAdapter implements DbAdapter {
     if (!bases.length) return UNRESOLVED_VIEW;
     let found: string | null = null;
     for (const base of bases) {
-      const engine = await this.#engineOf(String(base.db), String(base.name), seen);
+      const engine = await this.#engineOf(String(base.db), String(base.name), path);
       if (engine === null || engine === UNRESOLVED_VIEW) return UNRESOLVED_VIEW;
       if (!TRANSACTIONAL_ENGINES.has(engine.toLowerCase())) return engine;
       found ??= engine;

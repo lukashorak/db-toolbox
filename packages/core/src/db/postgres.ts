@@ -317,6 +317,7 @@ class PostgresSession implements DbSession {
       notices,
     };
     let discarding = false;
+    let rowsRead = 0;
     try {
       if (options.signal?.aborted) interrupt('cancelled');
       for (;;) {
@@ -339,6 +340,17 @@ class PostgresSession implements DbSession {
         );
         // pg-cursor omits the result on a read after the portal has closed (exact multiple of the batch size).
         if (!result) break;
+        rowsRead += rows.length;
+        if (result.command) {
+          // The command tag of a fetch counts only the rows of that fetch. A write with RETURNING
+          // returns one row per changed row, so the rows read are its count.
+          outcome.command = result.command;
+          outcome.affectedRows = !result.fields.length
+            ? (result.rowCount ?? null)
+            : result.command === 'SELECT'
+              ? null
+              : rowsRead;
+        }
         if (outcome.resultSets === 0 && result.fields.length) {
           const names = await this.adapter.typeNames(result.fields.map((f) => f.dataTypeID));
           const columns: ColumnInfo[] = result.fields.map((f) => ({
@@ -361,12 +373,7 @@ class PostgresSession implements DbSession {
             }
           }
         }
-        if (rows.length < batchSize) {
-          outcome.command = result.command ?? null;
-          outcome.affectedRows =
-            result.fields.length && result.command === 'SELECT' ? null : (result.rowCount ?? null);
-          break;
-        }
+        if (rows.length < batchSize) break;
       }
       return outcome;
     } catch (error) {
