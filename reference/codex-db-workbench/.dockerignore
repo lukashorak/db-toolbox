@@ -1,0 +1,9 @@
+node_modules
+dist
+web/dist
+data
+exports
+.env
+.git
+test-results
+tests

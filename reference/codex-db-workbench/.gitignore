@@ -1,0 +1,11 @@
+node_modules/
+dist/
+web/dist/
+.env
+data/
+exports/
+coverage/
+test-results/
+*.sqlite*
+*.pem
+*.key

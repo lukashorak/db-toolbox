@@ -1,0 +1,26 @@
+services:
+  workbench:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:?Set KEYCLOAK_ISSUER in .env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
+      GUI_CLIENT_ID: ${GUI_CLIENT_ID:-workbench-gui}
+      API_AUDIENCE: ${API_AUDIENCE:-workbench-api}
+      MAX_RESULT_BYTES: ${MAX_RESULT_BYTES:-104857600}
+      MAX_TOTAL_BYTES: ${MAX_TOTAL_BYTES:-1073741824}
+    ports:
+      - '${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000'
+    volumes:
+      - ./data:/data
+      - ./exports:/exports
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s

@@ -1,0 +1,95 @@
+{
+  "realm": "db-tool",
+  "displayName": "Database Workbench",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "query:read",
+        "description": "Run read-only SQL, browse metadata, save queries and decide on MCP disclosure"
+      },
+      {
+        "name": "query:write",
+        "description": "Run modifying SQL where the connection and MCP profile allow it"
+      },
+      {
+        "name": "monitor:read",
+        "description": "View target database monitoring"
+      },
+      {
+        "name": "admin",
+        "description": "Manage connections, MCP profiles and settings; does not grant database writes"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "workbench-gui",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "name": "Database Workbench",
+      "rootUrl": "https://db-tool.sensay-learning.com",
+      "baseUrl": "/",
+      "redirectUris": ["https://db-tool.sensay-learning.com/auth/callback"],
+      "webOrigins": ["https://db-tool.sensay-learning.com"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://db-tool.sensay-learning.com/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience workbench-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "workbench-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "workbench-mcp",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true,
+      "name": "Database Workbench MCP (Claude Code)",
+      "redirectUris": ["http://localhost:8765/callback", "http://127.0.0.1:8765/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience https://db-tool.sensay-learning.com/mcp",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "https://db-tool.sensay-learning.com/mcp",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

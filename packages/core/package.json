@@ -1,0 +1,24 @@
+{
+  "name": "@workbench/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "iconv-lite": "0.7.3",
+    "jose": "6.2.15",
+    "libpg-query": "18.1.5",
+    "mysql2": "3.24.6",
+    "node-sql-parser": "5.4.0",
+    "pg": "8.23.1",
+    "pg-cursor": "2.22.1",
+    "pino": "10.4.0",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,15 @@
+# Optional, next to compose.yaml in the Dockge stack: joins the Docker network of the PostgreSQL
+# container on this server, so the workbench reaches it by container name without publishing
+# PostgreSQL on a host port. Create the network once and attach the PostgreSQL container to it:
+#   docker network create databases
+#   docker network connect databases <postgres-container>   (or add the network to its compose file)
+# Then use the PostgreSQL container's name as the connection's host.
+services:
+  workbench:
+    networks:
+      - default
+      - databases
+
+networks:
+  databases:
+    external: true

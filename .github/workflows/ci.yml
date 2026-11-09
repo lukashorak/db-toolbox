@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, lint, types, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:web
+      - run: npm run build
+
+  integration:
+    name: Integration and GUI tests (Keycloak, PostgreSQL ${{ matrix.postgres }}, MySQL 8.4, Chromium)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: '16'
+            statements: '0'
+          # The version in production, with pg_stat_statements loaded.
+          - postgres: '18'
+            statements: '1'
+    env:
+      WORKBENCH_REQUIRE_INTEGRATION: '1'
+      POSTGRES_IMAGE: postgres:${{ matrix.postgres }}
+      POSTGRES_STATEMENTS: ${{ matrix.statements }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Start containers
+        run: scripts/integration/start.sh keycloak postgres mysql >> "$GITHUB_ENV"
+      - run: npm run test:integration
+      - name: Load sanity (one million rows, concurrency, cancellation)
+        run: npm run test:load
+      - run: npm run build
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Container logs on failure
+        if: failure()
+        run: docker ps -a --filter name=workbench-it- --format '{{.Names}}' | xargs -r -n1 docker logs --tail 200
+      - name: Stop containers
+        if: always()
+        run: scripts/integration/stop.sh
+
+  deploy:
+    name: Image and compose deployment (AC14)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WORKBENCH_REQUIRE_INTEGRATION: '1'
+      DEPLOY_TEST_IMAGE: database-workbench:ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Build image
+        run: docker build --build-arg VERSION="${GITHUB_SHA::12}" -t "$DEPLOY_TEST_IMAGE" .
+      - name: Start containers
+        run: scripts/integration/start.sh keycloak postgres >> "$GITHUB_ENV"
+      - run: npm run test:deploy
+      - name: Container logs on failure
+        if: failure()
+        run: docker ps -a --format '{{.Names}}' | xargs -r -n1 docker logs --tail 200
+      - name: Stop containers
+        if: always()
+        run: scripts/integration/stop.sh
